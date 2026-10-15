@@ -80,17 +80,19 @@ class Kandidat:
     `tokens` (Woerter mit Zeichenposition) werden erst beim ersten Zugriff als XTok-Objekte gebaut; bis dahin
     liegen nur die Normformen und die Positionen kompakt im Speicher (grosse Blaetter bleiben schlank)."""
     __slots__ = ("id", "art", "blatt", "zeile", "spalte", "text", "section", "start", "end", "zelle_text",
-                 "zelle_ist_zahl", "versteckt", "section_unsicher", "_tokens", "_norms", "_pos", "_zellen")
+                 "zelle_ist_zahl", "versteckt", "section_unsicher", "kopf_spalte", "_tokens", "_norms", "_pos", "_zellen")
 
     def __init__(self, id: int, art: str, blatt: str, zeile: int, spalte: int, tokens: list[XTok] | None = None,
                  text: str = "", section: str | None = None, start: int = 0, end: int = 0, zelle_text: str = "",
-                 zelle_ist_zahl: bool = False, versteckt: str = "", section_unsicher: bool = False, *,
+                 zelle_ist_zahl: bool = False, versteckt: str = "", section_unsicher: bool = False,
+                 kopf_spalte: bool = False, *,
                  norms: list[str] | None = None, pos: array | None = None, zellen: dict | None = None) -> None:
         self.id, self.art, self.blatt, self.zeile, self.spalte = id, art, blatt, zeile, spalte
         self.text, self.section, self.start, self.end, self.zelle_text = text, section, start, end, zelle_text
         self.zelle_ist_zahl = zelle_ist_zahl      # die Excel-Zelle ist eine Zahl (kein Text); beim Ersetzen Zahlenformat beachten
         self.versteckt = versteckt                # "" | "blatt" | "zeile" | "spalte": Stelle ist ausgeblendet
         self.section_unsicher = section_unsicher  # Section-Nummer stammt aus mehrdeutigen Zahlen (z. B. 2.1 und 2.10)
+        self.kopf_spalte = kopf_spalte            # Stelle liegt in der Nummern- oder Titelspalte (Ueberschrift), nicht im Fliesstext
         self._tokens = tokens
         self._norms = [x.norm for x in tokens] if tokens is not None else (norms or [])
         self._pos, self._zellen = pos, zellen
@@ -630,12 +632,14 @@ class ExcelModell:
             if not norms:
                 return
             sec = self.zeilen_section.get((blatt, zeile))
+            lay = self.layouts[blatt]
             k = Kandidat(id=len(self.kandidaten), art=art, blatt=blatt, zeile=zeile, spalte=spalte,
                          norms=norms, pos=pos, zellen=self.zellen,
                          text=text, section=sec, start=start, end=ende, zelle_text=zt,
                          zelle_ist_zahl=(blatt, zeile, spalte) in self.zahl_zellen,
                          versteckt=self._versteckt_art(blatt, zeile, spalte),
-                         section_unsicher=bool(sec and sec in self.layouts[blatt].unsichere_sections))
+                         section_unsicher=bool(sec and sec in lay.unsichere_sections),
+                         kopf_spalte=(spalte in (lay.section_spalte, lay.titel_spalte) and spalte != lay.inhalt_spalte))
             self.kandidaten.append(k)
             if k.section:
                 self.nach_section.setdefault(k.section, []).append(k.id)
@@ -701,17 +705,42 @@ class ExcelModell:
     def einfuege_risiken(self, blatt: str, zeile: int) -> list[str]:
         """Einfache deutsche Saetze: was koennte brechen, wenn an `zeile` eine Zeile eingefuegt oder geloescht wird?
 
-        Leere Liste = unbedenklich. Aendert nichts an der Excel und am Verhalten des Tools."""
+        Leere Liste = unbedenklich. Aendert nichts an der Excel und am Verhalten des Tools.
+        Das ist die vollstaendige (strenge) Liste, auch mit Dingen, die der Applier beim Einfuegen selbst mitzieht;
+        was beim automatischen Einfuegen wirklich im Weg steht, sagt `einfuege_hindernisse`."""
+        return self._einfuege_risiken(blatt, zeile, entschaerft=False)
+
+    def einfuege_hindernisse(self, blatt: str, zeile: int) -> list[str]:
+        """Wie `einfuege_risiken`, aber leer, wenn beim EINFUEGEN einer Zeile an `zeile` nichts wirklich brechen kann.
+
+        Kein Hindernis, weil der Applier es beim Einfuegen selbst mitzieht (applier._verschiebe_verbunden / _verschiebe_hoehen):
+          * verbundene Zellen, die ganz unterhalb der Einfuegestelle beginnen (sie wandern mit);
+          * ausgeblendete oder gruppierte Zeilen darunter (Ausblenden, Gliederungsebene und Hoehe wandern mit).
+        Weiter ein Hindernis: verbundene Zellen DURCH die Einfuegestelle, ausgeblendete/gruppierte Zeilen, wenn die neue
+        Zeile MITTEN in einer solchen Zeilenfolge landen wuerde (die Zeile davor und die Zeile dahinter gehoeren dazu), und alles,
+        was `einfuege_risiken` sonst nennt (Formeln, bedingte Formatierung, Datenpruefung, Filter, Tabellen, benannte Bereiche,
+        Hyperlinks, Bilder). Gibt es ein Hindernis, stehen die beiden Hinweise auf Unbedenkliches mit in der Liste
+        (der Mensch soll alles sehen). Fuer das Loeschen von Zeilen gilt weiter `einfuege_risiken`."""
+        return self._einfuege_risiken(blatt, zeile, entschaerft=True)
+
+    def _einfuege_risiken(self, blatt: str, zeile: int, entschaerft: bool) -> list[str]:
         eig = self._eig.get(blatt)
         if eig is None:
             return [f"Das Tabellenblatt '{blatt}' gibt es in der Excel nicht."]
         z = zeile
         risiken: list[str] = []
-        durch = [b for b in eig.verbunden if b[0] <= z <= b[1] and b[0] < b[1]]
+        harmlos: set[str] = set()         # nur im entschaerften Modus: Hinweise, die allein kein Hindernis sind
+        if entschaerft:       # eine Verbindung, die erst ab der Einfuegezeile beginnt, wandert mit; nur durch die Stelle ist ein Hindernis
+            durch = [b for b in eig.verbunden if b[0] < z <= b[1]]
+        else:
+            durch = [b for b in eig.verbunden if b[0] <= z <= b[1] and b[0] < b[1]]
         if durch:
             risiken.append("Hier laufen verbundene Zellen durch die Zeile; sie würden zerrissen oder verrutschen.")
-        if any(b[0] > z for b in eig.verbunden):
+        darunter = [b for b in eig.verbunden if (b[0] >= z if entschaerft else b[0] > z)]
+        if darunter:
             risiken.append("Unterhalb sind verbundene Zellen; sie verschieben sich beim Einfügen oder Löschen nicht zuverlässig mit.")
+            if entschaerft:
+                harmlos.add(risiken[-1])
         eigen = blatt.casefold()
         unten = [f for f in eig.formeln if f[0] >= z]
         bezug = any(n == eigen and r >= z for anderes in self._eig for n, r in self._bezuege(anderes))
@@ -732,8 +761,16 @@ class ExcelModell:
                 risiken.append(f"Der benannte Bereich '{name}' zeigt auf Zeilen ab dieser Stelle; er wird nicht angepasst.")
         if any(r >= z for r in eig.links):
             risiken.append("Unterhalb gibt es Hyperlinks; sie werden nicht mitverschoben.")
-        if any(r >= z - 1 for r in eig.gruppiert):
+        gruppiert = set(eig.gruppiert)
+        if entschaerft and z - 1 in gruppiert and z in gruppiert:
+            risiken.append("Die neue Zeile käme mitten in eine Folge ausgeblendeter oder gruppierter Zeilen; "
+                           "die Folge würde unterbrochen.")
+        elif any(r >= z - 1 for r in gruppiert):
             risiken.append("In der Nähe oder darunter gibt es ausgeblendete oder gruppierte Zeilen; diese Einstellung wird nicht mitverschoben.")
+            if entschaerft:
+                harmlos.add(risiken[-1])
         if any(r >= z for r in eig.anker):
             risiken.append("Unterhalb sind Bilder oder Diagramme verankert; sie bleiben beim Einfügen oder Löschen an ihrer Stelle.")
+        if entschaerft and all(r in harmlos for r in risiken):
+            return []
         return risiken

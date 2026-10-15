@@ -127,8 +127,8 @@ SILBEN_ZELLEN = [(3, "schwer", 1, 39, 3), (9, "schwer", 2, 8, 3), (9, "schwer", 
                  (57, "schwer", 1, 3, 3)]
 
 
-# Noch offen (K-PDF): Seed 51 -- ein zerrissenes Wort landet weiter in der Excel; die uebrigen Zellen sind repariert.
-_OFFEN_115 = {51}
+# Noch offen (K-PDF): keine -- Seed 51 (zerrissenes Wort aus zwei Buchstaben vor dem weichen Trennstrich) ist repariert.
+_OFFEN_115: set[int] = set()
 _SILBEN_PARAMS = [pytest.param(*t, marks=pytest.mark.xfail(
     strict=True, raises=AssertionError,
     reason="RT-115 Seed 51: zerrissenes Wort in der Excel, noch nicht repariert; Besitzer K-PDF")) if t[0] in _OFFEN_115 else t
@@ -232,9 +232,6 @@ def test_rt118_zwei_spalten_satz_wird_zerrissen_eingetragen(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-119 Korpus Seed 42 (Stoerer 'zwei_spalten'): ein neuer Satz steht in zwei Stuecken mitten in "
-                          "anderen Saetzen der Excel-Zelle (uebernommen/hoch/ok); 1 stiller Fehler; Besitzer K-PDF")
 def test_rt119_korpus_zwei_spalten_satz_zerrissen_seed42():
     lf = auto_lauf(42, "schwer")
     _, soll, ist = zelle_vorher_soll_ist(lf.ordner, lf.ergebnis, 1, 3, 3)
@@ -261,10 +258,6 @@ _LISTE_EXCEL = [e for e in _LISTE_PDF if "Sicherung" not in e[1]]
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-120 Neuer Listenpunkt '4. {+Sicherung tauschen+}': der Text wird in die NUMMERNSPALTE der "
-                          "Section 4 geschrieben ('4 Sicherung tauschen'), uebernommen/hoch/ok (die Suche nutzt nur das "
-                          "alte Wort '4.'); Besitzer K-XL (matcher: Nummern-Zelle als Absatz-Kandidat)")
 def test_rt120_listenpunkt_text_landet_in_der_nummernspalte(tmp_path):
     alt = baue_alt(tmp_path, _LISTE_EXCEL, "L1")
     l = lauf(tmp_path, _LISTE_PDF, "L1", alt=alt)
@@ -278,9 +271,6 @@ def test_rt120_listenpunkt_text_landet_in_der_nummernspalte(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-121 Korpus Seed 30 (Stoerer 'nummerierte_liste'): '4 Sicherung tauschen' steht in der "
-                          "Nummernspalte (Blatt 2, Zeile 18, Spalte 1); 1 stiller Fehler; Besitzer K-XL")
 def test_rt121_korpus_listenpunkt_in_nummernspalte_seed30():
     lf = auto_lauf(30, "schwer")
     vorher, soll, ist = zelle_vorher_soll_ist(lf.ordner, lf.ergebnis, 1, 18, 1)
@@ -297,10 +287,6 @@ def test_rt121_korpus_listenpunkt_in_nummernspalte_seed30():
 #     "Section geloescht" laeuft automatisch, der geloeschte INHALT der Section bleibt offen ("pruefen").
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-122 Section-Loeschung (Nummer + Titel) laeuft automatisch (hoch), die Loeschung des Inhalts "
-                          "bleibt auf 'pruefen': zurueck bleibt eine verwaiste Zeile ohne Nummer/Titel mit altem Inhalt "
-                          "(Seeds 2, 37, 60 im Korpus); Besitzer K-PL (planner: Abhaengigkeit Kopf <-> Inhalt, wie RT-01/02)")
 def test_rt122_section_geloescht_automatisch_inhalt_offen_laesst_verwaiste_zeile(tmp_path):
     pdf_el = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."),
               ("h", "{-2 Zwei-}"), ("p", "{-Die Reaktionszeit darf 150 ms nicht ueberschreiten.-}"),

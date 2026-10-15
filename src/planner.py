@@ -24,7 +24,7 @@ from .excel_model import Kandidat, ExcelModell, zahl_als_text
 from .matcher import Matcher, Treffer
 from .models import (ADD, DEL, HOCH, KEEP, MITTEL, MOD, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN,
                      Aenderung, Operation, PdfBlock, PdfToken)
-from .pdf_reader import PdfAnalyse
+from .pdf_reader import PdfAnalyse, hinweis_text
 from .textutil import kopf_zerlegen, norm, section_nummer
 
 STATUS_VON_STUFE = {HOCH: UEBERNOMMEN, MITTEL: PRUEFEN}
@@ -37,14 +37,28 @@ def _planer_cfg(cfg: dict | None) -> dict:
     return config.lade("zuordnung").get("planer", {})
 
 
+def _trennung_ohne_ausnahme(muster: "re.Pattern[str]", text: str, ausnahmen: set[str]) -> bool:
+    """Gibt es im Text einen Treffer des Trennmusters, dessen Rest-Wort keine erlaubte Ausnahme ist ("Ein- und Ausgang")?"""
+    for m in muster.finditer(text):
+        rest = (m.groupdict().get("rest") or "").casefold()
+        if rest not in ausnahmen:
+            return True
+    return False
+
+
 def neutext_probleme(texte: Iterable[str], cfg: dict | None = None) -> dict[str, Any]:
-    """Prueft Neutext auf Dinge, die in der Excel Schaden anrichten oder auf kaputtes PDF-Lesen hindeuten.
+    """Prueft Neutext auf Dinge, die in der Excel Schaden anrichten oder auf kaputtes PDF-Lesen hindeuten
+    (Ligaturen, Zeichencode-Reste, nicht zusammengefuegte Silbentrennung, Tabellen-Spaltentrenner; Muster in config planer:).
 
     Rueckgabe: steuerzeichen (nicht schreibbar), verdaechtig (Liste einfacher Hinweise -> nie automatisch),
     formel (Text beginnt mit '=' und wuerde von Excel als Formel gelesen)."""
     pl = _planer_cfg(cfg)
     zeichen = "".join(pl.get("verdaechtige_zeichen", []))
     muster = [re.compile(m) for m in pl.get("verdaechtige_muster", [])]
+    trennung = [re.compile(m) for m in pl.get("trennmuster", [])]
+    ausnahmen = {str(w).casefold() for w in pl.get("trennung_ausnahmen", [])}
+    tabelle = [re.compile(m, re.MULTILINE) for m in pl.get("tabellen_muster", [])]
+    tab_min = max(int(pl.get("tabellen_min_treffer", 1)), 1)
     out: dict[str, Any] = {"steuerzeichen": False, "verdaechtig": [], "formel": False}
     for t in texte:
         if not isinstance(t, str) or not t:
@@ -57,6 +71,16 @@ def neutext_probleme(texte: Iterable[str], cfg: dict | None = None) -> dict[str,
                 out["verdaechtig"].append(h)
         if any(m.search(t) for m in muster):
             h = "Der neue Text enthält Zeichencode-Reste aus dem PDF (z. B. „(cid:12)“). Die PDF-Schrift wurde nicht sauber gelesen."
+            if h not in out["verdaechtig"]:
+                out["verdaechtig"].append(h)
+        if any(_trennung_ohne_ausnahme(m, t, ausnahmen) for m in trennung):
+            h = ("Der neue Text enthält ein Trennmuster wie „Wort- Rest“ (Silbentrennung am Zeilenende). Das Wort könnte "
+                 "zerrissen sein. Bitte mit dem PDF vergleichen.")
+            if h not in out["verdaechtig"]:
+                out["verdaechtig"].append(h)
+        if tabelle and sum(len(m.findall(t)) for m in tabelle) >= tab_min:
+            h = ("Der neue Text enthält senkrechte Striche als Spaltentrenner (Text aus einer Tabelle?). Tabellen werden nicht "
+                 "gelesen. Bitte mit dem PDF vergleichen.")
             if h not in out["verdaechtig"]:
                 out["verdaechtig"].append(h)
         if t.startswith("="):
@@ -116,6 +140,7 @@ class _Planer:
         self._nach_norms: dict[tuple[str, ...], list[Kandidat]] | None = None   # Normform -> Kandidaten (Idempotenz)
         self._ag: list[str] = []                    # Gruende, warum die Ankerstelle des aktuellen neuen Blocks unsicher ist
         self._risiko_cache: dict[tuple[str, int], list[str]] = {}               # (Blatt, Einfuegezeile) -> Risiken
+        self._unsicher: dict[str, list[str]] = {}                               # Aenderung -> Saetze: Woerter in unsicher gelesenem PDF-Bereich
 
     # ------------------------------------------------------------ Helfer
     def treffer(self, b: PdfBlock) -> Treffer | None:
@@ -130,7 +155,20 @@ class _Planer:
                        woerter=sum(1 for t in toks if t.status != KEEP), block_idx=b.idx,
                        kontext=(b.neu_text or b.alt_text)[:400])
         self.out.append(ae)
+        self._merke_unsicher(ae, toks)
         return ae
+
+    def _merke_unsicher(self, ae: Aenderung, toks: list[PdfToken]) -> None:
+        """Woerter, die der PDF-Leser in einem unsicher gelesenen Bereich (z. B. Spalten nebeneinander) gefunden hat, werden nie
+        automatisch eingetragen. Welche Hinweis-Codes das sind, steht in config planer.unsichere_hinweise."""
+        codes = set(_planer_cfg(self.cfg).get("unsichere_hinweise", []))
+        if not codes:
+            return
+        for t in toks:
+            for c in filter(None, t.hinweis.split(";")):
+                satz = hinweis_text(c)
+                if c in codes and satz and satz not in self._unsicher.setdefault(ae.id, []):
+                    self._unsicher[ae.id].append(satz)
 
     def _setze(self, ae: Aenderung, stufe: str, grund: str = "") -> None:
         # Neutext pruefen: Steuerzeichen koennen nicht geschrieben werden, Ligaturen/(cid:N) sind nie "sicher"
@@ -139,6 +177,13 @@ class _Planer:
         if p["steuerzeichen"]:
             self._nicht(ae, "Der neue Text enthält Steuerzeichen und kann nicht in die Excel geschrieben werden.")
             return
+        if self._unsicher.get(ae.id):
+            if stufe == HOCH:
+                stufe = MITTEL
+            for h in self._unsicher[ae.id]:
+                self._hinweis(ae, h)
+            grund = (grund + "; " if grund else "") + ("Der Text steht in einem Bereich des PDF, der nicht sicher gelesen werden "
+                                                       "konnte (siehe Hinweise).")
         if p["verdaechtig"]:
             if stufe == HOCH:
                 stufe = MITTEL
@@ -171,14 +216,15 @@ class _Planer:
             ae.grund = (ae.grund + "; " if ae.grund else "") + grund
 
     def _zeilen_risiken(self, ae: Aenderung) -> list[str]:
-        """Risiken (einfache Saetze) aller Zeilen-Einfuegungen einer Aenderung. Leer = unbedenklich."""
+        """Hindernisse (einfache Saetze) aller Zeilen-Einfuegungen einer Aenderung. Leer = unbedenklich.
+        Was der Applier selbst mitzieht (verbundene Zellen unterhalb, ausgeblendete Zeilen darunter), zaehlt nicht."""
         out: list[str] = []
         for op in ae.ops:
             if op.art != "zeile_einfuegen" or op.abgedeckt:
                 continue
             pos = op.zeile if op.vor else op.zeile + 1
             if (op.blatt, pos) not in self._risiko_cache:
-                self._risiko_cache[(op.blatt, pos)] = self.xl.einfuege_risiken(op.blatt, pos)
+                self._risiko_cache[(op.blatt, pos)] = self.xl.einfuege_hindernisse(op.blatt, pos)
             out += [r for r in self._risiko_cache[(op.blatt, pos)] if r not in out]
         return out
 
@@ -230,6 +276,39 @@ class _Planer:
             else:
                 for i0, i1 in self._gruppen(b):
                     self._text_gruppe(b, i0, i1)
+        self._loeschungen_koppeln()
+
+    def _loeschungen_koppeln(self) -> None:
+        """Eine gestrichene Section und der gestrichene Inhalt darunter sind eine Gruppe: der Status gilt fuer alle gemeinsam.
+
+        Sonst bliebe eine verwaiste Zeile zurueck (Nummer und Titel weg, alter Inhalt steht noch da) oder ein Teil des
+        Inhalts verschwindet, der Rest nicht. Ist ein Mitglied der Gruppe nicht sicher (pruefen) oder nicht eintragbar,
+        bleiben alle anderen auf pruefen. Die Vorschlaege (Operationen) bleiben stehen."""
+        je_block = {ae.block_idx: ae for ae in self.out if ae.typ == "absatz_geloescht"}
+        for kopf in [ae for ae in self.out if ae.typ == "section_geloescht"]:
+            folge: list[Aenderung] = []
+            k = kopf.block_idx + 1
+            while k < len(self.pdf.blocks) and self.pdf.blocks[k].ganz_geloescht and self.pdf.blocks[k].kind == "absatz":
+                if k in je_block:
+                    folge.append(je_block[k])
+                k += 1
+            if not folge:
+                continue
+            gruppe = [kopf] + folge
+            if all(m.status == UEBERNOMMEN for m in gruppe):
+                continue
+            for m in gruppe:
+                if m.status == UEBERNOMMEN:
+                    self._herabstufen(m, "Gehört zu einer gestrichenen Section, deren Löschung nicht ganz sicher ist: Section und "
+                                         "gestrichener Inhalt werden nur zusammen gelöscht, sonst bliebe ein Rest stehen "
+                                         "(z. B. eine Zeile mit altem Inhalt ohne Nummer und Titel).",
+                                      "Section und gestrichener Inhalt gehören zusammen. Bitte alles zusammen prüfen.")
+
+    def _herabstufen(self, ae: Aenderung, grund: str, hinweis: str) -> None:
+        """Aenderung von 'uebernommen' auf 'pruefen' (der Vorschlag mit seinen Operationen bleibt stehen)."""
+        ae.status, ae.konfidenz = PRUEFEN, MITTEL
+        ae.grund = (ae.grund + "; " if ae.grund else "") + grund
+        self._hinweis(ae, hinweis)
 
     # ------------------------------------------------------------ Text in Absatz/Ueberschrift
     def _text_gruppe(self, b: PdfBlock, i0: int, i1: int) -> None:
@@ -547,6 +626,8 @@ class _Planer:
                 koerper.append(self.pdf.blocks[k])
                 k += 1
         ae = self._basis(b, "section_neu" if ist_kopf else "absatz_neu", b.tokens, "", b.neu_text)
+        for kb in koerper:              # die Folgeabsaetze stehen in derselben Excel-Zeile: ihr Zweifel gilt auch fuer die Section
+            self._merke_unsicher(ae, kb.tokens)
         anker = self._anker(b)
         if anker is None:
             self._nicht(ae, "Keine Ankerstelle in der Excel gefunden (kein benachbarter Text zuordenbar).")

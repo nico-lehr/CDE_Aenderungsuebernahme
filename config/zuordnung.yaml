@@ -34,6 +34,17 @@ planer:                       # Planen und Anwenden (src/planner.py, src/applier
   # Zeichen, die beim Lesen eines PDF oft verfaelscht werden (Ligaturen, Ersatzzeichen): Neutext damit wird nie automatisch uebernommen
   verdaechtige_zeichen: ["\uFB00", "\uFB01", "\uFB02", "\uFB03", "\uFB04", "\uFB05", "\uFB06", "\uFFFD"]
   verdaechtige_muster: ['\(cid:\d+\)']   # kaputte PDF-Schrift: "(cid:12)"
+  # Silbentrennung am Zeilenende, die nicht zusammengefuegt wurde: "Netzanschlussbe- dingungen" (Trennstrich, Leerzeichen,
+  # Kleinbuchstabe). Neutext damit wird nie automatisch uebernommen. Echte Bindestriche ("kWh-Zaehler") haben kein Leerzeichen;
+  # "Ein- und Ausgang" (Ergaenzungsstrich) ist erlaubt: das Wort nach dem Strich steht dann in den Ausnahmen.
+  trennmuster: ['(?<=\w)[-\u00ad\u2010\u2011][ \t\u00a0]+(?P<rest>[a-zäöüß]\w*)']
+  trennung_ausnahmen: [und, oder, bzw, sowie, bis, beziehungsweise, als, wie, noch, and, or]
+  # Tabellen-Text mit senkrechten Strichen als Spaltentrenner ("Pos. | Bauteil | Menge"): nie automatisch uebernehmen
+  tabellen_muster: ['(?:^|\s)\|(?:\s|$)']
+  tabellen_min_treffer: 1     # so viele Spaltentrenner im Neutext genuegen
+  # Hinweis-Codes der PDF-Woerter (src/pdf_reader.py), bei denen die Aenderung nie automatisch uebernommen wird: der Bereich
+  # wurde nicht sicher gelesen (Spalten nebeneinander: ein Satz kann zerrissen sein). Weitere moegliche Codes: tabelle
+  unsichere_hinweise: [mehrspaltig]
   doppelt_min_woerter: 3      # Ab so vielen Woertern gilt "gleicher Absatz steht schon" als sicher (nicht uebernommen); kuerzer = nur Vorschlag
 
 # --- Schema 2: bisher im Code fest eingebaute Werte (Verhalten unveraendert; werden von K-XL / K-PL verdrahtet) ---
