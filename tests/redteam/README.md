@@ -1,4 +1,12 @@
-# Red-Team-Tests R1 (erfundene Daten, Regel 16)
+# Red-Team-Tests (erfundene Daten, Regel 16)
+
+> **Übersicht über alle Red-Team-Dateien** (Stand 15.10.2026). Die Tabelle weiter unten (RT-01 bis RT-53) stammt von Red-Team R1 (Excel, Planer, API).
+> Dort steht in der Spalte „Kurz-Fehlermeldung“, **was damals** gemeldet wurde; die meisten dieser Fälle sind inzwischen **repariert** (Marker entfernt, der Test ist ein normaler Schutz-Test).
+> Welche Fälle **heute noch offen** sind, steht in `docs/status.md`. Weitere Tabellen:
+> - `README_pdf.md` – R2, PDF-Leser (RT-60 bis RT-109)
+> - `README_korpus.md` – R3, Ursachen der stillen Fehler im Entwicklungskorpus und Schwächen der Messung (RT-110 bis RT-142)
+>
+> Besitzer: **K-PL** = planner/applier/protokoll · **K-XL** = excel_model/matcher · **K-API** = runs/api · **K-PDF** = pdf_reader · **Mess-Bauer/K-MESS** = messen.
 
 Diese Tests brechen das Tool absichtlich mit gemeinen, **erfundenen** Fällen. Sie reparieren nichts: `src/` bleibt unberührt.
 

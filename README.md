@@ -1,6 +1,6 @@
 # CDE-Änderungsübernahme
 
-Autor: **Nico Lehr** · Stand: 15.10.2026 · Version 0.1.0 (Prototyp, nur mit erfundenen Daten getestet)
+Autor: **Nico Lehr** · Stand: 15.10.2026 · Version 0.2.0 (nur mit erfundenen Daten getestet; Zahlen siehe `docs/status.md`)
 
 Seitenprojekt, **getrennt von der Masterarbeit (bess-pipeline)**. Läuft lokal, ohne Internet, ohne KI-Dienst, ohne API-Key.
 
@@ -11,8 +11,9 @@ Abschnitten) und eine **bestehende CDE-Excel** (nach Sections geordnet, Textblö
 Das Tool findet die Stellen in der Excel, übernimmt **nur die inhaltlichen Änderungen** und schreibt eine **neue** Excel.
 Die Original-Excel bleibt unberührt. Dazu gibt es ein Protokoll, in dem jede Änderung steht.
 
-**Sicherheitsnetz (Bilanz):** Jede erkannte Änderung ist entweder *übernommen*, *zu prüfen* oder *nicht übernommen (mit Grund)*.
-Die Wörter-Summe muss zum PDF passen. So geht nichts still verloren.
+**Grundsatz: lieber nicht übernehmen als falsch übernehmen.** Jede erkannte Änderung ist entweder *übernommen*,
+*zu prüfen* oder *nicht übernommen (mit Grund)*. Zusätzlich meldet das Tool ehrlich, was es **nicht lesen konnte**
+(Scan-Seiten, Zwei-Spalten-Text, Tabellen, Bilder, unbekannte Farben): dann steht in der Bilanz **„unvollständig“**, nie ein grünes „alles ok“.
 
 ## Starten (Windows)
 
@@ -20,49 +21,59 @@ Die Wörter-Summe muss zum PDF passen. So geht nichts still verloren.
 2. Einmalig: `scripts\setup.bat` (legt `.venv` an und installiert die Pakete). Wenn pip im Firmennetz Zertifikatsfehler meldet:
    **nicht** mit `--trusted-host` umgehen, sondern IT fragen.
 3. Dashboard: `scripts\start_dashboard.bat` → http://localhost:5100/ (bess-pipeline nutzt einen anderen Port, beide können parallel laufen).
-4. Ohne Dashboard: `python -m src.cli lauf --pdf aenderungen.pdf --excel cde.xlsx` (mit `--alle-vorschlaege` auch unsichere Treffer).
-5. Tests: `python -m pytest -q` (immer in der `.venv`).
+4. Tests: `python -m pytest -q` (immer in der `.venv`).
 
-## Dashboard (4 Tabs)
+## Befehle auf der Kommandozeile (`python -m src.cli …`)
 
-*Neuer Lauf* (PDF + Excel ziehen) · *Prüfen & Übernehmen* (Liste, PDF-Ausschnitt, Filter, Freigabe unsicherer Vorschläge) ·
-*Verlauf* (alle Läufe, Downloads) · *Farben im PDF* (welche Farben gefunden und wie gedeutet wurden – wichtig zum Kalibrieren).
+| Befehl | Wofür |
+|---|---|
+| `analyse --pdf A.pdf --excel B.xlsx` | nur auswerten, Bilanz anzeigen, nichts schreiben |
+| `lauf --pdf A.pdf --excel B.xlsx` | auswerten und alle **sicheren** Änderungen eintragen (`--alle-vorschlaege` nimmt auch Vorschläge mit) |
+| `messen --korpus entwicklung` | **Messwerkzeug**: Paare (PDF + Excel vorher + nachher) ausführen und mit „nachher“ vergleichen — Treffergenauigkeit, Abdeckung, **stille Fehler**, Fehlerarten. Ausgabe nur Zahlen, nie Dokumentinhalt |
+| `farben --pdf A.pdf` | welche Farben im PDF vorkommen und wie sie gedeutet werden (nur Zahlen und Farbcodes) |
+| `profil liste / vorschau / bestaetigen / analyse` | Excel-Aufbau von Hand festlegen, wenn die Automatik unsicher ist. **Neue Profile gehen nie direkt live**: erst Vorschau, dann bewusste Bestätigung |
+
+Echte Beispiele sicher einspeisen: `docs/anleitung_echte_paare.md`. Schwellen verstehen/kalibrieren: `docs/kalibrierung.md`.
+Testdaten erzeugen (erfunden): `python scripts/erzeuge_paare.py --korpus entwicklung --seeds 1-60`.
+
+## Dashboard
+
+*Neuer Lauf* (PDF + Excel ziehen) · *Prüfen & Übernehmen* (Liste mit Suche/Filter/Sortierung, PDF-Ausschnitt, „Dort steht jetzt“ neben
+„Im PDF: alt → neu“, Hinweise und Wirkung je Änderung, Freigabe unsicherer Vorschläge, frühere Ergebnisse mit Download) ·
+*Verlauf* (alle Läufe; **Archivieren statt Löschen**, Wiederherstellen) · *Farben im PDF* (zum Kalibrieren).
+Bedienbar per Tastatur, hell und dunkel, Meldungen in einfachem Deutsch.
 
 ## Ordner
 
 ```
-config/       paths.yaml, server.yaml (Port 5100), farben.yaml, zuordnung.yaml  (alle Einstellungen, kein Code)
-src/          pdf_reader, excel_model, matcher, planner, applier, protokoll, runs, vorschau, cli, api/
-frontend/     Dashboard (HTML/CSS/JS, eigenes Projekt, Stil wie bess)
-scripts/      setup.bat, start_dashboard.bat
-tests/        pytest + fixtures (erfundene PDFs/Excel werden zur Laufzeit erzeugt)
-docs/         konzept_v1.md, auftrag/ (Auftrag + Antworten), adr/ (Entscheidungen)
-referenz/     bess-dashboard/  Kopien zum Nachschlagen (werden nicht geladen)
-.claude/      entwicklungsregeln.md, design-guideline.md  (Kopien in docs/regeln/; scripts\regeln_nach_claude.bat kopiert sie)
-data/         Läufe (runs/), append-only, wird NICHT versioniert
+config/       paths.yaml, server.yaml (Port 5100), farben.yaml, zuordnung.yaml, layouts.yaml (Vorlage)  (alle Einstellungen, kein Code)
+src/          pdf_reader, excel_model, matcher, planner, applier, protokoll, runs, messen, layouts, cli, api/
+frontend/     Dashboard (HTML/CSS/JS)
+scripts/      setup.bat, start_dashboard.bat, erzeuge_paare.py (erfundene Testpaare)
+tests/        pytest; fixtures/ = Generator für erfundene PDFs/Excel; redteam/ = gemeine Fälle (erwartete Fehler sind als xfail markiert)
+docs/         ziel_v1.md (Ziel + Kriterien), status.md (was geht / was nicht), konzept_v1.md, paar_format.md, kalibrierung.md,
+              anleitung_echte_paare.md, messung_baseline.md, adr/ (Entscheidungen), auftrag/, regeln/
+data/         Läufe (runs/), Paare (paare/), Messberichte (messung/), Profile (profile/) — append-only, wird NICHT versioniert
 ```
 
-## Was funktioniert (getestet mit erfundenen Daten)
+## Wie gut ist es?
 
-- 4 PDF-Markierungsarten: Textfarbe, Hintergrund, Durchstreichen-Linie, PDF-Annotationen.
-- 3 verschiedene Excel-Aufbauten (Section/Titel/Inhalt getrennt, kombiniert "3.2 Titel", eine Zeile pro Absatz).
-- Wort-, Satz-, Absatz-, ganze Section neu/gelöscht, Umnummerierung, mehrseitige Dokumente, Kopf-/Fußzeilen werden ignoriert.
-- Unsichere oder abweichende Stellen werden **nicht** still geändert, sondern mit Grund aufgelistet.
-- 26 automatische Tests grün.
+Aktuelle Messwerte und ehrliche Grenzen stehen in **`docs/status.md`**. Die Ziele und Kriterien stehen in **`docs/ziel_v1.md`**.
+Alle Zahlen stammen von **erfundenen** Beispielen; sie sind kein Versprechen für echte Dokumente.
 
 ## Bekannte Grenzen (ehrlich)
 
-- Nur **einspaltige Text-PDFs**; Tabellen und Bilder im PDF werden nicht verglichen; **Scans** (nur Bild) werden nicht ausgewertet (Warnung).
+- Nur **einspaltige Text-PDFs** werden gelesen. Tabellen, Bilder, Zwei-Spalten-Text und **Scans** werden **erkannt und gemeldet**, aber nicht verarbeitet (kein OCR).
 - Teil-Formatierung (z. B. einzelne fette Wörter) in geänderten Excel-Zellen kann verloren gehen.
-- openpyxl kann Bilder/Diagramme in der Excel verlieren (Warnung); Formeln und verbundene Zellen werden beim Zeilen-Einfügen/Löschen nicht angepasst (Warnung).
-- Noch **keine echten Beispiele** getestet: Farb- und Zeilenabstand-Schwellen müssen mit echten PDFs kalibriert werden (Tab "Farben im PDF", `config/farben.yaml`).
-- Excel-Aufbau wird per Heuristik erkannt; bei Abweichungen hilft später eine YAML-Beschreibung je Layout.
+- Formeln, bedingte Formatierung, Datenprüfung, Filter, Excel-Tabellen und verbundene Zellen an der Einfügestelle werden **nicht repariert**, sondern führen zu „prüfen“ mit Warnung.
+- Noch **keine echten Beispiele** getestet: Farb- und Zeilenabstand-Schwellen müssen mit echten PDFs kalibriert werden (`docs/kalibrierung.md`).
+- Automatisch Übernommenes lässt sich im Dashboard noch nicht einzeln abwählen (die Schnittstelle kennt nur Freigaben für Vorschläge).
 
 ## Nächste Schritte
 
-1. 3–5 echte Beispielpaare (PDF + Excel vorher + Excel nachher) vom anderen Team, **nach Freigabe**, nur lokal, getrennt in Entwicklungs- und Testbeispiele.
-2. Messen: Bilanz + Vergleich mit der echten "nachher"-Excel; Schwellen kalibrieren.
-3. Farblegende (später), Layout-Beschreibung per YAML, optional lokales LLM nur als Prüfer.
+1. 3–5 echte Beispielpaare (PDF + Excel vorher + Excel nachher) vom anderen Team, **nach Freigabe**, nur lokal, getrennt in Entwicklungs- und Testbeispiele (`docs/anleitung_echte_paare.md`).
+2. Messen (`python -m src.cli messen`), Schwellen nur an den Entwicklungsbeispielen kalibrieren, einmal mit den Testbeispielen messen.
+3. Farblegende (später), Layout-Profile für Excel-Typen, die die Automatik nicht sicher erkennt, optional lokales LLM nur als Prüfer.
 
 ## Für Claude Code (online/Cloud)
 
