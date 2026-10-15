@@ -174,11 +174,20 @@ def _belegte_zellen(ws) -> list:
 _MODELLE: "weakref.WeakValueDictionary[tuple[str, str, str], ExcelModell]" = weakref.WeakValueDictionary()
 
 
+def _datei_hash(pfad: Path) -> str:
+    """SHA-1 stueckweise berechnen (grosse Dateien nie komplett in den Speicher laden)."""
+    h = hashlib.sha1()
+    with open(pfad, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 class ExcelModell:
     def __new__(cls, pfad: str | Path) -> "ExcelModell":
         try:
             p = Path(pfad)
-            schluessel = (str(p.resolve()), hashlib.sha1(p.read_bytes()).hexdigest(),
+            schluessel = (str(p.resolve()), _datei_hash(p),
                           repr(sorted(config.lade("zuordnung")["excel"].items())))
         except (OSError, TypeError, KeyError):
             schluessel = None
