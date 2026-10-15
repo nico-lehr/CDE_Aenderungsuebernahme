@@ -1,0 +1,718 @@
+"""Unit-Tests fuer src/pdf_reader.py (K-PDF): eine Gruppe je Reparatur, dazu Gegenproben ("darf NICHT melden").
+
+Nur erfundene Daten (Regel 16). Die PDFs entstehen im Test (tests/fixtures/pdf_writer.py bzw. die Roh-PDF-Helfer aus
+tests/redteam/_bau_pdf.py, hier nur benutzt, nicht veraendert).
+"""
+from __future__ import annotations
+
+import pytest
+
+from src import config
+from src.models import ADD, DEL, KEEP, MOD
+from src.pdf_reader import analysiere_pdf
+from tests.fixtures.pdf_writer import PdfDokument, muster_bild
+from tests.redteam._bau_pdf import RohSeite, alle_tokens, dok, lese, roh_pdf, token, zeile
+
+BILD = "q 595 0 0 842 0 0 cm /Im1 Do Q\n"
+TEXT = ("Dieser Satz steht auf der Seite und ist lang genug damit die Seite als Textseite gilt "
+        "und niemand sie fuer einen Scan haelt weil genug Woerter darauf stehen und weiter und weiter")
+
+
+def _arten(a) -> list[str]:
+    return [l["art"] for l in a.luecken]
+
+
+def _luecke(a, art: str) -> dict:
+    return next(l for l in a.luecken if l["art"] == art)
+
+
+def _text_seite(zeilen: list[str], farbe: str = "0 0 0 rg", top: float = 64.0) -> str:
+    return "".join(zeile(56, top + 15 * i, t, 11.0, farbe) for i, t in enumerate(zeilen))
+
+
+# =================================================================================================
+# Scan-Seiten (scan_seite)
+# =================================================================================================
+def test_seite_ohne_text_nur_bild_ist_scan_seite(tmp_path):
+    pdf = roh_pdf([RohSeite(inhalt=_text_seite([TEXT])), RohSeite(inhalt=BILD, bild=True)])
+    a = lese(tmp_path, pdf)
+    assert [(l["art"], l["seite"]) for l in a.luecken] == [("scan_seite", 2)]
+    assert any("Seite 2" in w and "keinen auslesbaren Text" in w for w in a.warnungen)    # alte Warnung bleibt
+
+
+def test_bildseite_mit_aufgedruckter_seitenzahl_ist_scan_seite(tmp_path):
+    fuss = zeile(250, 800, "Seite 2 von 2", 9.0, "0.4 0.4 0.4 rg")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=_text_seite([TEXT])), RohSeite(inhalt=BILD + fuss, bild=True)]))
+    assert [(l["art"], l["seite"]) for l in a.luecken] == [("scan_seite", 2)]
+    assert any("Seite 2" in w for w in a.warnungen)             # nicht mehr stillschweigend
+
+
+@pytest.mark.parametrize("farbe,modus", [("0 0 0 rg", 3), ("1 1 1 rg", None)], ids=["unsichtbar", "weiss"])
+def test_textebene_ueber_bild_ist_scan_seite(tmp_path, farbe, modus):
+    ocr = zeile(56, 64, "Erkannter Text einer gescannten Seite hier unten.", farbe=farbe, modus=modus)
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=_text_seite([TEXT])), RohSeite(inhalt=BILD + ocr, bild=True)]))
+    assert ("scan_seite", 2) in [(l["art"], l["seite"]) for l in a.luecken]
+    assert token(a, "Erkannter") is not None                    # der Text bleibt lesbar, die Luecke warnt
+
+
+def test_unsichtbarer_text_zaehlt_nicht_als_farbige_markierung(tmp_path):
+    ocr = zeile(56, 300, "Verborgener Text in Blau.", farbe="0 0 1 rg", modus=3)
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=_text_seite([TEXT]) + ocr)]))
+    assert token(a, "Verborgener").status == KEEP
+
+
+def test_textseite_mit_hintergrundbild_ist_keine_scan_seite(tmp_path):
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=BILD + _text_seite([TEXT, TEXT]), bild=True)]))
+    assert a.luecken == []
+
+
+def test_leere_seite_ohne_bild_ist_keine_luecke(tmp_path):
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=_text_seite([TEXT])), RohSeite(inhalt="")]))
+    assert a.luecken == []
+    assert any("Seite 2" in w for w in a.warnungen)
+
+
+# =================================================================================================
+# Bilder (bild)
+# =================================================================================================
+def test_grosses_bild_im_text_ist_luecke_bild(tmp_path):
+    d = dok()
+    d.block("Text vor dem Bild.")
+    d.bild(muster_bild(240, 140, seed=3), 200.0)
+    d.block("Text nach dem Bild.")
+    a = lese(tmp_path, d)
+    assert _arten(a) == ["bild"] and a.luecken[0]["seite"] == 1 and a.luecken[0]["woerter"] == 0
+
+
+def test_kleines_logo_und_bild_im_seitenkopf_sind_keine_luecke(tmp_path):
+    logo = "q 60 0 0 30 56 600 cm /Im1 Do Q\n"          # 1800 pt^2 von ~500000: unter 2 %
+    kopf = "q 200 0 0 20 56 800 cm /Im1 Do Q\n"          # Bild im oberen Seitenrand
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=logo + kopf + _text_seite([TEXT]), bild=True)]))
+    assert a.luecken == []
+
+
+# =================================================================================================
+# Tabellen und Spalten
+# =================================================================================================
+def test_tabelle_mit_rahmen_ist_luecke_und_zaehlt_geaenderte_woerter(tmp_path):
+    d = dok()
+    d.block("Vorspann ohne Aenderung.")
+    d.tabelle([["Name", "Wert"], ["Strom {+geaendert+}", "5 kW"], ["Spannung", "230 V"]], kopf_farbe=None, band_farbe=None)
+    a = lese(tmp_path, d)
+    assert _arten(a) == ["tabelle"]
+    assert _luecke(a, "tabelle")["woerter"] == 1
+
+
+def test_einzelne_linien_und_ein_kasten_sind_keine_tabelle(tmp_path):
+    inhalt = (_text_seite([TEXT, TEXT])
+              + "0.5 w 56 600 m 156 600 l S\n"                    # Fussnotenstrich
+              + "0.5 w 56 400 m 539 400 l S\n"                     # Trennlinie
+              + "56 200 200 100 re S\n")                           # ein Kasten = eine Zelle
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert a.luecken == []
+
+
+LINKS = ["Linkswort " + " ".join(["Netzanschluss", "Kuehlung", "Messwert", "Sicherung", "Lueftung", "Zuleitung",
+                                  "Steuerung", "Abnahme", "Wartung", "Anschluss", "Spannung", "Frequenz"]) + " Linksende"]
+RECHTS = ["Rechtswort " + " ".join(["Batterie", "Wechselrichter", "Transformator", "Schalter", "Verteiler",
+                                    "Kabeltrasse", "Brandmelder", "Sensor", "Pruefung", "Dokumentation"]) + " Rechtsende"]
+
+
+def test_zwei_spalten_sind_luecke_mehrspaltig(tmp_path):
+    d = dok()
+    d.zwei_spalten(LINKS, RECHTS)
+    a = lese(tmp_path, d)
+    assert _arten(a) == ["mehrspaltig"]
+
+
+def test_zwei_spalten_mit_ungleich_langen_absaetzen(tmp_path):
+    """Die Zeilen der Spalten stehen nicht auf gleicher Hoehe (eine Spalte hat zwei Absaetze mehr)."""
+    d = dok()
+    d.zwei_spalten(LINKS * 2 + ["Noch ein Absatz links mit {+neuem+} Wort."], RECHTS)
+    a = lese(tmp_path, d)
+    assert "mehrspaltig" in _arten(a)
+
+
+def test_gewoehnlicher_text_ueberschriften_und_listen_sind_keine_spalten(tmp_path):
+    d = dok()
+    d.ueberschrift("1 Allgemeines")
+    d.block(TEXT)
+    d.block(TEXT, marker="1.")
+    d.block(TEXT, marker="2.")
+    d.block(TEXT, marker="3.")
+    d.ueberschrift("2 Weiteres")
+    d.block(TEXT)
+    a = lese(tmp_path, d)
+    assert a.luecken == []
+
+
+# =================================================================================================
+# Farben, die keiner Legende zugeordnet sind (unbekannte_farbe)
+# =================================================================================================
+@pytest.mark.parametrize("hexfarbe", ["00FFFF", "7F00FF", "009900", "00003C", "808080", "F5B5B5"],
+                         ids=["cyan", "violett", "gruen", "dunkelblau", "grau", "pastellrot"])
+def test_unbekannte_textfarbe_ist_luecke_mit_woerterzahl(tmp_path, hexfarbe):
+    d = dok(farbe_neu=hexfarbe)
+    d.block("Das ist {+neuer Text hier+} im Satz.")
+    a = lese(tmp_path, d)
+    assert [t.status for t in alle_tokens(a)] == [KEEP] * 7
+    l = _luecke(a, "unbekannte_farbe")
+    assert l["woerter"] == 3 and l["seite"] == 1
+    assert "#" in l["beschreibung"] and "neuer" not in l["beschreibung"]       # Farbe ja, Dokumentinhalt nie
+
+
+def test_grundfarbe_des_dokuments_ist_keine_markierung(tmp_path):
+    inhalt = _text_seite([TEXT, TEXT], farbe="0 0.4 0 rg")             # der ganze Text ist dunkelgruen
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert a.luecken == []
+
+
+def test_graue_kopfzeile_und_schwarz_sind_keine_luecke(tmp_path):
+    d = PdfDokument()                                                   # graue Kopf-/Fusszeile (einseitig)
+    d.block("Ein Satz ohne Markierung.")
+    assert lese(tmp_path, d).luecken == []
+
+
+def test_gelbe_flaeche_hinter_text_ist_unbekannte_farbe(tmp_path):
+    inhalt = "1 1 0 rg 92 %.2f 76 13 re f\n0 g\n" % (842 - 77) + zeile(56, 64, "Das ist neuer Text hier im Satz.")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert _luecke(a, "unbekannte_farbe")["woerter"] == 3
+
+
+def test_luecke_nennt_die_seite(tmp_path):
+    d = dok(farbe_neu="009900")
+    d.block("Seite eins ohne Farbe.")
+    d.seitenumbruch()
+    d.block("Seite zwei mit {+gruenem Text+}.")
+    a = lese(tmp_path, d)
+    assert [(l["art"], l["seite"], l["woerter"]) for l in a.luecken] == [("unbekannte_farbe", 2, 2)]
+
+
+# =================================================================================================
+# Unlesbare Zeichen (nicht_lesbarer_text), Ligaturen
+# =================================================================================================
+_SCHRIFT = ("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Type /Encoding "
+            "/BaseEncoding /WinAnsiEncoding /Differences [128 /fi /gl1234 /uniF0B7] >> >>")
+
+
+def _zeichen(satz: str):
+    return roh_pdf([RohSeite(inhalt=zeile(56, 64, satz, kodierung="latin-1"), schrift=_SCHRIFT)])
+
+
+def test_cid_zeichen_sind_luecke_und_wort_hat_hinweis(tmp_path):
+    a = lese(tmp_path, _zeichen("Die Daten \x81 sind hier."))
+    l = _luecke(a, "nicht_lesbarer_text")
+    assert l["woerter"] == 1 and l["seite"] == 1
+    t = token(a, "(cid:129)")
+    assert "nicht_lesbar" in t.hinweis
+    assert any("nicht gelesen" in h for b in a.blocks for h in b.hinweise)
+
+
+def test_private_use_zeichen_mitten_im_text_ist_luecke(tmp_path):
+    a = lese(tmp_path, _zeichen("Die Daten \x82 sind hier."))
+    assert _luecke(a, "nicht_lesbarer_text")["woerter"] == 1
+
+
+def test_private_use_aufzaehlungspunkt_am_zeilenanfang_ist_keine_luecke(tmp_path):
+    a = lese(tmp_path, _zeichen("\x82 Erster Listenpunkt steht hier."))
+    assert a.luecken == []
+
+
+def test_ligatur_bekommt_hinweis_ohne_luecke_und_bleibt_unveraendert(tmp_path):
+    a = lese(tmp_path, _zeichen("Die Anlage ist \x80xiert und stabil."))
+    t = next(t for t in alle_tokens(a) if "xiert" in t.old)
+    assert t.old == "ﬁxiert" and "ligatur" in t.hinweis
+    assert a.luecken == []
+
+
+def test_normaler_text_hat_keine_hinweise(tmp_path):
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=_text_seite([TEXT]))]))
+    assert a.luecken == [] and all(not t.hinweis for t in alle_tokens(a)) and all(not b.hinweise for b in a.blocks)
+
+
+# =================================================================================================
+# Kopf-/Fusszeilen ohne Wiederholungsmuster
+# =================================================================================================
+def test_einseitige_kopf_und_fusszeile_werden_ignoriert_und_gezaehlt(tmp_path):
+    d = PdfDokument(kopf_text="Anlage 3 - Technische Spezifikation", kopf_farbe=(0.0, 0.0, 1.0),
+                    fuss_vorlage="Dokument CDE-0815 Blatt {nr}")
+    d.block("Normaler Text der Seite.")
+    a = lese(tmp_path, d)
+    assert [b.page for b in a.blocks] == [1] and a.blocks[0].neu_text == "Normaler Text der Seite."
+    assert sum(i["woerter"] for i in a.ignoriert) == 5 + 4      # blaue Kopfwoerter + blaue Fusswoerter, gezaehlt
+    assert not any(t.status == ADD for t in alle_tokens(a))
+
+
+def test_text_im_oberen_rand_ohne_abstand_ist_keine_kopfzeile(tmp_path):
+    inhalt = zeile(56, 30, "Erste Zeile ganz oben auf der Seite.") + zeile(56, 45, "Zweite Zeile folgt direkt darunter.")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert a.ignoriert == [] and a.blocks[0].alt_text.startswith("Erste Zeile")
+
+
+# =================================================================================================
+# Falsche "neu/entfaellt"-Treffer: Zierlinie, Tabellenkopf, Hyperlink, blaue Ueberschriften
+# =================================================================================================
+def test_hellgraue_zierlinie_durch_ueberschrift_ist_keine_durchstreichung(tmp_path):
+    d = dok()
+    d.ueberschrift("1.1 Geltungsbereich Anforderungen")
+    d.block("Normaler Text fuer die Anforderung hier.")
+    d._s.inhalt.append((d._linie_op(56, 300, 70 + 9, (0.7, 0.7, 0.7), 0.5) + "\n").encode("latin-1"))
+    a = lese(tmp_path, d)
+    kopf = next(b for b in a.blocks if b.kind == "ueberschrift")
+    assert all(t.status == KEEP for t in kopf.tokens)
+    assert all("linie_unklar" in t.hinweis for t in kopf.tokens) and kopf.hinweise
+
+
+def test_dunkle_linie_die_weit_ueber_den_text_hinausragt_ist_keine_durchstreichung(tmp_path):
+    inhalt = zeile(56, 64, "Kurz hier") + "0 0 0 RG 0.8 w 56 %.2f m 400 %.2f l S\n" % (842 - 69.5, 842 - 69.5)
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert [t.status for t in alle_tokens(a)] == [KEEP, KEEP]
+    assert all("linie_unklar" in t.hinweis for t in alle_tokens(a))
+
+
+def test_echte_durchstreichung_bleibt_entfaellt(tmp_path):
+    for variante in ("strich", "farbe"):
+        d = dok(variante=variante)
+        d.block("Das ist {-alter Text hier-} im Satz.")
+        a = lese(tmp_path / variante, d)
+        assert [token(a, w).status for w in ("alter", "Text", "hier", "Das")] == [DEL, DEL, DEL, KEEP], variante
+        assert all(not t.hinweis for t in alle_tokens(a)), variante
+
+
+def test_blauer_tabellenkopf_und_baenderung_sind_gestaltung(tmp_path):
+    d = dok()
+    d.tabelle([["Name", "Wert", "Einheit"], ["Strom", "5", "kW"], ["Spannung", "230", "V"], ["Frequenz", "50", "Hz"],
+               ["Druck", "2", "bar"]], kopf_farbe="4472C4", band_farbe="B4C6E7")
+    a = lese(tmp_path, d)
+    assert not [t for t in alle_tokens(a) if t.status != KEEP]
+    assert "tabelle" in _arten(a)
+    assert any("design_flaeche" in t.hinweis for t in alle_tokens(a))
+
+
+def test_blauer_kasten_ausserhalb_einer_tabelle_ist_gestaltung_mit_luecke(tmp_path):
+    inhalt = ("0.72 0.86 1 rg 50 640 495 70 re f\n0 g\n"
+              + zeile(56, 140, "Hinweis in einem blauen Kasten mit Text") + zeile(56, 155, "und einer zweiten Zeile darin")
+              + zeile(56, 170, "und einer dritten Zeile darin hier."))
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert not [t for t in alle_tokens(a) if t.status != KEEP]
+    l = _luecke(a, "sonstiges")
+    assert l["woerter"] == 18
+
+
+def test_markierung_direkt_am_wort_bleibt_neu(tmp_path):
+    d = dok(variante="hintergrund")
+    d.block("Die Kapazitaet betraegt {-100 kWh-} {+120 kWh+} je Rack.")
+    a = lese(tmp_path, d)
+    assert [token(a, w).status for w in ("100", "120")] == [DEL, ADD]
+    assert not [t for t in alle_tokens(a) if t.hinweis]
+
+
+def test_hyperlink_in_linkblau_ist_nicht_neu_aber_blaues_wort_ohne_link_schon(tmp_path):
+    d = dok()
+    d.block("Siehe {@l:www.beispiel.example@} und {+neues Wort+} dazu.")
+    a = lese(tmp_path, d)
+    link = token(a, "www.beispiel.example")
+    assert link.status == KEEP and "link" in link.hinweis
+    assert token(a, "neues").status == ADD and token(a, "Wort").status == ADD
+
+
+def _blaue_ueberschriften(n: int, blau: str = "0.12 0.3 0.62 rg", text_neu: bool = False) -> bytes:
+    inhalt, top = "", 64.0
+    for nr in range(1, n + 1):
+        inhalt += zeile(56, top, f"{nr} Titel{nr}", 14.0, blau, fett=True)
+        inhalt += zeile(56, top + 24, f"Text unter der Ueberschrift {nr} ohne jede Aenderung.",
+                        farbe="0 0 1 rg" if text_neu else "0 0 0 rg")
+        top += 60
+    return roh_pdf([RohSeite(inhalt=inhalt)])
+
+
+def test_durchgehend_blaue_ueberschriften_sind_gestaltung(tmp_path):
+    a = lese(tmp_path, _blaue_ueberschriften(4))
+    assert not [t for t in alle_tokens(a) if t.status != KEEP]
+    kopf = [b for b in a.blocks if b.kind == "ueberschrift"]
+    assert len(kopf) == 4 and all(b.section_alt == b.section_neu and b.section_alt for b in kopf)
+    assert all("design_blau" in t.hinweis for b in kopf for t in b.tokens)
+    assert [(l["art"], l["woerter"]) for l in a.luecken] == [("sonstiges", 8)]
+
+
+@pytest.mark.parametrize("fall", ["zu_wenige", "text_auch_blau"])
+def test_blaue_ueberschriften_bleiben_neu_wenn_es_keine_gestaltung_sein_kann(tmp_path, fall):
+    pdf = _blaue_ueberschriften(2) if fall == "zu_wenige" else _blaue_ueberschriften(4, text_neu=True)
+    a = lese(tmp_path, pdf)
+    kopf = [b for b in a.blocks if b.kind == "ueberschrift"]
+    assert kopf and all(t.status == ADD for b in kopf for t in b.tokens)
+    assert a.luecken == []
+
+
+# =================================================================================================
+# Verschmolzene Ersetzungen: kein Wortteil geht verloren
+# =================================================================================================
+def _einzel(tmp_path, markup: str, **kw):
+    d = dok(**kw)
+    d.block(markup)
+    return lese(tmp_path, d)
+
+
+def test_ersetzung_ohne_leerzeichen_behaelt_alten_und_neuen_text(tmp_path):
+    a = _einzel(tmp_path, "Die {-Netzleistung-}{+Leistung+} betraegt 5 kW.")
+    t = next(t for t in alle_tokens(a) if "eistung" in t.old + t.new)
+    assert (t.old, t.new, t.status) == ("Netzleistung", "Leistung", MOD)
+    b = a.blocks[0]
+    assert b.alt_text == "Die Netzleistung betraegt 5 kW." and b.neu_text == "Die Leistung betraegt 5 kW."
+
+
+@pytest.mark.parametrize("variante", ["farbe", "strich", "hintergrund", "annot"])
+def test_ersetzung_ohne_leerzeichen_in_allen_stilen(tmp_path, variante):
+    a = _einzel(tmp_path, "Die {-Netzleistung-}{+Leistung+} betraegt 5 kW.", variante=variante)
+    b = a.blocks[0]
+    assert b.alt_text == "Die Netzleistung betraegt 5 kW." and b.neu_text == "Die Leistung betraegt 5 kW."
+
+
+def test_unveraenderter_wortanfang_bleibt_im_alten_stand(tmp_path):
+    a = _einzel(tmp_path, "Die Anlage ist ab{+gesichert+} und sicher.")
+    t = token(a, "abgesichert")
+    assert (t.old, t.new, t.status) == ("ab", "abgesichert", MOD)
+    assert a.blocks[0].alt_text == "Die Anlage ist ab und sicher."
+
+
+def test_teilmarkierung_am_wortende_bleibt_ein_aendern(tmp_path):
+    a = _einzel(tmp_path, "Die Rack{+s+} werden geprueft und {-Modul-}{+Module+} ebenso.")
+    t = token(a, "Racks")
+    assert (t.old, t.new, t.status) == ("Rack", "Racks", MOD)
+    t2 = token(a, "Module")
+    assert (t2.old, t2.new) == ("Modul", "Module")
+
+
+def test_gleich_lange_ersetzung_bleibt_ein_aendern(tmp_path):
+    a = _einzel(tmp_path, "Es sind {-100-}{+120+} kWh.")
+    t = token(a, "120")
+    assert (t.old, t.new, t.status) == ("100", "120", MOD)
+
+
+def test_satzzeichen_am_markierten_wort_bleibt_ein_wort(tmp_path):
+    a = _einzel(tmp_path, "Es sind {+120 kWh+}. Danach folgt Text.")
+    t = token(a, "kWh.")
+    assert t.status == ADD and t.new == "kWh." and t.old == ""
+
+
+def test_linie_die_knapp_den_letzten_buchstaben_verfehlt_streicht_das_ganze_wort(tmp_path):
+    from tests.fixtures.pdf_writer import breite
+    y = 842 - (64 + 11 * 0.55)
+
+    def pdf(abdeckung_bis: str) -> bytes:
+        inhalt = zeile(56, 64, "Wartung") + "0 G 0.8 w 56 %.2f m %.2f %.2f l S\n" % (y, 56 + breite(abdeckung_bis, 11), y)
+        return roh_pdf([RohSeite(inhalt=inhalt)])
+    a = lese(tmp_path / "eins", pdf("Wartun"))                  # ein Buchstabe fehlt: Linie knapp daneben
+    assert (token(a, "Wartung").old, token(a, "Wartung").status) == ("Wartung", DEL)
+    a = lese(tmp_path / "zwei", pdf("Wart"))                    # drei Buchstaben fehlen: bleibt Teilmarkierung
+    t = alle_tokens(a)[0]
+    assert t.status == MOD and t.old == "Wartung" and t.new == "ung" and "teilweise_markiert" in t.hinweis
+
+
+# =================================================================================================
+# Gedrehte Seiten, Kommentare, Mischformen
+# =================================================================================================
+def _gedreht_pdf(art: str, farbe: str) -> bytes:
+    from tests.redteam._bau_pdf import annot_gedreht90, zeile_gedreht90
+    inhalt = (zeile_gedreht90(56, 64, "Erste Zeile bleibt gleich hier.") + zeile_gedreht90(56, 79, "Zweite Zeile ist ")
+              + zeile_gedreht90(146, 79, "neuer Text") + zeile_gedreht90(56, 94, "Dritte Zeile mit "))
+    return roh_pdf([RohSeite(inhalt=inhalt, attribute="/Rotate 90",
+                             annots=[annot_gedreht90(art, 146, 79, 220, 90, farbe)])])
+
+
+@pytest.mark.parametrize("art,farbe,erwartet", [("Highlight", "0 0 1", ADD), ("StrikeOut", "1 0 0", DEL)])
+def test_kommentar_auf_um_90_grad_gedrehter_seite_trifft_die_woerter(tmp_path, art, farbe, erwartet):
+    a = lese(tmp_path, _gedreht_pdf(art, farbe))
+    assert [token(a, w).status for w in ("neuer", "Text", "ist", "Dritte")] == [erwartet, erwartet, KEEP, KEEP]
+
+
+@pytest.mark.parametrize("rot", [0, 90, 180, 270])
+def test_kommentar_bereich_stimmt_mit_dem_rechteck_von_pdfplumber_ueberein(tmp_path, rot):
+    import pdfplumber
+    from src.pdf_reader import _Markierer, _Rahmen
+    an = "/Subtype /Highlight /Rect [100 200 180 215] /QuadPoints [100 215 180 215 100 200 180 200] /C [0 0 1] /F 4"
+    pfad = tmp_path / "r.pdf"
+    pfad.write_bytes(roh_pdf([RohSeite(inhalt=zeile(56, 64, "Text"), annots=[an], attribute=f"/Rotate {rot}")]))
+    with pdfplumber.open(str(pfad)) as pdf:
+        page = pdf.pages[0]
+        m = _Markierer(page, config.lade("farben"), _Rahmen("h", float(page.width), float(page.height)))
+        a = page.annots[0]
+        erwartet = (a["x0"], a["top"], a["x1"], a["bottom"])
+        assert m.annot[0][:4] == pytest.approx(erwartet, abs=0.01)
+
+
+@pytest.mark.parametrize("grad", [90, 180, 270])
+def test_seite_mit_quer_oder_kopfueber_stehendem_text_wird_gelesen(tmp_path, grad):
+    d = dok()
+    d.block("Das ist ein Satz mit mehreren Woertern und {+neuen+} Worten drin.")
+    d.seite_rotieren(grad)
+    a = lese(tmp_path, d)
+    assert a.blocks[0].neu_text == "Das ist ein Satz mit mehreren Woertern und neuen Worten drin."
+    assert token(a, "neuen").status == ADD and a.luecken == [] and a.seiten_masse[1] == (595.0, 842.0)
+
+
+def test_randvermerk_in_anderer_schreibrichtung_wird_gemeldet_nicht_gelesen(tmp_path):
+    from tests.redteam._bau_pdf import zeile_gedreht90
+    rand = zeile_gedreht90(20, 300, "Vermerk am Rand", 9.0)
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=_text_seite([TEXT]) + rand)]))
+    assert token(a, "Vermerk") is None and a.luecken == []
+    assert any("3 Wörter" in w and "Schreibrichtung" in w for w in a.warnungen)
+    rand_blau = zeile_gedreht90(20, 300, "Vermerk am Rand", 9.0, "0 0 1 rg")
+    a = lese(tmp_path / "b", roh_pdf([RohSeite(inhalt=_text_seite([TEXT]) + rand_blau)]))
+    assert [(l["art"], l["woerter"]) for l in a.luecken] == [("sonstiges", 3)]
+
+
+def test_blau_und_durchgestrichen_ist_entfaellt_mit_hinweis(tmp_path):
+    a = _einzel(tmp_path, "Das ist {@bs:blau durchgestrichen@} im Satz.")
+    ts = [token(a, "blau"), token(a, "durchgestrichen")]
+    assert [t.status for t in ts] == [DEL, DEL] and all(t.hinweis == "gemischt_blau_strich" for t in ts)
+    assert any("blau UND durchgestrichen" in h for h in a.blocks[0].hinweise)
+    assert not token(a, "Satz.").hinweis
+
+
+def test_unterstrichenes_schwarzes_wort_bekommt_hinweis_farbige_nicht(tmp_path):
+    from tests.fixtures.pdf_writer import breite
+    y = 842 - 74.2
+    inhalt = (zeile(56, 64, "Das ist ein wichtiger Satz hier.") + "0 0 0 RG 0.8 w %.2f %.2f m %.2f %.2f l S\n"
+              % (56 + breite("Das ist ein ", 11), y, 56 + breite("Das ist ein wichtiger Satz", 11), y))
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert [bool(token(a, w).hinweis) for w in ("ein", "wichtiger", "Satz", "hier.")] == [False, True, True, False]
+    assert token(a, "wichtiger").hinweis == "unterstrichen" and a.luecken == []
+
+
+def test_tabellenlinien_unter_dem_text_sind_keine_unterstreichung(tmp_path):
+    d = dok()
+    d.tabelle([["Name", "Wert"], ["Strom", "5 kW"], ["Spannung", "230 V"]], kopf_farbe=None, band_farbe=None)
+    a = lese(tmp_path, d)
+    assert not any("unterstrichen" in t.hinweis for t in alle_tokens(a))
+
+
+@pytest.mark.parametrize("art", ["Underline", "Squiggly", "Caret", "Ink", "FreeText"])
+def test_kommentare_anderer_art_auf_text_bekommen_hinweis(tmp_path, art):
+    from tests.redteam._bau_pdf import annot
+    an = annot(art, 56, 64, 90, 77, "1 0 0")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=zeile(56, 64, "Wichtig hier steht Text im Satz."), annots=[an])]))
+    t = token(a, "Wichtig")
+    assert t.status == KEEP and t.hinweis == "kommentar_" + art.lower()
+    assert a.blocks[0].hinweise and "Kommentar" in a.blocks[0].hinweise[0]
+
+
+def test_kommentar_ohne_text_darunter_wird_gewarnt_aber_link_und_notiz_nicht(tmp_path):
+    from tests.redteam._bau_pdf import annot
+    ink = annot("Ink", 300, 400, 400, 450, "1 0 0")
+    link = "/Subtype /Link /Rect [56 700 120 712] /Border [0 0 0] /A << /S /URI /URI (https://beispiel.example) >>"
+    notiz = "/Subtype /Text /Rect [10 10 30 30] /Contents (Notiz)"
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=zeile(56, 64, "Ein Satz im Text."), annots=[ink, link, notiz])]))
+    kommentar = [w for w in a.warnungen if "Kommentar" in w]
+    assert len(kommentar) == 1 and "Ink" in kommentar[0] and "Seite 1" in kommentar[0]
+    assert all(not t.hinweis for t in alle_tokens(a))
+
+
+# =================================================================================================
+# Farbraeume: CMYK, Sonderfarben (Separation)
+# =================================================================================================
+def _sonderfarbe(funktion: str, tinte: str, zusatz: str = "") -> bytes:
+    raeume = ("/ColorSpace << /Cs1 [/Separation /FirmenFarbe /DeviceCMYK " + funktion + "] " + zusatz + " >>")
+    inhalt = (zeile(56, 64, "Das ist ") + f"/Cs1 cs {tinte} scn\n" + zeile(92, 64, "neuer Text hier", farbe="")
+              + "0 g\n" + zeile(168, 64, " im Satz."))
+    return roh_pdf([RohSeite(inhalt=inhalt, ressourcen=raeume)])
+
+
+TYP2 = "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 0.8 0 0] /N 1 >>"
+
+
+def test_sonderfarbe_tinte_1_ist_die_volle_farbe_nicht_weiss(tmp_path):
+    a = lese(tmp_path, _sonderfarbe(TYP2, "1"))
+    assert [token(a, w).status for w in ("neuer", "Text", "hier", "Das")] == [ADD, ADD, ADD, KEEP]
+
+
+def test_sonderfarbe_tinte_0_ist_kein_farbauftrag(tmp_path):
+    a = lese(tmp_path, _sonderfarbe(TYP2, "0"))
+    assert not [t for t in alle_tokens(a) if t.status != KEEP] and a.luecken == []
+
+
+def test_sonderfarbe_rot_wird_zu_entfaellt(tmp_path):
+    rot = "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 1 1 0] /N 1 >>"
+    a = lese(tmp_path, _sonderfarbe(rot, "1"))
+    assert [token(a, w).status for w in ("neuer", "Text", "hier")] == [DEL, DEL, DEL]
+
+
+def test_sonderfarbe_mit_nicht_berechenbarer_funktion_ist_luecke(tmp_path):
+    zusammengesetzt = "<< /FunctionType 3 /Domain [0 1] /Functions [" + TYP2 + "] /Bounds [] /Encode [0 1] >>"
+    a = lese(tmp_path, _sonderfarbe(zusammengesetzt, "1"))
+    assert [token(a, w).status for w in ("neuer", "Text", "hier")] == [KEEP] * 3
+    assert _luecke(a, "unbekannte_farbe")["woerter"] == 3
+
+
+def test_sonderfarbe_bei_mehreren_unterschiedlichen_raeumen_ist_unklar(tmp_path):
+    orange = "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0.5 1 0] /N 1 >>"
+    a = lese(tmp_path, _sonderfarbe(TYP2, "1", "/Cs2 [/Separation /Andere /DeviceCMYK " + orange + "]"))
+    assert _luecke(a, "unbekannte_farbe")["woerter"] == 3
+
+
+@pytest.mark.parametrize("cmyk,erwartet", [("1 1 0 0", ADD), ("1 0.8 0 0", ADD), ("0 1 1 0", DEL), ("0 0 0 1", KEEP),
+                                           ("0 0 0 0.85", KEEP)])
+def test_cmyk_farben_werden_richtig_umgerechnet(tmp_path, cmyk, erwartet):
+    inhalt = zeile(56, 64, "Das ist ") + zeile(92, 64, "neuer Text hier", farbe=f"{cmyk} k") + zeile(168, 64, " im Satz.")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert [token(a, w).status for w in ("neuer", "Text", "hier")] == [erwartet] * 3
+    assert a.luecken == []
+
+
+def test_reines_cyan_in_cmyk_ist_unbekannte_farbe(tmp_path):
+    inhalt = zeile(56, 64, "Das ist ") + zeile(92, 64, "neuer Text hier", farbe="1 0 0 0 k") + zeile(168, 64, " im Satz.")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert _luecke(a, "unbekannte_farbe")["woerter"] == 3
+
+
+# =================================================================================================
+# Blockschnitt: Fussnoten, Listen, Ueberschriften, Seitenumbruch
+# =================================================================================================
+def _blocks(a, art: str = "absatz"):
+    return [b for b in a.blocks if b.kind == art]
+
+
+def test_fussnoten_druecken_den_zeilenabstand_nicht(tmp_path):
+    from tests.redteam._bau_pdf import eindeutiger_text
+    d = dok()
+    d.block(eindeutiger_text(62, 38, "Erstwort", "Endwort", "{+neuwort+}"))
+    d.block(eindeutiger_text(63, 30, "Zweitwort", "Schlusswort"))
+    for i in range(3):
+        assert d.fussnote("Dies ist eine erfundene Fussnote mit etwas Text zur Erlaeuterung.", marke=str(i + 1))
+    a = lese(tmp_path, d)
+    absaetze = [b for b in _blocks(a) if "Erstwort" in b.alt_text + b.neu_text or "Zweitwort" in b.alt_text]
+    assert len(absaetze) == 2 and "Endwort" in absaetze[0].neu_text and "Schlusswort" in absaetze[1].alt_text
+
+
+_ZIELE = ("Kapazitaetserweiterung Sicherheitsarchitektur Netzanbindung Verfuegbarkeitsgarantie Kapazitaetsplanung "
+          "Leistungsfaehigkeit Netzanschlussbedingungen Verantwortlichkeiten Wartungsintervalle")
+
+
+@pytest.mark.parametrize("trennung", ["ascii", "weich"])
+@pytest.mark.parametrize("markup", ["{+%s+}", "{-%s-}", "%s"], ids=["neu", "weg", "schwarz"])
+def test_getrenntes_wort_wird_in_jeder_farbe_zusammengefuegt(tmp_path, trennung, markup):
+    d = dok(trennung=trennung)
+    d.block("Wir pruefen heute ausfuehrlich die Anforderung ob die " + markup % _ZIELE + " gilt und sonst nichts weiter.")
+    assert d.getrennt, "im Test-PDF wurde nichts getrennt"
+    a = lese(tmp_path, d)
+    woerter = [w for t in alle_tokens(a) for w in (t.old, t.new) if w]
+    for wort, _, _ in d.getrennt:
+        assert wort in woerter, (wort, trennung, markup)
+    assert not [w for w in woerter if w.endswith("-") and len(w) > 6]
+
+
+def test_zusammengefuegtes_wort_behaelt_den_status(tmp_path):
+    d = dok(trennung="ascii")
+    d.block("Wir pruefen heute ausfuehrlich die Anforderung ob die {+Kapazitaetserweiterung Sicherheitsarchitektur "
+            "Netzanbindung Verfuegbarkeitsgarantie+} gilt und sonst nichts weiter.")
+    a = lese(tmp_path, d)
+    for wort, _, _ in d.getrennt:
+        t = token(a, wort)
+        assert t.status == ADD and t.old == "" and t.new == wort
+
+
+def test_trennung_vor_und_oder_und_gemischter_status_wird_nicht_zusammengefuegt(tmp_path):
+    from tests.redteam._bau_pdf import zeile
+    zeilen = (zeile(56, 64, "Der Netzanschluss erfolgt ueber Strom-") + zeile(56, 79, "und Datenleitungen und weiter geht es.")
+              + zeile(56, 94, "Wir lesen das Wort Sicher-", farbe="0 0 1 rg") + zeile(56, 109, "heitsarchitektur im Satz."))
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=zeilen)]))
+    assert token(a, "Strom-") is not None and token(a, "und") is not None
+    assert token(a, "Sicher-") is not None and token(a, "heitsarchitektur") is not None
+
+
+def test_wort_ueber_den_seitenumbruch_wird_zusammengefuegt(tmp_path):
+    d = dok(trennung="ascii")
+    d.block("Wort Wort Wort Wort zuerst die {+Verfuegbarkeitsgarantie Kapazitaetserweiterung Sicherheitsarchitektur+} "
+            "und danach noch viel mehr Text der auf der naechsten Seite weitergeht.", umbruch_nach_zeile=1)
+    assert d.stats["trennung_seitenende"] == 1 and d.seitenzahl == 2
+    a = lese(tmp_path, d)
+    t = token(a, "Sicherheitsarchitektur")
+    assert t.status == ADD and t.page == 1
+    assert not [x for x in alle_tokens(a) if x.new in ("tektur", "Sicherheitsarchi-")]
+
+
+def test_absatz_ueber_den_seitenumbruch_bekommt_fortsetzungs_hinweis(tmp_path):
+    d = dok()
+    d.block("Dies ist ein Absatz der ueber einen Seitenumbruch geht und mehrere Zeilen hat damit das Ganze testbar ist "
+            "und noch weiter geht fuer eine dritte Zeile {+neu am Ende+}", umbruch_nach_zeile=1)
+    a = lese(tmp_path, d)
+    assert len(a.blocks) == 2
+    assert any("nächsten Seite" in h for h in a.blocks[0].hinweise)
+    assert any("Fortsetzung" in h for h in a.blocks[1].hinweise)
+    assert [t.old or t.new for b in a.blocks for t in b.tokens][-3:] == ["neu", "am", "Ende"]
+
+
+def test_neuer_absatz_nach_satzende_auf_der_naechsten_seite_hat_keinen_hinweis(tmp_path):
+    d = dok()
+    d.block("Der erste Absatz endet hier mit einem Punkt.")
+    d.seitenumbruch()
+    d.block("Der zweite Absatz beginnt auf der naechsten Seite.")
+    a = lese(tmp_path, d)
+    assert len(a.blocks) == 2 and all(not b.hinweise for b in a.blocks)
+
+
+def test_enge_liste_mit_nummer_punkt_wird_getrennt(tmp_path):
+    d = dok()
+    d.block("Einleitung vor der Liste ohne Neuerung.")
+    for i, wort in enumerate(("Alpha", "Beta", "Gamma"), 1):
+        d.block(f"Das {wort} Listenelement ist hier eingetragen und lang genug.", marker=f"{i}.", abstand_danach=0)
+    a = lese(tmp_path, d)
+    assert len(a.blocks) == 4 and all(len([t for t in b.tokens if t.old in ("Alpha", "Beta", "Gamma")]) <= 1 for b in a.blocks)
+
+
+def test_zahl_mit_punkt_am_zeilenanfang_im_fliesstext_teilt_nicht(tmp_path):
+    inhalt = zeile(56, 64, "Die Frist endet am letzten Tag des Monats, also am") + zeile(56, 79, "2. Mai des Jahres und danach geht es weiter.")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert len(a.blocks) == 1
+
+
+@pytest.mark.parametrize("marker", [["A)", "B)", "C)"], ["i.", "ii.", "iii."], ["•", "•", "•"], ["(1)", "(2)", "(3)"]])
+def test_enge_liste_mit_anderen_zeichen_wird_getrennt(tmp_path, marker):
+    inhalt = zeile(56, 64, "Einleitung vor der Liste ohne Neuerung.")
+    for i, (m, wort) in enumerate(zip(marker, ("Alpha", "Beta", "Gamma"))):
+        top = 79 + 15 * i
+        inhalt += zeile(56, top, m, kodierung="cp1252") + zeile(72, top, f"Das {wort} Listenelement ist hier und lang genug.")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert len(a.blocks) == 4
+
+
+def test_gedankenstrich_im_satz_teilt_nicht_aber_strichliste_schon(tmp_path):
+    d = dok()
+    d.block("Wort Wort Wort Wort Wort Wort Der Betrieb laeuft – stabil und wird dokumentiert und die Anlage wird "
+            "regelmaessig gewartet damit alles in Ordnung bleibt und {+nichts ausfaellt+}.", spalte_bis=300)
+    a = lese(tmp_path / "satz", d)
+    assert len(a.blocks) == 1
+    inhalt = zeile(56, 64, "Folgende Punkte gelten:") + "".join(
+        zeile(56, 79 + 15 * i, "–", ) + zeile(72, 79 + 15 * i, f"Punkt Nummer {i} steht hier") for i in range(3))
+    a = lese(tmp_path / "liste", roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert len(a.blocks) == 4
+
+
+def test_zweizeilige_ueberschrift_bleibt_ein_block(tmp_path):
+    d = dok()
+    d.ueberschrift("2.4 Anforderungen an die Verfuegbarkeit und die Kapazitaet der gesamten Netzanbindung im Normalbetrieb")
+    d.block("Folgetext der Section hier im Satz und {+neu+}.")
+    a = lese(tmp_path, d)
+    koepfe = _blocks(a, "ueberschrift")
+    assert len(koepfe) == 1 and koepfe[0].tokens[-1].old == "Normalbetrieb"
+    folge = _blocks(a)[0]
+    assert folge.section_alt == "2.4" and folge.section_neu == "2.4"
+
+
+def test_aufeinanderfolgende_nummerierte_ueberschriften_bleiben_getrennt(tmp_path):
+    d = dok()
+    d.ueberschrift("1 Erste")
+    d.ueberschrift("1.1 Zweite")
+    d.block("Text.")
+    assert len(_blocks(lese(tmp_path, d), "ueberschrift")) == 2
+
+
+def test_umnummerierte_ueberschrift_liest_alte_und_neue_nummer(tmp_path):
+    d = dok()
+    d.ueberschrift("{-2.3-} {+2.2+} Geltungsbereich der Anforderungen")
+    d.block("Folgetext der Section hier im Satz.")
+    a = lese(tmp_path, d)
+    kopf = _blocks(a, "ueberschrift")[0]
+    assert (kopf.section_alt, kopf.section_neu) == ("2.3", "2.2")
+    folge = _blocks(a)[0]
+    assert (folge.section_alt, folge.section_neu) == ("2.3", "2.2")

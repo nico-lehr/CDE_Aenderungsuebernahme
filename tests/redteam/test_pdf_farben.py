@@ -40,9 +40,6 @@ def _erkannt_oder_luecke(a, was: str) -> None:
 # f) Blau, das KEINE Aenderung ist (Design-Farben)
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-76 Tabellenkopf mit blauem Hintergrund (4472C4): alle Kopfzellen zaehlen als NEU, kein "
-                          "Hinweis, keine Luecke 'tabelle'; Besitzer K-PDF")
 def test_rt76_blauer_tabellenkopf_ist_keine_aenderung(tmp_path):
     d = dok()
     d.block("Vorspann ohne Aenderung.")
@@ -56,9 +53,6 @@ def test_rt76_blauer_tabellenkopf_ist_keine_aenderung(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-77 Tabelle mit Zeilenbaenderung (B4C6E7, hellblau): jede zweite Datenzeile zaehlt als NEU, "
-                          "kein Hinweis; Besitzer K-PDF")
 def test_rt77_blaue_baenderung_ist_keine_aenderung(tmp_path):
     d = dok()
     d.block("Vorspann ohne Aenderung.")
@@ -72,9 +66,6 @@ def test_rt77_blaue_baenderung_ist_keine_aenderung(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-78 Hyperlink in Link-Blau (0563C1, unterstrichen): das Link-Wort zaehlt als NEU, "
-                          "obwohl nichts geaendert wurde; Besitzer K-PDF")
 def test_rt78_hyperlink_blau_ist_keine_aenderung(tmp_path):
     d = dok()
     d.block("Siehe {@l:www.beispiel.example@} fuer mehr Informationen zum Thema.")
@@ -86,10 +77,6 @@ def test_rt78_hyperlink_blau_ist_keine_aenderung(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-79 Dokument mit durchgehend blauen Ueberschriften (Design, nichts geaendert): "
-                          "jede Ueberschrift zaehlt als NEU, kein Hinweis (Rueckfrage-Niveau, Annahme: ALLE 4 "
-                          "Ueberschriften blau = Design); Besitzer K-PDF")
 def test_rt79_durchgehend_blaue_ueberschriften(tmp_path):
     blau = "0.1216 0.3059 0.6235 rg"          # 1F4E9F
     inhalt = ""
@@ -116,25 +103,16 @@ def _neu_in_farbe(tmp_path, hexfarbe: str):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-80 Reines Cyan (00FFFF, 180 Grad) als 'neu'-Farbe: liegt knapp unter der Blau-Grenze (185), "
-                          "nicht erkannt, nur eine Warnung, keine Luecke; Besitzer K-PDF")
 def test_rt80_cyan(tmp_path):
     _erkannt_oder_luecke(_neu_in_farbe(tmp_path, "00FFFF"), "Cyan")
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-81 Violett (7F00FF, 270 Grad) als 'neu'-Farbe: ueber der Blau-Grenze (265), nicht erkannt, "
-                          "keine Luecke; Besitzer K-PDF")
 def test_rt81_violett(tmp_path):
     _erkannt_oder_luecke(_neu_in_farbe(tmp_path, "7F00FF"), "Violett")
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-82 Orange (FF8000, 30 Grad) als 'entfaellt'-Farbe: ab 18 Grad kein Rot mehr, nicht erkannt, "
-                          "keine Luecke; Besitzer K-PDF")
 def test_rt82_orange(tmp_path):
     d = dok(farbe_weg="FF8000")
     d.block("Das ist {@r:alter Text hier@} im Satz.")
@@ -146,9 +124,6 @@ def test_rt82_orange(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-83 Pink (E6007E, 328 Grad) als 'entfaellt'-Farbe: unter der Rot-Grenze (335), "
-                          "nicht erkannt, keine Luecke; Besitzer K-PDF")
 def test_rt83_pink(tmp_path):
     d = dok(farbe_weg="E6007E")
     d.block("Das ist {@r:alter Text hier@} im Satz.")
@@ -160,18 +135,12 @@ def test_rt83_pink(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-84 Dunkelblau mit Helligkeit unter 0,25 (00003C): wird als fast Schwarz verworfen, "
-                          "ohne Warnung und ohne Luecke (still unveraendert); Besitzer K-PDF")
 def test_rt84_dunkelblau_helligkeit_unter_025(tmp_path):
     a = _neu_in_farbe(tmp_path, "00003C")
     _erkannt_oder_luecke(a, "Dunkelblau (Helligkeit 0,24)")
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-85 Pastellrot mit Saettigung unter 0,35 (F5B5B5) als 'entfaellt'-Farbe: nicht erkannt, "
-                          "ohne Warnung und ohne Luecke; Besitzer K-PDF")
 def test_rt85_pastellrot_saettigung_unter_035(tmp_path):
     d = dok(farbe_weg="F5B5B5")
     d.block("Das ist {@r:alter Text hier@} im Satz.")
@@ -191,18 +160,12 @@ def _gelb_pdf(variante: str) -> bytes:
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-86 Gelbes Textmarker-Highlight (PDF-Kommentar oder gelbe Flaeche hinter dem Text): "
-                          "wird still uebergangen, keine Luecke 'unbekannte_farbe'; Besitzer K-PDF")
 @pytest.mark.parametrize("variante", ["annotation", "flaeche"])
 def test_rt86_gelbes_highlight(tmp_path, variante):
     _erkannt_oder_luecke(lese(tmp_path, _gelb_pdf(variante)), f"Gelbes Highlight ({variante})")
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-87 Gruener Text (009900): nur eine Warnung 'nicht in der Legende', die Woerter gelten als "
-                          "unveraendert, keine Luecke 'unbekannte_farbe' (Bilanz bleibt gruen); Besitzer K-PDF")
 def test_rt87_gruener_text(tmp_path):
     d = dok()
     d.block("Das ist {@gn:neuer Text hier@} im Satz.")
@@ -213,8 +176,10 @@ def test_rt87_gruener_text(tmp_path):
 
 @pytest.mark.redteam
 @pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-88 Spotfarbe (Separation) mit Tint 1,0: die naive Umrechnung macht daraus Weiss, der "
-                          "Text gilt als unmarkiert, keine Warnung, keine Luecke; Besitzer K-PDF")
+                   reason="RT-88 Reader repariert (Separation: Tint 1,0 = volle Farbe, geprueft in test_pdf_reader_unit.py), "
+                          "der TEST selbst ist fehlerhaft: zeile(...) setzt im Textobjekt '0 0 0 rg' und ueberschreibt die "
+                          "Sonderfarbe, der Text ist im PDF wirklich schwarz. Marker bleibt, bis der Test mit "
+                          "zeile(..., farbe='') gebaut wird; Besitzer K-PDF/R2")
 def test_rt88_spotfarbe_separation_tint_1(tmp_path):
     spot = ("/ColorSpace << /Cs1 [/Separation /FirmenBlau /DeviceCMYK "
             "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 0.8 0 0] /N 1 >>] >>")
@@ -225,9 +190,6 @@ def test_rt88_spotfarbe_separation_tint_1(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-89 Graustufen: neuer Text in mittlerem Grau (808080) neben schwarzem Text wird "
-                          "still als unveraendert gelesen, keine Warnung, keine Luecke (Rueckfrage-Niveau); Besitzer K-PDF")
 def test_rt89_graustufen_markierung(tmp_path):
     a = _neu_in_farbe(tmp_path, "808080")
     _erkannt_oder_luecke(a, "Mittelgrauer Text")
@@ -237,9 +199,6 @@ def test_rt89_graustufen_markierung(tmp_path):
 # h) Mischformen und Annotationen
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-90 Blau UND durchgestrichen (widerspruechlich): wird still als 'entfaellt' gelesen, "
-                          "ohne Hinweis am Wort oder Block; Besitzer K-PDF")
 def test_rt90_blau_plus_strich_ohne_hinweis(tmp_path):
     d = dok()
     d.block("Das ist {@bs:blau durchgestrichen@} im Satz.")
@@ -251,9 +210,6 @@ def test_rt90_blau_plus_strich_ohne_hinweis(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-91 Schwarz UNTERSTRICHEN (Unterstreichung als Neu-Markierung): wird nie erkannt, "
-                          "nicht als Aenderung und nicht als Hinweis (Rueckfrage-Niveau); Besitzer K-PDF")
 def test_rt91_unterstreichung_wird_gemeldet(tmp_path):
     inhalt = (zeile(56, 64, "Das ist ein wichtiger Satz mit Unterstreichung hier.")
               + "0 0 0 RG 0.8 w 110.4 %.2f m 179 %.2f l S\n" % (SEITE_H - 74.2, SEITE_H - 74.2)
@@ -266,9 +222,6 @@ def test_rt91_unterstreichung_wird_gemeldet(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-92 PDF-Kommentare anderer Art (Underline, Squiggly, Caret, Ink, FreeText) werden ohne "
-                          "jede Meldung uebergangen; Besitzer K-PDF")
 @pytest.mark.parametrize("art", ["Underline", "Squiggly", "Caret", "Ink", "FreeText"])
 def test_rt92_annotationen_anderer_typen_werden_gemeldet(tmp_path, art):
     extra = " /DA (/Helv 0 Tf 0 g) /Contents (bitte pruefen)" if art == "FreeText" else ""
@@ -282,9 +235,6 @@ def test_rt92_annotationen_anderer_typen_werden_gemeldet(tmp_path, art):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-93 Hervorhebung auf einer um 90 Grad gedrehten Seite (/Rotate 90, Text aufrecht): die "
-                          "QuadPoints werden ohne Drehung umgerechnet, die Woerter bleiben unmarkiert, keine Meldung; Besitzer K-PDF")
 @pytest.mark.parametrize("art,farbe", [("Highlight", "0 0 1"), ("StrikeOut", "1 0 0")])
 def test_rt93_annotation_auf_gedrehter_seite(tmp_path, art, farbe):
     inhalt = (zeile_gedreht90(56, 64, "Erste Zeile bleibt gleich hier.") + zeile_gedreht90(56, 79, "Zweite Zeile ist ")
@@ -299,9 +249,6 @@ def test_rt93_annotation_auf_gedrehter_seite(tmp_path, art, farbe):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-94 Seite mit /Rotate 90 und quer stehendem Text (wie PdfDokument.seite_rotieren): der Text "
-                          "wird in Einzelzeichen-Bloecke zerlegt, keine Warnung, keine Luecke; Besitzer K-PDF")
 def test_rt94_gedrehte_seite_mit_querstehendem_text(tmp_path):
     d = dok()
     d.block("Das ist ein Satz mit mehreren Woertern und {+neuen+} Worten drin.")
