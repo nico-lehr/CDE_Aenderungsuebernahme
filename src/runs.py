@@ -259,7 +259,9 @@ def _lese_plan(d: Path) -> dict[str, Any]:
     if not p.exists():
         meldung = _analyse_meldung(d)
         if meldung:
-            raise LaufFehler(f"Die Analyse dieses Laufs ist fehlgeschlagen. {meldung}", 409, "fehlgeschlagen")
+            if not meldung.startswith("Die Analyse"):
+                meldung = f"Die Analyse dieses Laufs ist fehlgeschlagen. {meldung}"
+            raise LaufFehler(meldung, 409, "fehlgeschlagen")
         raise LaufFehler("Dieser Lauf hat noch keine Analyse.", 409, "angelegt")
     daten = _lese_json(p)
     pruefe_schema(daten)

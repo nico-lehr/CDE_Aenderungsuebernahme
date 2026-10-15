@@ -78,10 +78,13 @@ def neu():
         if not ok:
             return _fehler("Eine der Dateien ist kein gültiges PDF bzw. keine gültige Excel-Datei.")
         run_id = runs.neuer_lauf(p, x, pdf.filename or "aenderungen.pdf", xls.filename or "cde.xlsx")
+    profil = (request.form.get("profil") or "").strip() or None    # Layout-Profil: nur bestaetigte werden angenommen
     try:
-        plan = runs.analysiere(run_id)
+        plan = runs.analysiere(run_id, profil)
     except Exception as e:                       # noqa: BLE001 -- der Lauf bleibt stehen (Regel 29), Meldung einfach halten
-        if isinstance(e, ValueError):            # unsere eigenen Meldungen (z. B. "Excel beschaedigt") sind schon einfaches Deutsch
+        if isinstance(e, runs.LaufFehler):       # z. B. Profil nicht bestaetigt: schon einfaches Deutsch
+            meldung, code = e.meldung, e.status
+        elif isinstance(e, ValueError):          # unsere eigenen Meldungen (z. B. "Excel beschaedigt") sind schon einfaches Deutsch
             meldung, code = str(e), 400
         else:
             log.exception("Analyse von Lauf %s fehlgeschlagen", run_id)

@@ -263,3 +263,13 @@ def test_uebernehmen_mit_unsinn_im_body(client, tmp_path):
     assert r.status_code == 400 and r.is_json
     r = client.post(f"/api/lauf/{rid}/uebernehmen", json={"freigaben": ["gibt-es-nicht"]})
     assert r.status_code in (400, 404) and r.is_json
+
+
+def test_upload_mit_unbestaetigtem_profil_wird_abgelehnt(client, tmp_path):
+    """Neue Profile gehen nie direkt live: ohne bestaetigte Vorschau gibt es eine einfache Meldung (409), der Lauf bleibt stehen."""
+    d = erzeuge(tmp_path / "fx")
+    with open(d["pdf"], "rb") as p, open(d["alt"], "rb") as x:
+        r = client.post("/api/lauf", data={"pdf": (p, "a.pdf"), "excel": (x, "b.xlsx"), "profil": "gibt-es-nicht"},
+                        content_type="multipart/form-data")
+    assert r.status_code == 409 and r.is_json
+    assert r.get_json()["status"] == "fehlgeschlagen" and "fehler" in r.get_json()
