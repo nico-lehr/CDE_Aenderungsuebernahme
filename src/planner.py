@@ -20,7 +20,7 @@ from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.utils import get_column_letter
 
 from . import config
-from .excel_model import Kandidat, ExcelModell
+from .excel_model import Kandidat, ExcelModell, zahl_als_text
 from .matcher import Matcher, Treffer
 from .models import (ADD, DEL, HOCH, KEEP, MITTEL, MOD, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN,
                      Aenderung, Operation, PdfBlock, PdfToken)
@@ -62,6 +62,23 @@ def neutext_probleme(texte: Iterable[str], cfg: dict | None = None) -> dict[str,
         if t.startswith("="):
             out["formel"] = True
     return out
+
+
+_ZAHL_TEXT = re.compile(r"-?\d+(\.\d+)?")
+
+
+def zahl_aus_text(text: str, zahlenformat: str | None = None) -> int | float | None:
+    """Zahl, die genau diesen Text als Anzeige hat -- sonst None (dann bliebe nur Text, das Zahlenformat ginge verloren).
+
+    Ohne `zahlenformat` wird nur geprueft, ob der Text eine einfache Zahl ist (Planer, kennt das Format nicht);
+    mit Format muss die Anzeige der Zahl (siehe `zahl_als_text`) buchstabengleich sein (Applier). Hoechstens 15 Ziffern."""
+    t = text.strip()
+    if not _ZAHL_TEXT.fullmatch(t) or sum(c.isdigit() for c in t) > 15:
+        return None
+    wert: int | float = float(t) if "." in t else int(t)
+    if zahlenformat is not None and zahl_als_text(wert, zahlenformat) != t:
+        return None
+    return wert
 
 
 def _wort_gleich(a: str, b: str) -> bool:
@@ -130,6 +147,16 @@ class _Planer:
             grund = (grund + "; " if grund else "") + "Der neue Text könnte aus dem PDF verfälscht gelesen worden sein."
         if p["formel"] and any(o.art in ("ersetzen", "einfuegen", "zeile_einfuegen") for o in ae.ops):
             self._hinweis(ae, "Der neue Text beginnt mit „=“. Er wird als Text eingetragen, nicht als Formel.")
+        for op in ae.ops:                # Zahl-Zelle: der neue Text muss wieder eine Zahl sein, sonst geht das Zahlenformat verloren
+            if op.art in ("ersetzen", "einfuegen") and self.xl.ist_zahl(op.blatt, op.zeile, op.spalte):
+                alt_z = self.xl.text(op.blatt, op.zeile, op.spalte)
+                ergebnis = alt_z[:op.start] + op.text + alt_z[op.ende:]
+                if ergebnis.strip() and zahl_aus_text(ergebnis) is None:
+                    if stufe == HOCH:
+                        stufe = MITTEL
+                    self._hinweis(ae, "Die Zelle in der Excel ist eine Zahl, der neue Text ist keine. Das Zahlenformat geht verloren.")
+                    grund = (grund + "; " if grund else "") + "Zahlenformat geht verloren (die Zelle ist eine Zahl, der neue Text nicht)."
+                    break
         risiken = self._zeilen_risiken(ae)
         if risiken:                      # Zeile einfuegen verschiebt Dinge, die openpyxl nicht mitzieht: nie automatisch
             if stufe == HOCH:

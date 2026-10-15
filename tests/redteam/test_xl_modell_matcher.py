@@ -81,8 +81,6 @@ def test_rt29_section_2_1_und_2_10_als_zahl_bleiben_verschieden(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-30 Section-Zahl 2.2 wird beim Ersetzen zu Text (Zelle war eine Zahl, Zahlenformat weg). K-XL liefert Kandidat.zelle_ist_zahl / ExcelModell.ist_zahl; offen, bis der Applier (K-PL) die Zahl wieder als Zahl schreibt")
 def test_rt30_zahl_bleibt_beim_ersetzen_eine_zahl(tmp_path):
     p = _zahlen_excel(tmp_path / "z.xlsx")
     el = [("h", "1 Eins"), ("p", "Erster Abschnitt mit genug Text hier drin."),
