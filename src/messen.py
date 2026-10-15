@@ -17,6 +17,7 @@ Aufbau
 from __future__ import annotations
 
 import argparse
+import bisect
 import copy
 import hashlib
 import json
@@ -1228,10 +1229,9 @@ def _zeilenabbildung(d: Diff, max_zeile: int) -> dict[int, int | None]:
         elif r in d.weg:
             abb[r] = None
         else:
-            vor = [p for p in gepaart if p < r]
-            nach = [q for q in gepaart if q > r]
-            a = d.zuordnung[vor[-1]] + (r - vor[-1]) if vor else None
-            b = d.zuordnung[nach[0]] - (nach[0] - r) if nach else None
+            k = bisect.bisect_left(gepaart, r)                  # gepaart[k-1] < r < gepaart[k] (r selbst ist nicht gepaart)
+            a = d.zuordnung[gepaart[k - 1]] + (r - gepaart[k - 1]) if k > 0 else None
+            b = d.zuordnung[gepaart[k]] - (gepaart[k] - r) if k < len(gepaart) else None
             if a is None and b is None:
                 abb[r] = r
             elif a is not None and b is not None:
@@ -1328,16 +1328,20 @@ def _struktur_befund(vorher: Path, ergebnis: Path, diffs: list[Diff]) -> dict[st
             dv_da, _ = _validierungen(e, None)
             n["validierung"] += max(len(dv_erw - dv_da), 0 if dv_offen else len(dv_da - dv_erw))
             # Zahlenformat und Schrift der Zellen
-            for r in range(1, v.max_row + 1):
+            e_zellen = e._cells
+            for (r, c), zv in list(v._cells.items()):
                 x = abb.get(r)
                 if x is None:
                     continue
-                for c in range(1, v.max_column + 1):
-                    zv, ze = v.cell(r, c), e.cell(x, c)
-                    if zv.number_format != ze.number_format:
-                        n["zahlenformat"] += 1
-                    if _schrift(zv, (r, c) in geaendert) != _schrift(ze, (r, c) in geaendert):
-                        n["schrift"] += 1
+                ze = e_zellen.get((x, c))
+                if not zv.has_style and (ze is None or not ze.has_style):
+                    continue                                        # beide ohne eigenes Format: nichts zu vergleichen
+                if ze is None:
+                    ze = e.cell(x, c)
+                if zv.number_format != ze.number_format:
+                    n["zahlenformat"] += 1
+                if _schrift(zv, (r, c) in geaendert) != _schrift(ze, (r, c) in geaendert):
+                    n["schrift"] += 1
     finally:
         wv.close()
         we.close()
@@ -1599,21 +1603,24 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
     if k1 == "ok" and gesamt["luecken_nicht_pruefbar_paare"]:
         k1 = "nicht gemessen"            # RT-141: ohne erwartet.json kann "Luecke nicht gemeldet" nie auffallen
     if gesamt["luecken_nicht_pruefbar_paare"]:
-        k1_wert += f"; Lücken nur bei {pruefbar} von {n} Paaren prüfbar (erwartet.json fehlt)"
+        k1_wert += f"; Lücken: nur {pruefbar} von {n} prüfbar (erwartet.json)"
     k_plausi_ampel = ("nicht gemessen" if not plausi_paare else
                       ("ok" if not gesamt["plausibilitaet_ungemeldet"] else "Hinweis"))
     kriterien = [
-        {"nr": 1, "name": "Bilanz stimmig", "wert": k1_wert, "ziel": "alle Paare; Lücken nur mit erwartet.json prüfbar",
-         "einheit": "Paare", "ampel": k1},
+        {"nr": 1, "name": "Bilanz stimmig", "wert": k1_wert, "ziel": "alle Paare", "einheit": "Paare", "ampel": k1,
+         "detail": "Die Lückenprüfung (Scan, Zwei-Spalten, Tabelle, Bild nicht gemeldet) braucht erwartet.json"},
         {"nr": 1, "name": "Plausibilität direkt aus dem PDF (nur Hinweis)",
-         "wert": f"{gesamt['plausibilitaet_ungemeldet']} Seiten ohne gemeldete Lücke ({gesamt['plausibilitaet_seiten']} auffällig)",
-         "ziel": "0 ungemeldet (Hinweis, kein Fehler)", "einheit": "Seiten", "ampel": k_plausi_ampel},
-        {"nr": 2, "name": "Stille Fehler", "wert": str(gesamt["stille_fehler"]), "ziel": "0",
-         "einheit": f"{gesamt['stille_fehler_zellen']} Zellen, {gesamt['stille_fehler_paar_befunde']} Paar-Befunde, "
-                    f"{gesamt['regel27_verstoesse']} Regel-27-Verstöße; {gesamt['stille_fehler_aenderungen']} Änderungen betroffen",
+         "wert": f"{gesamt['plausibilitaet_ungemeldet']} von {gesamt['plausibilitaet_seiten']}",
+         "ziel": "0 ungemeldet", "einheit": "Seiten", "ampel": k_plausi_ampel,
+         "detail": "Seiten ohne Textzeichen oder mit großem Bild, zu denen das Tool keine Lücke meldet (Hinweis, kein Fehler)"},
+        {"nr": 2, "name": "Stille Fehler", "wert": str(gesamt["stille_fehler"]), "ziel": "0", "einheit": "Zellen und Befunde",
+         "detail": f"{gesamt['stille_fehler_zellen']} Zellen, {gesamt['stille_fehler_paar_befunde']} Paar-Befunde, "
+                   f"{gesamt['regel27_verstoesse']} Regel-27-Verstöße; {gesamt['stille_fehler_aenderungen']} Änderungen betroffen; "
+                   f"davon nur Leerraum/Zeichenform: {gesamt['stille_fehler_nur_textform']}",
          "ampel": _ampel(gesamt["stille_fehler"] == 0, luecke=lue)},
         {"nr": 2, "name": "Regel 27: Vorschlag ohne Freigabe angewendet", "wert": str(gesamt["regel27_verstoesse"]), "ziel": "0",
-         "einheit": "Änderungen", "ampel": _ampel(gesamt["regel27_verstoesse"] == 0, luecke=lue)},
+         "einheit": "Änderungen", "ampel": _ampel(gesamt["regel27_verstoesse"] == 0, luecke=lue),
+         "detail": "Eine Änderung stand im Plan auf „prüfen“ und wurde ohne Freigabe angewendet"},
         {"nr": 3, "name": "Treffergenauigkeit automatisch",
          "wert": _prozent(gesamt["treffergenauigkeit_auto"]), "ziel": "100 %", "einheit": "Zellen",
          "ampel": _ampel(None if not gesamt["auto_gesamt"] else gesamt["auto_richtig"] == gesamt["auto_gesamt"], luecke=lue)},
@@ -1634,12 +1641,12 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
          "ziel": "0 ohne Grund", "einheit": "Änderungen",
          "ampel": _ampel(gesamt["nicht_uebernommen_ohne_grund"] == 0, luecke=lue)},
         {"nr": 4, "name": "Nicht verwaltete Spalten: Formeln und Sonstiges",
-         "wert": f"{nicht_verfehlt} verfehlt von {gesamt['soll_zellen_formel'] + gesamt['soll_zellen_unverwaltet_sonstige']} "
-                 f"(Formeln {gesamt['soll_zellen_formel_verfehlt']} von {gesamt['soll_zellen_formel']}, "
-                 f"sonstige {gesamt['soll_zellen_unverwaltet_sonstige_verfehlt']} von {gesamt['soll_zellen_unverwaltet_sonstige']}; "
-                 f"harmlose Füllung nicht gezählt: {unverw})",
-         "ziel": "0 verfehlt (v1 passt Formeln und nicht verwaltete Spalten bewusst nicht an; jede Abweichung ist eine offene Aufgabe)",
-         "einheit": "Zellen", "ampel": _ampel(nicht_verfehlt == 0, luecke=lue)},
+         "wert": f"{nicht_verfehlt} von {gesamt['soll_zellen_formel'] + gesamt['soll_zellen_unverwaltet_sonstige']} verfehlt",
+         "ziel": "0 verfehlt", "einheit": "Zellen", "ampel": _ampel(nicht_verfehlt == 0, luecke=lue),
+         "detail": f"Formeln {gesamt['soll_zellen_formel_verfehlt']} von {gesamt['soll_zellen_formel']}, "
+                   f"sonstige {gesamt['soll_zellen_unverwaltet_sonstige_verfehlt']} von {gesamt['soll_zellen_unverwaltet_sonstige']}; "
+                   f"harmlose Füllung nicht gezählt: {unverw}. v1 passt Formeln und nicht verwaltete Spalten bewusst nicht an; "
+                   f"jede Abweichung zum Soll ist eine offene Aufgabe"},
         {"nr": 5, "name": "Lese-Lücke", "wert": _prozent(gesamt["lese_luecke_anteil"]), "ziel": "höchstens 2 %", "einheit": "Wörter",
          "ampel": _ampel(None if gesamt["lese_luecke_anteil"] is None else gesamt["lese_luecke_anteil"] <= 0.02, luecke=lue)},
         {"nr": 6, "name": "Zweiter Lauf ändert nichts (Idempotenz)", "wert": f"{gesamt['idempotent']} von {m}",
@@ -1647,12 +1654,13 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
          "ampel": _ampel(None if not m else gesamt["idempotent"] == m, luecke=lue)},
         {"nr": 6, "name": "Kollateralschaden", "wert": str(gesamt["kollateral"]), "ziel": "0", "einheit": "Zellen",
          "ampel": _ampel(gesamt["kollateral"] == 0, luecke=lue)},
-        {"nr": 6, "name": "Struktur unverändert (Blätter, versteckte Zeilen/Spalten, verbundene Zellen, Validierung, Formate)",
-         "wert": str(gesamt["struktur_geaendert"]), "ziel": "0", "einheit": "Befunde",
-         "ampel": _ampel(None if not struktur_paare else gesamt["struktur_geaendert"] == 0, luecke=lue)},
+        {"nr": 6, "name": "Struktur unverändert", "wert": str(gesamt["struktur_geaendert"]), "ziel": "0", "einheit": "Befunde",
+         "ampel": _ampel(None if not struktur_paare else gesamt["struktur_geaendert"] == 0, luecke=lue),
+         "detail": "Blätter, versteckte Zeilen/Spalten, verbundene Zellen, Datenvalidierung, Zahlenformat, Schrift unveränderter Zellen"},
         {"nr": 6, "name": "Originale unverändert", "wert": f"{gesamt['original_unveraendert']} von {m}", "ziel": "alle Paare",
          "einheit": "Paare", "ampel": _ampel(None if not m else gesamt["original_unveraendert"] == m, luecke=lue)},
     ]
+
     return {"format": BERICHT_FORMAT, "korpus": korpus, "generator_version": generator_version,
             "schema_version": SCHEMA_VERSION, "gesamt": gesamt, "fehlerarten": fehlerarten, "je_stoerer": je_stoerer,
             "kriterien": kriterien, "paare": paare}
@@ -1674,6 +1682,7 @@ def _md(b: dict[str, Any]) -> str:
          "| Nr | Kriterium | Wert | Einheit | Ziel | Ergebnis |", "|---|---|---|---|---|---|"]
     for k in b["kriterien"]:
         z.append(f"| {k['nr']} | {k['name']} | {k['wert']} | {k.get('einheit', '')} | {k['ziel']} | {k['ampel']} |")
+    z += ["", "Erläuterungen:", ""] + [f"- {k['name']}: {k['detail']}" for k in b["kriterien"] if k.get("detail")]
     ae_ges = g["aenderungen_uebernommen_korrekt"] + g["aenderungen_uebernommen_falsch"]
     z += ["", "## Zahlen (mit Zähleinheit)", "",
           f"- Automatisch richtig: {g['auto_richtig']} von {g['auto_gesamt']} (Einheit: Zellen)",
@@ -1755,7 +1764,7 @@ def _konsole(b: dict[str, Any], ziel: Path, vorschlaege: bool) -> None:
     print("")
     breite = max(len(k["name"]) for k in b["kriterien"])
     for k in b["kriterien"]:
-        print(f"  [{k['nr']}] {k['name']:<{breite}}  {k['wert']:<16} Ziel: {k['ziel']:<40} {k['ampel']}")
+        print(f"  [{k['nr']}] {k['name']:<{breite}}  {k['wert']}  ({k.get('einheit', '')})  Ziel: {k['ziel']}  ->  {k['ampel']}")
     print("")
     print(f"  Automatisch richtig: {g['auto_richtig']} von {g['auto_gesamt']} Zellen  |  Änderungen: "
           f"{g['aenderungen_uebernommen_korrekt']} übernommen & korrekt, {g['aenderungen_uebernommen_falsch']} übernommen & falsch, "
