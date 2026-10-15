@@ -10,6 +10,8 @@ import yaml
 
 PROJEKT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = PROJEKT_ROOT / "config"
+# Ordner, die bei gesetztem CDE_DATA_ROOT unter diesem Ordner liegen (z.B. fuer Tests)
+_UNTER_DATA_ROOT = {"runs_dir": "runs", "paare_dir": "paare", "messung_dir": "messung"}
 
 
 @lru_cache(maxsize=None)
@@ -24,8 +26,9 @@ def pfad(schluessel: str) -> Path:
     """Loest einen Eintrag aus paths.yaml gegen den Projektordner auf."""
     werte = lade("paths")
     roh = Path(werte[schluessel])
-    if schluessel == "data_dir" and os.environ.get("CDE_DATA_ROOT"):
-        roh = Path(os.environ["CDE_DATA_ROOT"])
-    if schluessel == "runs_dir" and os.environ.get("CDE_DATA_ROOT"):
-        return Path(os.environ["CDE_DATA_ROOT"]) / "runs"
+    wurzel = os.environ.get("CDE_DATA_ROOT")
+    if wurzel and schluessel == "data_dir":
+        roh = Path(wurzel)
+    if wurzel and schluessel in _UNTER_DATA_ROOT:
+        return Path(wurzel) / _UNTER_DATA_ROOT[schluessel]
     return roh if roh.is_absolute() else (PROJEKT_ROOT / roh).resolve()

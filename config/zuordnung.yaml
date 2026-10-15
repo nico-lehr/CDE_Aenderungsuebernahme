@@ -9,6 +9,8 @@ kandidaten_pro_block: 10
 excel:
   min_inhalt_zeichen: 25      # ab so vielen Zeichen gilt eine Zelle als Inhaltstext
   section_spalte_min: 2       # mindestens so viele Nummern, damit eine Spalte "Section" ist
+  modell_schwelle: 0.6        # Anteil Kopfzeilen mit Inhalt in der Zeile => "zeile_pro_section", sonst "zeile_pro_absatz"
+  titel_max_zeichen: 160      # laengere Zellen gelten nicht als Titel
 
 einfuegen:
   neuer_absatz: auto          # auto | zelle | zeile
@@ -17,3 +19,14 @@ geloeschtes:
   inhalt: leeren              # leeren | zeile_entfernen
 markierung:
   geaenderte_zellen: keine    # keine | kommentar | gelb
+
+# --- Schema 2: bisher im Code fest eingebaute Werte (Verhalten unveraendert; werden von K-XL / K-PL verdrahtet) ---
+matcher:                      # Bewertung eines Treffers (src/matcher.py)
+  gewicht_abdeckung: 0.9      # score = gewicht_abdeckung * Abdeckung + gewicht_dice * Dice
+  gewicht_dice: 0.1
+  section_bonus: 0.03         # Zuschlag, wenn die Section-Nummer passt
+  untergrenze: 0.4            # darunter gibt es keinen Treffer, auch keinen Vorschlag
+  max_kandidaten_section: 400 # so viele Kandidaten derselben Section werden zusaetzlich geprueft
+anwenden:                     # Schreiben in die Excel (src/applier.py)
+  markierung_farbe: FFF2CC    # Hintergrund, wenn markierung.geaenderte_zellen = gelb
+  kommentar_autor: CDE-Tool   # Autor der Zellkommentare, wenn markierung.geaenderte_zellen = kommentar

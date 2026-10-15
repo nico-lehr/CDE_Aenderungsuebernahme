@@ -13,3 +13,8 @@ include = ["src*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Ein xfail, der ploetzlich besteht (Fehler repariert), ist ROT -> Marker muss dann entfernt werden.
+xfail_strict = true
+markers = [
+    "redteam: Red-Team-Test mit absichtlich erwartetem Fehler (xfail strict, Grund mit RT-Nummer und Besitzer)",
+]
