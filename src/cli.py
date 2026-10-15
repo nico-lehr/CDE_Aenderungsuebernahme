@@ -11,18 +11,42 @@ from __future__ import annotations
 
 import argparse
 import colorsys
+import logging
 import sys
 
 from . import config, runs
+from .fehler import NutzerFehler
+from .protokoll import bilanz_satz
 
 
-def _zeige(daten: dict) -> None:
+_LUECKE_ART = {"scan_seite": "Scan-Seite", "mehrspaltig": "Mehrere Spalten", "tabelle": "Tabelle", "bild": "Bild",
+               "unbekannte_farbe": "Unbekannte Farbe", "nicht_lesbarer_text": "Nicht lesbarer Text", "sonstiges": "Sonstiges"}
+
+
+def _zeige(daten: dict, luecken: list[dict] | None = None, gezeigt: set[str] | None = None) -> None:
+    """Gibt die Bilanz aus. `luecken`: die Luecken-Liste des PDFs (wird bei unvollstaendiger Bilanz aufgelistet).
+    `gezeigt`: schon ausgegebene Hinweise (jeder Hinweis erscheint nur einmal)."""
     b = daten["bilanz"]
     print(f"Änderungen: {b['aenderungen']}  |  übernommen: {b['uebernommen']}  |  zu prüfen: {b['pruefen']}  |  "
           f"nicht übernommen: {b['nicht_uebernommen']}")
-    print(f"Wörter im PDF markiert: {b['woerter_im_pdf']}  |  Bilanz stimmt: {'ja' if b['stimmt'] else 'NEIN'}")
+    print(f"Wörter im PDF markiert: {b['woerter_im_pdf']}")
+    if b.get("stimmt") and b.get("vollstaendig") is True:
+        print("Bilanz stimmt: ja (das PDF wurde vollständig gelesen)")
+    elif b.get("stimmt") and b.get("vollstaendig") is None:
+        print("Bilanz stimmt: ja, aber ob das PDF vollständig gelesen wurde, ist nicht geprüft")
+    else:                                              # UNVOLLSTÄNDIG (Lücken) oder NEIN
+        label, wert = bilanz_satz(b)
+        print(f"{label}: {wert}")
+    if b.get("vollstaendig") is False and luecken:
+        print("Diese Stellen im PDF konnten nicht gelesen werden (hier kann eine Änderung fehlen, bitte im PDF selbst prüfen):")
+        for l in luecken:
+            art = _LUECKE_ART.get(l.get("art", ""), l.get("art", "") or "Sonstiges")
+            print(f"  Seite {l.get('seite', '?')} | {art} | {l.get('beschreibung', '')}")
+    gezeigt = gezeigt if gezeigt is not None else set()
     for w in daten.get("warnungen", []):
-        print("Hinweis:", w)
+        if w not in gezeigt:
+            gezeigt.add(w)
+            print("Hinweis:", w)
 
 
 _STATUS_NAMEN = {"neu": "neu", "entfaellt": "entfällt", "ignorieren": "ignoriert"}
@@ -109,15 +133,44 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--excel", required=True)
     p.add_argument("--alle-vorschlaege", action="store_true")
     a = p.parse_args(argv)
-    run_id = runs.neuer_lauf(a.pdf, a.excel)
-    daten = runs.analysiere(run_id)
-    print("Lauf:", run_id)
-    _zeige(daten)
-    if a.befehl == "lauf":
-        freig = [x["id"] for x in daten["aenderungen"] if x["status"] == "pruefen"] if a.alle_vorschlaege else []
-        res = runs.uebernehmen_lauf(run_id, freig)
-        print("Ergebnis:", runs.lauf_dir(run_id) / res["ordner"] / res["excel"])
-        _zeige({"bilanz": res["bilanz"], "warnungen": res["warnungen"]})
+    from pathlib import Path
+    for pfad, name in ((a.pdf, "PDF"), (a.excel, "Excel")):
+        if not Path(pfad).is_file():
+            print(f"Die {name}-Datei wurde nicht gefunden: {pfad}")
+            return 2
+    run_id = None
+    analysiert = False
+    try:
+        run_id = runs.neuer_lauf(a.pdf, a.excel)
+        daten = runs.analysiere(run_id)
+        analysiert = True
+        print("Lauf:", run_id)
+        if a.befehl == "analyse":
+            print(f"Gespeichert: Die Analyse liegt als Lauf in {runs.lauf_dir(run_id)}. "
+                  "In die Excel wird bei „analyse“ nichts geschrieben.")
+        gezeigt: set[str] = set()
+        _zeige(daten, daten.get("luecken", []), gezeigt)
+        if a.befehl == "lauf":
+            freig = [x["id"] for x in daten["aenderungen"] if x["status"] == "pruefen"] if a.alle_vorschlaege else []
+            res = runs.uebernehmen_lauf(run_id, freig)
+            print("Ergebnis:", runs.lauf_dir(run_id) / res["ordner"] / res["excel"])
+            _zeige({"bilanz": res["bilanz"], "warnungen": res["warnungen"]}, None, gezeigt)     # Lücken stehen schon oben
+    except NutzerFehler as e:                                  # gewollte Meldung: schon einfaches Deutsch
+        print(e.meldung)
+        return 2
+    except Exception:                                          # kaputte Datei o. ae.: einfache Meldung, kein Traceback/Rohtext
+        logging.getLogger("cde.cli").debug("Verarbeitung fehlgeschlagen", exc_info=True)    # Einzelheiten nur mit Debug-Log
+        meldung = ("Das PDF oder die Excel konnte nicht verarbeitet werden. Sind es unbeschädigte Dateien "
+                   "(PDF bzw. .xlsx/.xlsm)?")
+        print(meldung)
+        if run_id:
+            print(f"Der Lauf {run_id} bleibt mit den Eingabedateien gespeichert.")
+            if not analysiert:
+                try:
+                    runs.markiere_analyse_fehler(run_id, meldung)
+                except Exception:                              # noqa: BLE001 -- die Meldung oben genuegt
+                    pass
+        return 2
     return 0
 
 

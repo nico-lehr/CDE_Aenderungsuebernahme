@@ -288,3 +288,75 @@ def test_server_ohne_host_oder_port_bricht_mit_klarer_meldung_ab(monkeypatch):
         einstellungen.srv()
     monkeypatch.setattr(einstellungen.config, "lade", lambda name: {"host": "127.0.0.1", "port": 5100})
     assert einstellungen.srv()["upload_max_mb"] == 200               # Upload-Grenzen behalten Standardwerte
+
+
+# ===========================================================================================================
+# 4. CLI analyse/lauf: Luecken sichtbar, einfache Fehlermeldungen, Hinweise einmal, Lauf-Hinweis
+# ===========================================================================================================
+from src import cli
+from tests.redteam._bau_pdf import RohSeite, roh_pdf, zeile
+
+_TEXT = ("Dieser Satz steht auf der Seite und ist lang genug damit die Seite als Textseite gilt "
+         "und niemand sie fuer einen Scan haelt weil genug Woerter darauf stehen und weiter und weiter")
+_BILD = "q 595 0 0 842 0 0 cm /Im1 Do Q\n"
+
+
+def _cli(capsys, *args):
+    rc = cli.main(list(args))
+    return rc, capsys.readouterr().out
+
+
+@pytest.fixture
+def paar_mit_luecke(tmp_path):
+    pdf = tmp_path / "scan.pdf"
+    pdf.write_bytes(roh_pdf([RohSeite(inhalt=zeile(56, 64, _TEXT, 11.0, "0 0 0 rg")), RohSeite(inhalt=_BILD, bild=True)]))
+    return pdf, _excel(tmp_path, _AUFBAU)
+
+
+def test_cli_zeigt_unvollstaendig_und_die_luecken_liste(capsys, paar_mit_luecke):
+    pdf, excel = paar_mit_luecke
+    rc, out = _cli(capsys, "analyse", "--pdf", str(pdf), "--excel", str(excel))
+    assert rc == 0
+    assert "UNVOLLSTÄNDIG" in out and "Bilanz stimmt: ja" not in out
+    assert "Seite 2 | Scan-Seite |" in out                               # Seite, Art, Beschreibung
+
+
+def test_cli_lauf_zeigt_luecken_nur_einmal_und_hinweise_nur_einmal(capsys, paar_mit_luecke):
+    pdf, excel = paar_mit_luecke
+    rc, out = _cli(capsys, "lauf", "--pdf", str(pdf), "--excel", str(excel))
+    assert rc == 0 and out.count("UNVOLLSTÄNDIG") == 2                   # einmal je Bilanz (Analyse und Ergebnis)
+    assert out.count("Seite 2 | Scan-Seite |") == 1
+    hinweise = [z for z in out.splitlines() if z.startswith("Hinweis:")]
+    assert hinweise and len(hinweise) == len(set(hinweise))
+
+
+def test_cli_analyse_sagt_dass_ein_lauf_angelegt_und_keine_excel_geschrieben_wird(capsys, paar_mit_luecke):
+    pdf, excel = paar_mit_luecke
+    rc, out = _cli(capsys, "analyse", "--pdf", str(pdf), "--excel", str(excel))
+    assert "Die Analyse liegt als Lauf in" in out and "nichts geschrieben" in out
+    assert len(runs.liste()) == 1
+
+
+def test_cli_vollstaendig_zeigt_ja(capsys, tmp_path):
+    pdf = tmp_path / "ok.pdf"
+    pdf.write_bytes(roh_pdf([RohSeite(inhalt=zeile(56, 64, _TEXT, 11.0, "0 0 0 rg"))]))
+    rc, out = _cli(capsys, "analyse", "--pdf", str(pdf), "--excel", str(_excel(tmp_path, _AUFBAU)))
+    assert rc == 0 and "Bilanz stimmt: ja" in out and "UNVOLLSTÄNDIG" not in out
+
+
+def test_cli_fehlende_datei_gibt_meldung_und_exit_2(capsys, tmp_path, paar_mit_luecke):
+    pdf, excel = paar_mit_luecke
+    rc, out = _cli(capsys, "analyse", "--pdf", str(tmp_path / "gibt_es_nicht.pdf"), "--excel", str(excel))
+    assert rc == 2 and "PDF-Datei wurde nicht gefunden" in out and "Traceback" not in out
+    rc, out = _cli(capsys, "lauf", "--pdf", str(pdf), "--excel", str(tmp_path / "gibt_es_nicht.xlsx"))
+    assert rc == 2 and "Excel-Datei wurde nicht gefunden" in out
+
+
+@pytest.mark.parametrize("welche", ["pdf", "excel"])
+def test_cli_kaputte_datei_gibt_einfache_meldung_und_exit_2(capsys, tmp_path, paar_mit_luecke, welche):
+    pdf, excel = paar_mit_luecke
+    kaputt = tmp_path / ("kaputt.pdf" if welche == "pdf" else "kaputt.xlsx")
+    kaputt.write_bytes(b"das ist keine echte Datei")
+    args = ["--pdf", str(kaputt if welche == "pdf" else pdf), "--excel", str(kaputt if welche == "excel" else excel)]
+    rc, out = _cli(capsys, "analyse", *args)
+    assert rc == 2 and ("konnte nicht" in out or "beschädigt" in out) and "Traceback" not in out and "Error" not in out
