@@ -333,7 +333,7 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[st
         warn = list(plan.get("warnungen", [])) + res.warnungen
         xinfo = {"pdf_name": info["pdf"], "excel_name": info["excel"], "ergebnis_name": ziel.name}
         schreibe_xlsx(ordner / "aenderungsprotokoll.xlsx", xinfo, aenderungen, bil, plan.get("layout", []), warn,
-                      plan.get("farben", []))
+                      plan.get("farben", []), plan.get("luecken", []))
         _schreibe_json_atomar(ordner / "ergebnis.json", {   # zuletzt: erst damit zaehlt das Ergebnis
             "run_id": run_id, "erstellt": datetime.now().isoformat(timespec="seconds"), "ergebnis_name": ziel.name,
             "freigaben": sorted(freig), "bilanz": bil, "warnungen": warn,
