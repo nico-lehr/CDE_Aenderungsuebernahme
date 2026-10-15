@@ -33,8 +33,6 @@ def test_rt27_gleicher_absatz_zweimal_in_derselben_zelle(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-28 PDF-Block ist nur der Anfang eines langen Excel-Absatzes: neuer Absatz landet mitten im Satz. K-XL liefert jetzt Treffer.anker_stufe (mittel); offen, bis der Planer (K-PL, _anker) sie statt tr.stufe nutzt")
 def test_rt28_pdf_block_nur_anfang_des_excel_absatzes(tmp_path):
     el = [("h", "1 Eins"),
           ("p", "Die Anlage wird vor dem Versand einzeln geprüft und danach"),
