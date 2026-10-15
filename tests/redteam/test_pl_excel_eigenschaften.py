@@ -35,7 +35,10 @@ def _lauf(tmp_path, eigenschaft):
 
 def _konsistent_oder_pruefen(l, neue, ist_konsistent, was: str) -> None:
     """Fehler nur, wenn die Eigenschaft nach dem Einfuegen NICHT mehr stimmt, die Zeile aber automatisch
-    eingetragen wurde ('uebernommen'). Steht die Aenderung auf 'pruefen', wird nichts automatisch geschrieben."""
+    eingetragen wurde ('uebernommen'). Steht die Aenderung auf 'pruefen', wird nichts automatisch geschrieben;
+    dann muss sie aber auch erklaeren, warum (Hinweise nicht leer)."""
+    if neue.status == "pruefen" and not neue.hinweise:
+        scheitern(f"{was} -- die Aenderung steht auf 'pruefen', hat aber keinen Hinweis fuer den Menschen (Grund: {neue.grund!r})")
     if ist_konsistent():
         return
     if neue.status != "uebernommen":
