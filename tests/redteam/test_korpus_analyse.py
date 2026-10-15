@@ -51,9 +51,6 @@ def _fehlende_luecken(faelle: list[tuple[int, str]], art: str) -> tuple[list[str
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-110 Korpus: Scan-Seiten (Seeds 6, 12, 27) werden nicht als Luecke 'scan_seite' gemeldet; "
-                          "3 stille Fehler 'Luecke nicht gemeldet' (mit Wortverlust); Besitzer K-PDF")
 def test_rt110_korpus_scan_seiten_ohne_luecke():
     fehlt, n = _fehlende_luecken(SCAN, "scan_seite")
     if fehlt:
@@ -62,9 +59,6 @@ def test_rt110_korpus_scan_seiten_ohne_luecke():
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-111 Korpus: Zwei-Spalten-Abschnitte (Seeds 3, 9, 18, 42, 48) werden nicht als Luecke "
-                          "'mehrspaltig' gemeldet; 5 stille Fehler (mit Wortverlust); Besitzer K-PDF")
 def test_rt111_korpus_zwei_spalten_ohne_luecke():
     fehlt, n = _fehlende_luecken(SPALTEN, "mehrspaltig")
     if fehlt:
@@ -73,9 +67,6 @@ def test_rt111_korpus_zwei_spalten_ohne_luecke():
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-112 Korpus: Tabellen (Seeds 33, 39, 45) werden nicht als Luecke 'tabelle' gemeldet; "
-                          "3 stille Fehler (2 davon mit Wortverlust); Besitzer K-PDF")
 def test_rt112_korpus_tabellen_ohne_luecke():
     fehlt, n = _fehlende_luecken(TABELLE, "tabelle")
     if fehlt:
@@ -84,9 +75,6 @@ def test_rt112_korpus_tabellen_ohne_luecke():
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-113 Korpus: Bilder im Fliesstext (Seeds 6, 21, 48, 51, 54, 60) werden nicht als Luecke 'bild' "
-                          "gemeldet; 4 stille Fehler OHNE Wortverlust (Bild ohne Text); Besitzer K-PDF")
 def test_rt113_korpus_bilder_ohne_luecke():
     fehlt, n = _fehlende_luecken(BILD, "bild")
     if fehlt:
@@ -112,10 +100,6 @@ def _trennstuecke(ist: str, soll: str) -> list[str]:
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-114 Ein neues BLAUES Wort, das am Zeilenende getrennt ist ('Netzanschlussbe-' 'dingungen'), "
-                          "wird mit Trennstrich bzw. Leerzeichen in die Excel geschrieben (uebernommen/hoch/ok); "
-                          "Ursache im Leser (RT-63/64); Besitzer K-PDF")
 @pytest.mark.parametrize("modus", ["ascii", "weich"])
 def test_rt114_blaues_getrenntes_wort_landet_zerrissen_in_der_excel(tmp_path, modus):
     ziel = ("p", f"{' '.join(_FUELL.split()[:6])} {{-regelmaessig-}} {{+Sicherheitsarchitektur Netzanschlussbedingungen+}} "
@@ -143,11 +127,16 @@ SILBEN_ZELLEN = [(3, "schwer", 1, 39, 3), (9, "schwer", 2, 8, 3), (9, "schwer", 
                  (57, "schwer", 1, 3, 3)]
 
 
+# Noch offen (K-PDF): Seed 51 -- ein zerrissenes Wort landet weiter in der Excel; die uebrigen Zellen sind repariert.
+_OFFEN_115 = {51}
+_SILBEN_PARAMS = [pytest.param(*t, marks=pytest.mark.xfail(
+    strict=True, raises=AssertionError,
+    reason="RT-115 Seed 51: zerrissenes Wort in der Excel, noch nicht repariert; Besitzer K-PDF")) if t[0] in _OFFEN_115 else t
+    for t in SILBEN_ZELLEN]
+
+
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-115 Korpus: in 5 Zellen (Seeds 3, 9, 9, 51, 57) steht ein neues blaues Wort zerrissen in der "
-                          "Excel (uebernommen/hoch/ok); dazu 2 neue Zeilen in Seed 9 und 57 (7 stille Fehler); Besitzer K-PDF")
-@pytest.mark.parametrize("seed,profil,blatt,zeile,spalte", SILBEN_ZELLEN,
+@pytest.mark.parametrize("seed,profil,blatt,zeile,spalte", _SILBEN_PARAMS,
                          ids=[f"seed{s}_B{b + 1}Z{z}S{c}" for s, _, b, z, c in SILBEN_ZELLEN])
 def test_rt115_korpus_zerrissenes_wort_in_der_excel(seed, profil, blatt, zeile, spalte):
     lf = auto_lauf(seed, profil)
@@ -173,10 +162,6 @@ _KOPFWOERTER = "Pos. Bauteil Menge Einheit"
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-116 Eine UNVERAENDERTE Tabelle mit blauem Kopf und hellblauer Baenderung: das Tool fuegt die "
-                          "Kopf- und Datenwoerter ('Pos. Bauteil Menge Einheit ...') in die Excel-Zelle ein "
-                          "(uebernommen/hoch/ok); Ursache im Leser (RT-76/77); Besitzer K-PDF")
 def test_rt116_unveraenderte_farbtabelle_wird_in_die_zelle_geschrieben(tmp_path):
     el_excel = _KOPF + [("h", "4 Vier"), ("p", "Die Anlage wird regelmaessig geprueft und dokumentiert."), ("p", _TAB_TXT),
                         ("h", "5 Fuenf"), ("p", "Die Lieferung umfasst alles Zubehoer fuer die Montage.")]
@@ -202,9 +187,6 @@ TABELLEN_ZELLEN = [(33, "schwer", 2, 13, 2), (39, "schwer", 2, 25, 3), (45, "sch
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-117 Korpus: in 3 Zellen (Seeds 33, 39, 45) steht nach dem Lauf der Tabellenkopf als Fliesstext "
-                          "mitten in der Tabelle der Excel (uebernommen/hoch/ok); 3 stille Fehler; Besitzer K-PDF")
 @pytest.mark.parametrize("seed,profil,blatt,zeile,spalte", TABELLEN_ZELLEN,
                          ids=[f"seed{s}_B{b + 1}Z{z}S{c}" for s, _, b, z, c in TABELLEN_ZELLEN])
 def test_rt117_korpus_tabellenkopf_in_der_excel(seed, profil, blatt, zeile, spalte):
@@ -228,9 +210,6 @@ _RECHTS = "Bei Ueberstrom wird ein Alarm an die Leitstelle uebermittelt."
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-118 Zwei-Spalten-Text: ein neuer Satz der rechten Spalte wird in zwei Stuecken mitten in Saetze "
-                          "der linken Spalte geschrieben (uebernommen/hoch/ok), ohne Luecke 'mehrspaltig'; Besitzer K-PDF")
 def test_rt118_zwei_spalten_satz_wird_zerrissen_eingetragen(tmp_path):
     el_excel = _KOPF + [("h", "4 Vier"), ("p", _LINKS[0]), ("p", _LINKS[1]), ("h", "5 Fuenf"),
                         ("p", "Die Lieferung umfasst alles Zubehoer fuer die Montage.")]
