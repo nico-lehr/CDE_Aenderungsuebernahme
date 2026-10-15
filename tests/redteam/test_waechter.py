@@ -269,9 +269,10 @@ def test_waechter_schema_1_plan_json_laedt_und_uebernimmt(client, tmp_path):
     rid = _hochladen(client, d).get_json()["run_id"]
     pj = runs.lauf_dir(rid) / "plan.json"
     j = json.loads(pj.read_text(encoding="utf-8"))
-    aufbau(j["schema_version"] == 1, "aktuelles Schema ist 1")
+    j["schema_version"] = 1                          # so sah ein Plan vor Schema 2 aus
+    j.pop("luecken", None)
     for a in j["aenderungen"]:                       # aeltere Plaene hatten weniger optionale Felder
-        for feld in ("kontext", "excel_text", "score", "bestaetigt", "nachkontrolle"):
+        for feld in ("kontext", "excel_text", "score", "bestaetigt", "nachkontrolle", "hinweise", "wirkung"):
             a.pop(feld, None)
     pj.write_text(json.dumps(j), encoding="utf-8")
     assert client.get(f"/api/lauf/{rid}").status_code == 200
