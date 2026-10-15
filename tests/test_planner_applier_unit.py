@@ -724,3 +724,36 @@ def test_uebernehmen_mit_fertigem_modell_liest_die_excel_nicht_noch_einmal(tmp_p
     a = _ae("A1", [rep], alt="System", neu="Gerät")
     uebernehmen([a], p, tmp_path / "out.xlsx", xl=xl)
     assert zelle(tmp_path / "out.xlsx", 2, 3) == "Das Gerät muss laufen und stabil bleiben."
+
+
+def test_zeile_einfuegen_mit_verbundenen_zellen_und_link_stuerzt_nicht_ab(tmp_path):
+    """Verbundene Zellen (MergedCell) haben keinen Hyperlink-Eintrag: das Nachziehen der Links darf nicht abstuerzen."""
+    def eig(wb):
+        ws = wb["CDE"]
+        z = next(c.row for row in ws.iter_rows() for c in row if c.value and "Absatz drei" in str(c.value))
+        ws.merge_cells(start_row=z, start_column=5, end_row=z + 1, end_column=5)
+        ws.cell(z, 3).hyperlink = "https://example.org/x"
+    alt = baue_alt(tmp_path, _EL_SECTION, "L1", nachher=lambda p: _bearbeite(p, eig))
+    l0 = analysiere(tmp_path, _EL_SECTION, alt)
+    kopf = next(a for a in l0.aen if a.typ == "section_neu")
+    assert kopf.status == PRUEFEN and any("verbundene" in h.lower() for h in kopf.hinweise)
+    l = uebernimm(l0, {kopf.id})
+    ws = blatt(l.out)
+    neu_r = zeile_mit(l.out, "Absatz drei")
+    rng = next(iter(ws.merged_cells.ranges))
+    assert (rng.min_row, rng.max_row) == (neu_r, neu_r + 1)
+    assert ws.cell(neu_r, 3).hyperlink is not None
+
+
+def test_ankerstufe_pdf_text_ist_das_ende_des_excel_absatzes_bleibt_automatisch(tmp_path):
+    """Seitenumbruch: auf der neuen Seite steht nur der Schluss des Absatzes. Der neue Absatz kommt danach, also ans Ende."""
+    ex = [("h", "1 Eins"),
+          ("p", "Die Anlage wird vor dem Versand einzeln geprüft und danach dokumentiert; anschließend wird ein "
+                "Prüfbericht erstellt und dem Kunden übergeben."),
+          ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")]
+    el = [("h", "1 Eins"), ("p", "Prüfbericht erstellt und dem Kunden übergeben."),
+          ("p", "{+Neuer Absatz nach dem Ende.+}"), ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")]
+    l = uebernimm(analysiere(tmp_path, el, baue_alt(tmp_path, ex, "L1")))
+    ae = next(a for a in l.aen if a.typ == "absatz_neu")
+    assert ae.status == UEBERNOMMEN, (ae.status, ae.grund)
+    assert zelle(l.out, 2, 3).endswith("dem Kunden übergeben.\nNeuer Absatz nach dem Ende.")

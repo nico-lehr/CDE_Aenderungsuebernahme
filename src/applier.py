@@ -225,8 +225,9 @@ def _verschiebe_hoehen(ws, ab: int, delta: int) -> None:
 def _links_nachziehen(ws) -> None:
     """Hyperlinks stehen mit ihrer Zelladresse in der Datei: nach dem Verschieben von Zellen neu eintragen."""
     for zelle in ws._cells.values():
-        if zelle._hyperlink is not None:
-            zelle._hyperlink.ref = zelle.coordinate
+        link = getattr(zelle, "_hyperlink", None)           # verbundene Zellen (MergedCell) haben keinen Link
+        if link is not None:
+            link.ref = zelle.coordinate
 
 
 def _verschiebe_verbunden(ws, ab: int, delta: int) -> None:

@@ -559,6 +559,9 @@ class _Planer:
         # Fuer einen NEUEN Absatz zaehlt die Anker-Sicherheit (nicht die Sicherheit fuers Ersetzen): deckt der PDF-Text nur
         # den Anfang eines laengeren Excel-Absatzes ab, wuerde der neue Absatz mitten im Satz landen.
         stufe = tr.anker_stufe if direkt else MITTEL
+        if (direkt and stufe != HOCH and tr.stufe == HOCH and cand.art != "kopf" and tr.zuordnung
+                and max(tr.zuordnung.values()) >= len(cand.norms) - 1):
+            stufe = HOCH      # der PDF-Text reicht bis zum letzten Wort des Excel-Absatzes (Rest steht auf der Seite davor): Ende ist sicher
         if stufe != HOCH:
             stufe = MITTEL
         self._ag = []
