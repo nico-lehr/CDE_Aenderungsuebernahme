@@ -1318,3 +1318,50 @@ def test_exit_code_1_auch_wenn_nur_die_gesamtabdeckung_verfehlt_wird(tmp_path):
     ampeln = {k["name"]: k["ampel"] for k in b["kriterien"]}
     assert ampeln["Abdeckung über ALLE Soll-Zellen (inkl. Füllspalten, Formeln)"] == "NICHT ok"
     assert ampeln["Abdeckung ohne Nachfrage (nur Haupt-Spalten)"] == "ok" and ampeln["Stille Fehler"] == "ok"
+
+
+# ---- Ende zu Ende: das echte Tool fuegt Zeilen ein, die neuen Eigenschaften duerfen keinen Phantom-Befund ergeben -----------------
+ELEMENTE_EINFUEGEN = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."),
+                      ("h", "2 Zwei"), ("p", "Die Reaktionszeit darf 150 ms nicht ueberschreiten."),
+                      ("h", "{+2.5 Neu+}"), ("p", "{+Ein neuer Absatz mit Zusatz.+}"),
+                      ("h", "3 Drei"), ("p", "Alle Steckverbindungen sind eindeutig beschriftet."),
+                      ("h", "4 Vier"), ("p", "Die Lieferung umfasst alles Zubehoer.")]
+
+
+def _paar_zum_einfuegen(tmp_path: Path, unten: bool) -> Path:
+    ordner = tmp_path / "paar"
+    ordner.mkdir()
+    baue_pdf(ordner / "aenderungen.pdf", ELEMENTE_EINFUEGEN, "farbe")
+    baue_excel(ordner / "nachher.xlsx", zustaende(ELEMENTE_EINFUEGEN, True), "L3", True)
+    baue_excel(ordner / "vorher.xlsx", zustaende(ELEMENTE_EINFUEGEN, False), "L3", True)
+    wb = load_workbook(str(ordner / "vorher.xlsx"))
+    ws = wb["CDE"]
+    ws.freeze_panes = "A2"
+    ws["B2"].hyperlink = "https://example.org/oben"
+    ws["C3"].comment = Comment("Hinweis oben", "Autor")
+    ws.conditional_formatting.add("D2:D3", CellIsRule(operator="equal", formula=['"A"'], fill=PatternFill("solid", bgColor="FFFF00")))
+    if unten:        # Dinge unterhalb der Einfuegestelle: die Automatik fasst sie nicht an (pruefen), die Vorschlags-Excel verschiebt sie nicht
+        ws["B8"].hyperlink = "https://example.org/unten"
+        ws["C8"].comment = Comment("Hinweis unten", "Autor")
+        ws.conditional_formatting.add("D6:D9", CellIsRule(operator="equal", formula=['"B"'], fill=PatternFill("solid", bgColor="FFFF00")))
+        ws.auto_filter.ref = "A1:D9"
+        wb.defined_names.add(DefinedName("Liste", attr_text="CDE!$C$2:$C$9"))
+    else:
+        ws.row_dimensions[7].height = 40
+    wb.save(str(ordner / "vorher.xlsx"))
+    return ordner
+
+
+def test_ende_zu_ende_zeilen_einfuegen_mit_eigenschaften_oberhalb_und_mitgezogenem_ist_kein_befund(tmp_path):
+    res = messen.messe_paar(_paar_zum_einfuegen(tmp_path, unten=False), mit_vorschlaegen=True)
+    assert res["auto_gesamt"] >= 2                                              # die Zeilen wurden wirklich eingefuegt
+    assert res["struktur_geaendert"] == 0 and res["struktur_vorschlaege_geaendert"] == 0, res["struktur_nach_art"]
+    assert res["stille_fehler"] == 0
+
+
+def test_ende_zu_ende_nicht_mitgezogenes_wird_in_der_vorschlags_excel_als_angekuendigt_gezaehlt(tmp_path):
+    res = messen.messe_paar(_paar_zum_einfuegen(tmp_path, unten=True), mit_vorschlaegen=True)
+    assert res["pruefen_zellen"] >= 1 and res["struktur_geaendert"] == 0          # die Automatik hat nichts angefasst
+    assert res["struktur_vorschlaege_geaendert"] == 0                             # der Plan hatte jede Abweichung vorab gemeldet
+    assert {a for a, n in res["struktur_vorschlaege_angekuendigt_nach_art"].items() if n} == \
+        {"bedingte_formatierung", "autofilter", "benannter_bereich"}
