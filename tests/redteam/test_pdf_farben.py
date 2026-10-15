@@ -66,9 +66,6 @@ def test_rt77_blaue_baenderung_ist_keine_aenderung(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-78 Hyperlink in Link-Blau (0563C1, unterstrichen): das Link-Wort zaehlt als NEU, "
-                          "obwohl nichts geaendert wurde; Besitzer K-PDF")
 def test_rt78_hyperlink_blau_ist_keine_aenderung(tmp_path):
     d = dok()
     d.block("Siehe {@l:www.beispiel.example@} fuer mehr Informationen zum Thema.")
@@ -80,10 +77,6 @@ def test_rt78_hyperlink_blau_ist_keine_aenderung(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-79 Dokument mit durchgehend blauen Ueberschriften (Design, nichts geaendert): "
-                          "jede Ueberschrift zaehlt als NEU, kein Hinweis (Rueckfrage-Niveau, Annahme: ALLE 4 "
-                          "Ueberschriften blau = Design); Besitzer K-PDF")
 def test_rt79_durchgehend_blaue_ueberschriften(tmp_path):
     blau = "0.1216 0.3059 0.6235 rg"          # 1F4E9F
     inhalt = ""

@@ -266,9 +266,6 @@ def test_rt72_blaue_kopfzeile_zaehlt_als_neu(tmp_path, fall):
 # l) Linie als Durchstreichung
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-73 Graue Zierlinie quer durch eine Ueberschrift: jede duenne waagerechte Linie in "
-                          "Zeichenmitte gilt als Durchstreichung, die Ueberschrift wird 'entfaellt' (DEL); Besitzer K-PDF")
 def test_rt73_zierlinie_hinter_ueberschrift_ist_keine_durchstreichung(tmp_path):
     def bau(mit_linie: bool):
         d = dok()

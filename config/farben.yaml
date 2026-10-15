@@ -27,6 +27,9 @@ durchstreichung:
   max_linienstaerke_pt: 2.0
   max_breite_anteil: 0.6     # laengere Linien sind Trennlinien/Tabellenrahmen
   wort_anteil: 0.6           # ab diesem Zeichenanteil gilt das Wort als durchgestrichen
+  max_ueberstand_em: 1.0     # Linie ragt hoechstens so weit (in Schriftgroessen) ueber den Text hinaus; sonst Zierlinie
+  hell_min_helligkeit: 0.6   # hellgraue Linien (neutral und heller als das) sind Zierlinien, keine Durchstreichung
+  hell_max_saettigung: 0.1
 
 annotationen:                # PDF-Kommentare (Hervorheben / Durchstreichen)
   aktiv: true
@@ -41,6 +44,11 @@ layout:
   kopf_fuss_max_schrift: 1.15  # ... und nicht groesser als Fliesstext * Faktor ist
   silbentrennung_zusammenfuegen: true
   keine_silbentrennung_vor: [und, oder, bzw, sowie, bis, to, and, or]
+
+flaechen:                    # gefuellte Rechtecke hinter Text: Markierung oder Gestaltung (Tabellenkopf, Baenderung)?
+  max_ueberstand_em: 1.0     # eine Markierung ragt hoechstens so weit (in Schriftgroessen) ueber den Text hinaus
+  max_hoehe_zeilen: 3.5      # hoeher als so viele Zeilen: Kasten, keine Markierung
+  min_fuellgrad: 0.45        # Anteil der Flaeche, den der Text belegt (Tabellenkopf: viel Leerraum)
 
 unbekannt:                   # kraeftig gefaerbter Text, der keiner Legende zugeordnet ist -> Luecke "unbekannte_farbe"
   aktiv: true
@@ -73,3 +81,6 @@ tabellen:                    # Tabellen mit Rahmenlinien
   min_zellen: 2              # so viele Zellen (Zeilen x Spalten) ergeben eine Tabelle
   toleranz: 2.0              # Abstand (pt), bis zu dem sich Linien beruehren
 
+ueberschriften_design:       # alle Ueberschriften blau = Gestaltung, nicht "neu"
+  min_anzahl: 3              # so viele Ueberschriften muessen vorhanden sein
+  max_anteil_text: 0.5       # Anteil markierter Woerter im uebrigen Text, bis zu dem das als Gestaltung gilt

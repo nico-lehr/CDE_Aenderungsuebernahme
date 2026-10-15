@@ -97,9 +97,6 @@ def test_rt105_korpus_verschmolzene_ersetzung_seed24(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-106 Korpus synth_0015_schwer (Stoerer 'hyperlink'): vier unveraenderte Link-Woerter in "
-                          "Link-Blau werden als NEU gelesen (wie RT-78, hier im Korpus); Besitzer K-PDF")
 def test_rt106_korpus_hyperlinks_zaehlen_als_neu_seed15(tmp_path):
     a, ab = _abweichung(tmp_path, 15, "schwer")
     _pruefe_stille_abweichung(a, ab, "Paar 15")

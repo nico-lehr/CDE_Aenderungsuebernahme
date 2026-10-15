@@ -247,3 +247,98 @@ def test_text_im_oberen_rand_ohne_abstand_ist_keine_kopfzeile(tmp_path):
     inhalt = zeile(56, 30, "Erste Zeile ganz oben auf der Seite.") + zeile(56, 45, "Zweite Zeile folgt direkt darunter.")
     a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
     assert a.ignoriert == [] and a.blocks[0].alt_text.startswith("Erste Zeile")
+
+
+# =================================================================================================
+# Falsche "neu/entfaellt"-Treffer: Zierlinie, Tabellenkopf, Hyperlink, blaue Ueberschriften
+# =================================================================================================
+def test_hellgraue_zierlinie_durch_ueberschrift_ist_keine_durchstreichung(tmp_path):
+    d = dok()
+    d.ueberschrift("1.1 Geltungsbereich Anforderungen")
+    d.block("Normaler Text fuer die Anforderung hier.")
+    d._s.inhalt.append((d._linie_op(56, 300, 70 + 9, (0.7, 0.7, 0.7), 0.5) + "\n").encode("latin-1"))
+    a = lese(tmp_path, d)
+    kopf = next(b for b in a.blocks if b.kind == "ueberschrift")
+    assert all(t.status == KEEP for t in kopf.tokens)
+    assert all("linie_unklar" in t.hinweis for t in kopf.tokens) and kopf.hinweise
+
+
+def test_dunkle_linie_die_weit_ueber_den_text_hinausragt_ist_keine_durchstreichung(tmp_path):
+    inhalt = zeile(56, 64, "Kurz hier") + "0 0 0 RG 0.8 w 56 %.2f m 400 %.2f l S\n" % (842 - 69.5, 842 - 69.5)
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert [t.status for t in alle_tokens(a)] == [KEEP, KEEP]
+    assert all("linie_unklar" in t.hinweis for t in alle_tokens(a))
+
+
+def test_echte_durchstreichung_bleibt_entfaellt(tmp_path):
+    for variante in ("strich", "farbe"):
+        d = dok(variante=variante)
+        d.block("Das ist {-alter Text hier-} im Satz.")
+        a = lese(tmp_path / variante, d)
+        assert [token(a, w).status for w in ("alter", "Text", "hier", "Das")] == [DEL, DEL, DEL, KEEP], variante
+        assert all(not t.hinweis for t in alle_tokens(a)), variante
+
+
+def test_blauer_tabellenkopf_und_baenderung_sind_gestaltung(tmp_path):
+    d = dok()
+    d.tabelle([["Name", "Wert", "Einheit"], ["Strom", "5", "kW"], ["Spannung", "230", "V"], ["Frequenz", "50", "Hz"],
+               ["Druck", "2", "bar"]], kopf_farbe="4472C4", band_farbe="B4C6E7")
+    a = lese(tmp_path, d)
+    assert not [t for t in alle_tokens(a) if t.status != KEEP]
+    assert "tabelle" in _arten(a)
+    assert any("design_flaeche" in t.hinweis for t in alle_tokens(a))
+
+
+def test_blauer_kasten_ausserhalb_einer_tabelle_ist_gestaltung_mit_luecke(tmp_path):
+    inhalt = ("0.72 0.86 1 rg 50 640 495 70 re f\n0 g\n"
+              + zeile(56, 140, "Hinweis in einem blauen Kasten mit Text") + zeile(56, 155, "und einer zweiten Zeile darin")
+              + zeile(56, 170, "und einer dritten Zeile darin hier."))
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert not [t for t in alle_tokens(a) if t.status != KEEP]
+    l = _luecke(a, "sonstiges")
+    assert l["woerter"] == 18
+
+
+def test_markierung_direkt_am_wort_bleibt_neu(tmp_path):
+    d = dok(variante="hintergrund")
+    d.block("Die Kapazitaet betraegt {-100 kWh-} {+120 kWh+} je Rack.")
+    a = lese(tmp_path, d)
+    assert [token(a, w).status for w in ("100", "120")] == [DEL, ADD]
+    assert not [t for t in alle_tokens(a) if t.hinweis]
+
+
+def test_hyperlink_in_linkblau_ist_nicht_neu_aber_blaues_wort_ohne_link_schon(tmp_path):
+    d = dok()
+    d.block("Siehe {@l:www.beispiel.example@} und {+neues Wort+} dazu.")
+    a = lese(tmp_path, d)
+    link = token(a, "www.beispiel.example")
+    assert link.status == KEEP and "link" in link.hinweis
+    assert token(a, "neues").status == ADD and token(a, "Wort").status == ADD
+
+
+def _blaue_ueberschriften(n: int, blau: str = "0.12 0.3 0.62 rg", text_neu: bool = False) -> bytes:
+    inhalt, top = "", 64.0
+    for nr in range(1, n + 1):
+        inhalt += zeile(56, top, f"{nr} Titel{nr}", 14.0, blau, fett=True)
+        inhalt += zeile(56, top + 24, f"Text unter der Ueberschrift {nr} ohne jede Aenderung.",
+                        farbe="0 0 1 rg" if text_neu else "0 0 0 rg")
+        top += 60
+    return roh_pdf([RohSeite(inhalt=inhalt)])
+
+
+def test_durchgehend_blaue_ueberschriften_sind_gestaltung(tmp_path):
+    a = lese(tmp_path, _blaue_ueberschriften(4))
+    assert not [t for t in alle_tokens(a) if t.status != KEEP]
+    kopf = [b for b in a.blocks if b.kind == "ueberschrift"]
+    assert len(kopf) == 4 and all(b.section_alt == b.section_neu and b.section_alt for b in kopf)
+    assert all("design_blau" in t.hinweis for b in kopf for t in b.tokens)
+    assert [(l["art"], l["woerter"]) for l in a.luecken] == [("sonstiges", 8)]
+
+
+@pytest.mark.parametrize("fall", ["zu_wenige", "text_auch_blau"])
+def test_blaue_ueberschriften_bleiben_neu_wenn_es_keine_gestaltung_sein_kann(tmp_path, fall):
+    pdf = _blaue_ueberschriften(2) if fall == "zu_wenige" else _blaue_ueberschriften(4, text_neu=True)
+    a = lese(tmp_path, pdf)
+    kopf = [b for b in a.blocks if b.kind == "ueberschrift"]
+    assert kopf and all(t.status == ADD for b in kopf for t in b.tokens)
+    assert a.luecken == []

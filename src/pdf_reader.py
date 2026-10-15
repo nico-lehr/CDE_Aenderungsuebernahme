@@ -38,6 +38,11 @@ _HINWEIS_TEXT = {
     "ligatur": "Das PDF enthält Ligaturen (z. B. ﬁ). Der Text kann in der Excel anders geschrieben sein.",
     "nicht_lesbar": "Einzelne Zeichen konnten nicht gelesen werden.",
     "unbekannte_farbe": "Einzelne Wörter haben eine Farbe, die nicht in der Legende steht; sie gelten als unverändert.",
+    "linie_unklar": "Eine Linie läuft quer durch den Text (Zierlinie?). Sie wurde nicht als Durchstreichung gewertet.",
+    "link": "Hyperlink: die blaue Farbe wurde nicht als „neu“ gewertet.",
+    "design_blau": "Die Überschrift ist blau wie alle Überschriften des Dokuments. Das wurde als Gestaltung gewertet, nicht als „neu“.",
+    "design_flaeche": "Eine Farbfläche hinter dem Text sieht nach Gestaltung aus (Tabellenkopf, Streifen). "
+                      "Sie wurde nicht als Markierung gewertet.",
 }
 
 
@@ -351,16 +356,23 @@ def _verschmelze(werte: list[float], tol: float) -> list[float]:
 
 # ---------------------------------------------------------------- Markierungen
 class _Markierer:
-    """Sammelt pro Seite alle Markierungs-Signale und beantwortet: Status je Zeichen."""
+    """Sammelt pro Seite alle Markierungs-Signale und beantwortet: Status je Zeichen.
+
+    Ablauf: __init__ sammelt die rohen Signale, pruefe() entscheidet mit Hilfe der Zeichen, welche davon wirklich
+    Markierungen sind (und welche Gestaltung: Zierlinie, Tabellenkopf, Hyperlink), status() bewertet ein Zeichen."""
 
     def __init__(self, page: Any, cfg: dict) -> None:
         self.cfg = cfg
-        self.flaechen: list[tuple[float, float, float, float, str]] = []   # Hinterlegungen
+        self.flaechen: list[tuple[float, float, float, float, str]] = []       # Hinterlegungen = Markierung
         self.unb_flaechen: list[tuple[float, float, float, float, str]] = []   # nicht zugeordnete Hinterlegungen
+        self.design: list[tuple[float, float, float, float]] = []              # Hinterlegungen = Gestaltung
         self.striche: list[tuple[float, float, float]] = []
         self.annot: list[tuple[float, float, float, float, str]] = []
         self.unb_annot: list[tuple[float, float, float, float, str]] = []
+        self.links: list[tuple[float, float, float, float]] = []
         self.rect_farben: Counter = Counter()
+        self._flaechen_roh: list[tuple[float, float, float, float, str | None, str]] = []   # (Box, Bedeutung, Farbe)
+        self._striche_roh: list[tuple[float, float, float, bool]] = []                      # (x0, x1, y, hell)
         w, h = float(page.width), float(page.height)
         if cfg["hintergrund"]["aktiv"]:
             hg = cfg["hintergrund"]
@@ -378,10 +390,8 @@ class _Markierer:
                 self.rect_farben[(_hex(rgb), k)] += 1
                 bed = _bedeutung(k, cfg)
                 box = (r["x0"], r["top"], r["x1"], r["bottom"])
-                if bed:
-                    self.flaechen.append(box + (bed,))
-                elif k is None and self._kraeftig_hg(rgb):
-                    self.unb_flaechen.append(box + (_hex(rgb),))
+                if bed or (k is None and self._kraeftig_hg(rgb)):
+                    self._flaechen_roh.append(box + (bed, _hex(rgb)))
         d = cfg["durchstreichung"]
         if d["aktiv"]:
             bed = _bedeutung("durchgestrichen", cfg)
@@ -389,10 +399,12 @@ class _Markierer:
                 for l in page.lines:
                     if (l.get("linewidth", 1) or 0) <= d["max_linienstaerke_pt"] and abs(l["bottom"] - l["top"]) <= 1.2 \
                             and (l["x1"] - l["x0"]) < d["max_breite_anteil"] * w:
-                        self.striche.append((l["x0"], l["x1"], (l["top"] + l["bottom"]) / 2))
+                        self._striche_roh.append((l["x0"], l["x1"], (l["top"] + l["bottom"]) / 2,
+                                                  self._hell(l.get("stroking_color"))))
                 for r in page.rects:
                     if r["height"] <= 1.6 and 2 <= r["width"] < d["max_breite_anteil"] * w:
-                        self.striche.append((r["x0"], r["x1"], (r["top"] + r["bottom"]) / 2))
+                        self._striche_roh.append((r["x0"], r["x1"], (r["top"] + r["bottom"]) / 2,
+                                                  self._hell(r.get("non_stroking_color"))))
         if cfg["annotationen"]["aktiv"]:
             self._annotationen(page, h)
 
@@ -401,12 +413,24 @@ class _Markierer:
         _, s, v = colorsys.rgb_to_hsv(*(max(0.0, min(1.0, x)) for x in rgb))
         return s >= hg["min_saettigung"] and v >= hg["min_helligkeit"]
 
+    def _hell(self, farbe: Any) -> bool:
+        """Hellgraue (neutrale, helle) Linie? Das ist eine Zierlinie, keine Durchstreichung."""
+        rgb = _rgb(farbe)
+        if rgb is None:
+            return False
+        d = self.cfg["durchstreichung"]
+        _, s, v = colorsys.rgb_to_hsv(*(max(0.0, min(1.0, x)) for x in rgb))
+        return s <= d["hell_max_saettigung"] and v >= d["hell_min_helligkeit"]
+
     def _annotationen(self, page: Any, h: float) -> None:
         cfg = self.cfg
         for a in page.annots:
             data = a.get("data") or {}
             sub = data.get("Subtype")
             name = getattr(sub, "name", str(sub))
+            if name == "Link":
+                self.links.append((a["x0"], a["top"], a["x1"], a["bottom"]))
+                continue
             if name == "StrikeOut":
                 bed = _bedeutung("durchgestrichen", cfg)
                 unb = None
@@ -437,13 +461,58 @@ class _Markierer:
                 else:
                     self.unb_annot.append((x0, top, x1, bot, unb or "-"))
 
+    # ---- Entscheidung: Markierung oder Gestaltung? ----------------------------------------------
+    def pruefe(self, zeichen: list[_Z]) -> None:
+        """Entscheidet mit Hilfe der Zeichen der Seite, welche Linien und Flaechen echte Markierungen sind."""
+        cfg = self.cfg
+        d = cfg["durchstreichung"]
+        for x0, x1, y, hell in self._striche_roh:
+            treffer = [c for c in zeichen
+                       if c.top + d["band"][0] * (c.bottom - c.top) <= y <= c.top + d["band"][1] * (c.bottom - c.top)
+                       and min(x1, c.x1) - max(x0, c.x0) > 0]
+            if not treffer:
+                continue
+            size = statistics.median(c.size for c in treffer)
+            ueber = max(0.0, min(c.x0 for c in treffer) - x0) + max(0.0, x1 - max(c.x1 for c in treffer))
+            if hell or ueber > d["max_ueberstand_em"] * size:
+                # Zierlinie quer durch den Text: nicht als Durchstreichung werten, aber nicht verschweigen
+                for c in treffer:
+                    if not c.leer and (min(x1, c.x1) - max(x0, c.x0)) >= d["min_abdeckung"] * max(c.x1 - c.x0, 0.1):
+                        c.hinweis.add("linie_unklar")
+                continue
+            self.striche.append((x0, x1, y))
+        f = cfg["flaechen"]
+        for x0, top, x1, bot, bed, hx in self._flaechen_roh:
+            innen = [c for c in zeichen if x0 - 0.5 <= (c.x0 + c.x1) / 2 <= x1 + 0.5
+                     and top - 0.5 <= (c.top + c.bottom) / 2 <= bot + 0.5]
+            if not any(not c.leer for c in innen):
+                continue
+            size = statistics.median(c.size for c in innen if not c.leer)
+            ueber = max(0.0, min(c.x0 for c in innen) - x0) + max(0.0, x1 - max(c.x1 for c in innen))
+            besetzt = sum((c.x1 - c.x0) * (c.bottom - c.top) for c in innen) / max((x1 - x0) * (bot - top), 0.1)
+            anliegend = (ueber <= f["max_ueberstand_em"] * size and besetzt >= f["min_fuellgrad"]
+                         and (bot - top) <= f["max_hoehe_zeilen"] * size)
+            if not anliegend:
+                self.design.append((x0, top, x1, bot))      # Tabellenkopf, Baenderung, Kasten ...
+            elif bed:
+                self.flaechen.append((x0, top, x1, bot, bed))
+            else:
+                self.unb_flaechen.append((x0, top, x1, bot, hx))
+
     def status(self, c: _Z) -> str:
         cfg = self.cfg
         bed: set[str] = set()
-        if c.farbe_bed:
-            bed.add(c.farbe_bed)
-        geo = False
+        farbe_bed = c.farbe_bed
         cx, cy = (c.x0 + c.x1) / 2, (c.top + c.bottom) / 2
+        if farbe_bed == "neu" and c.farbklasse == "blau" and not c.leer:
+            for x0, top, x1, bot in self.links:
+                if x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bot + 1:
+                    farbe_bed = None                    # Hyperlink: das Blau ist Gestaltung, keine Neu-Markierung
+                    c.hinweis.add("link")
+                    break
+        if farbe_bed:
+            bed.add(farbe_bed)
+        geo = False
         for x0, top, x1, bot, b in self.flaechen:
             if x0 - 0.5 <= cx <= x1 + 0.5 and top - 0.5 <= cy <= bot + 0.5:
                 bed.add(b)
@@ -470,17 +539,22 @@ class _Markierer:
             erg = ADD
         else:
             erg = KEEP
-        c.unscharf = erg != KEEP and geo and c.farbe_bed != ("neu" if erg == ADD else "entfaellt")
-        if erg == KEEP and not c.leer:
-            for x0, top, x1, bot, hx in self.unb_flaechen:
-                if x0 - 0.5 <= cx <= x1 + 0.5 and top - 0.5 <= cy <= bot + 0.5:
-                    c.unb_flaeche = hx
-                    break
-            else:
-                for x0, top, x1, bot, hx in self.unb_annot:
-                    if x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bot + 1:
+        c.unscharf = erg != KEEP and geo and farbe_bed != ("neu" if erg == ADD else "entfaellt")
+        if not c.leer:
+            if erg == KEEP:
+                for x0, top, x1, bot in self.design:
+                    if x0 - 0.5 <= cx <= x1 + 0.5 and top - 0.5 <= cy <= bot + 0.5:
+                        c.hinweis.add("design_flaeche")
+                        break
+                for x0, top, x1, bot, hx in self.unb_flaechen:
+                    if x0 - 0.5 <= cx <= x1 + 0.5 and top - 0.5 <= cy <= bot + 0.5:
                         c.unb_flaeche = hx
                         break
+                else:
+                    for x0, top, x1, bot, hx in self.unb_annot:
+                        if x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bot + 1:
+                            c.unb_flaeche = hx
+                            break
         c.status = erg
         return erg
 
@@ -655,6 +729,7 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
             nutz.append(z)
         seiten_nutz.append(nutz)
         abstaende += [b.top - a.top for a, b in zip(nutz, nutz[1:]) if 0.9 * a.size < b.top - a.top < 3 * a.size]
+    _design_ueberschriften(seiten_nutz, body, cfg, ergebnis)
     median = _zeilenabstand(abstaende, body)
     weit = median >= 1.5 * body          # grosser Zeilenabstand: Absatzende erkennt man an der kurzen Zeile
     rechts_x = sorted(z.x1 for zl in seiten_nutz for z in zl if len(z.tokens) >= 5)
@@ -712,6 +787,29 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
             vorher = z
         abschliessen()
     return seiten_nutz
+
+
+def _design_ueberschriften(seiten_nutz: list[list[_Zeile]], body: float, cfg: dict, ergebnis: PdfAnalyse) -> None:
+    """Sind ALLE Ueberschriften des Dokuments blau und ist sonst kaum etwas markiert, ist das Blau Gestaltung:
+    die Ueberschriften gelten als unveraendert (mit Hinweis und Luecke), nicht als neu."""
+    dc = cfg["ueberschriften_design"]
+    koepfe = [z for nutz in seiten_nutz for z in nutz if _ist_ueberschrift(z, body, cfg)]
+    if len(koepfe) < dc["min_anzahl"] or not all(t.status == ADD for z in koepfe for t in z.tokens):
+        return
+    kopf_ids = {id(z) for z in koepfe}
+    rest = [t for nutz in seiten_nutz for z in nutz if id(z) not in kopf_ids for t in z.tokens]
+    if rest and sum(1 for t in rest if t.status != KEEP) / len(rest) > dc["max_anteil_text"]:
+        return
+    je_seite: Counter = Counter()
+    for z in koepfe:
+        for t in z.tokens:
+            t.old, t.status = t.new, KEEP
+            t.hinweis = ";".join(sorted(set(filter(None, t.hinweis.split(";"))) | {"design_blau"}))
+        je_seite[z.seite] += len(z.tokens)
+    for seite, n in sorted(je_seite.items()):
+        ergebnis.luecken.append(luecke(
+            "sonstiges", seite, f"Seite {seite}: Alle Überschriften des Dokuments sind blau, im übrigen Text ist kaum "
+                                f"etwas markiert. Das Blau wurde als Gestaltung gewertet, nicht als „neu“.", n))
 
 
 def _abgesetzte_randzeilen(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], body: float,
@@ -933,6 +1031,13 @@ def _seite_luecken(sd: _SeitenDaten, zeilen_alle: list[_Zeile], nutz: list[_Zeil
                                       f"Die Wörter können vermischt gelesen worden sein.", 0)
         ergebnis.luecken.append(l)
         ergebnis.regionen.append((l, nr, sp))
+    # --- Farbflaechen, die wie Gestaltung aussehen (Tabellenkopf, Streifen, Kasten) ----------------
+    design = [t for z in nutz for t in z.tokens if "design_flaeche" in t.hinweis
+              and not any(_in_box(t, box) for box in sd.tabellen)]
+    if design:
+        ergebnis.luecken.append(luecke(
+            "sonstiges", nr, f"Seite {nr}: {len(design)} Wörter stehen auf einer Farbfläche, die nach Gestaltung aussieht "
+                             f"(Kasten, Streifen). Sie wurde nicht als Markierung gewertet.", len(design)))
     # --- Farben und Zeichen ----------------------------------------------------------------------
     farb = [(i.farbe, 1) for z in nutz for i in z.infos if i.unb]
     if farb:
@@ -993,6 +1098,7 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
             continue
         m = markierer[nr]
         rect_farben.update(m.rect_farben)
+        m.pruefe(sd.zeichen)
         for z in sd.zeichen:
             m.status(z)
         for z in chars:
