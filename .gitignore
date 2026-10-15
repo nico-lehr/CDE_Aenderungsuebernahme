@@ -1,0 +1,58 @@
+# CDE-Aenderungsuebernahme -- Autor: Nico Lehr
+# Regel 16/30: Keine echten Dokumente, keine Laufdaten, nichts Umgebungsspezifisches in Git.
+
+# Dokumente (echte oder erzeugte) -- nie versionieren
+*.pdf
+*.xlsx
+*.xlsm
+*.xltx
+*.xltm
+*.xls
+*.csv
+*.docx
+*.doc
+*.pptx
+~$*
+.~lock.*
+
+# Laufdaten, Paare, Messberichte (append-only, lokal)
+/data/
+/paare/
+/messung/
+
+# Python-Umgebung und Caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Geheimes / umgebungsspezifisch
+.env
+.env.*
+*.key
+*.pem
+secrets*
+config/*.local.yaml
+config/*.local.yml
+
+# Editor / System
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code: lokale Einstellungen (die Regeln selbst liegen in docs/regeln/)
+.claude/settings.local.json
+.claude/worktrees/
+
+# Agent-Worktrees (lokale Arbeitskopien der Subagents)
+/.worktrees/
