@@ -17,7 +17,9 @@ Reine Python-Logik; schreibt nie in die Datei.
 """
 from __future__ import annotations
 
+import hashlib
 import re
+import weakref
 import zipfile
 from collections import Counter
 from array import array
@@ -167,8 +169,29 @@ def _belegte_zellen(ws) -> list:
     return [c for row in ws.iter_rows(max_row=min(ws.max_row, 20000), max_col=min(ws.max_column, 200)) for c in row]
 
 
+# Dieselbe Datei (gleicher Inhalt, gleiche Einstellungen) wird nur einmal eingelesen, solange das Modell noch irgendwo
+# gebraucht wird (z. B. Analyse und Eintragen im selben Lauf). Das Modell ist nach dem Einlesen schreibgeschuetzt gedacht.
+_MODELLE: "weakref.WeakValueDictionary[tuple[str, str, str], ExcelModell]" = weakref.WeakValueDictionary()
+
+
 class ExcelModell:
+    def __new__(cls, pfad: str | Path) -> "ExcelModell":
+        try:
+            p = Path(pfad)
+            schluessel = (str(p.resolve()), hashlib.sha1(p.read_bytes()).hexdigest(),
+                          repr(sorted(config.lade("zuordnung")["excel"].items())))
+        except (OSError, TypeError, KeyError):
+            schluessel = None
+        if schluessel is not None and schluessel in _MODELLE:
+            return _MODELLE[schluessel]
+        self = super().__new__(cls)
+        self._schluessel = schluessel
+        self._fertig = False
+        return self
+
     def __init__(self, pfad: str | Path) -> None:
+        if self._fertig:                      # aus dem Zwischenspeicher: schon eingelesen
+            return
         self.pfad = Path(pfad)
         self.warnungen: list[str] = []
         self.layouts: dict[str, BlattLayout] = {}
@@ -184,6 +207,9 @@ class ExcelModell:
         self._formel_bezuege: dict[str, list[tuple[str, int]]] = {}
         self._norm_cache: dict[str, str] = {}
         self._lesen()
+        self._fertig = True
+        if self._schluessel is not None:
+            _MODELLE[self._schluessel] = self
 
     # ------------------------------------------------------------ Lesen
     def _lesen(self) -> None:
@@ -203,6 +229,8 @@ class ExcelModell:
             max_z = max_s = 0
             belegt: list[tuple[int, int]] = []
             for c in _belegte_zellen(ws):
+                if getattr(c, "_hyperlink", None) is not None:
+                    eig.links.append(c.row)
                 v = c.value
                 if v is None:
                     continue
@@ -290,6 +318,7 @@ class ExcelModell:
         for h in getattr(ws, "_hyperlinks", []):
             for r0, r1 in _bereiche(h.ref):
                 eig.links.append(r0)
+        eig.links = sorted(set(eig.links))
         eig.gruppiert = sorted(r for r, d in ws.row_dimensions.items() if d.hidden or (d.outlineLevel or 0) > 0)
         for obj in list(getattr(ws, "_images", [])) + list(getattr(ws, "_charts", [])):
             a = getattr(obj, "anchor", None)
