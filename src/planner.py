@@ -231,6 +231,39 @@ class _Planer:
             else:
                 for i0, i1 in self._gruppen(b):
                     self._text_gruppe(b, i0, i1)
+        self._loeschungen_koppeln()
+
+    def _loeschungen_koppeln(self) -> None:
+        """Eine gestrichene Section und der gestrichene Inhalt darunter sind eine Gruppe: der Status gilt fuer alle gemeinsam.
+
+        Sonst bliebe eine verwaiste Zeile zurueck (Nummer und Titel weg, alter Inhalt steht noch da) oder ein Teil des
+        Inhalts verschwindet, der Rest nicht. Ist ein Mitglied der Gruppe nicht sicher (pruefen) oder nicht eintragbar,
+        bleiben alle anderen auf pruefen. Die Vorschlaege (Operationen) bleiben stehen."""
+        je_block = {ae.block_idx: ae for ae in self.out if ae.typ == "absatz_geloescht"}
+        for kopf in [ae for ae in self.out if ae.typ == "section_geloescht"]:
+            folge: list[Aenderung] = []
+            k = kopf.block_idx + 1
+            while k < len(self.pdf.blocks) and self.pdf.blocks[k].ganz_geloescht and self.pdf.blocks[k].kind == "absatz":
+                if k in je_block:
+                    folge.append(je_block[k])
+                k += 1
+            if not folge:
+                continue
+            gruppe = [kopf] + folge
+            if all(m.status == UEBERNOMMEN for m in gruppe):
+                continue
+            for m in gruppe:
+                if m.status == UEBERNOMMEN:
+                    self._herabstufen(m, "Gehört zu einer gestrichenen Section, deren Löschung nicht ganz sicher ist: Section und "
+                                         "gestrichener Inhalt werden nur zusammen gelöscht, sonst bliebe ein Rest stehen "
+                                         "(z. B. eine Zeile mit altem Inhalt ohne Nummer und Titel).",
+                                      "Section und gestrichener Inhalt gehören zusammen. Bitte alles zusammen prüfen.")
+
+    def _herabstufen(self, ae: Aenderung, grund: str, hinweis: str) -> None:
+        """Aenderung von 'uebernommen' auf 'pruefen' (der Vorschlag mit seinen Operationen bleibt stehen)."""
+        ae.status, ae.konfidenz = PRUEFEN, MITTEL
+        ae.grund = (ae.grund + "; " if ae.grund else "") + grund
+        self._hinweis(ae, hinweis)
 
     # ------------------------------------------------------------ Text in Absatz/Ueberschrift
     def _text_gruppe(self, b: PdfBlock, i0: int, i1: int) -> None:

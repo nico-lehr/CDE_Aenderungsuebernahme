@@ -290,10 +290,6 @@ def test_rt121_korpus_listenpunkt_in_nummernspalte_seed30():
 #     "Section geloescht" laeuft automatisch, der geloeschte INHALT der Section bleibt offen ("pruefen").
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-122 Section-Loeschung (Nummer + Titel) laeuft automatisch (hoch), die Loeschung des Inhalts "
-                          "bleibt auf 'pruefen': zurueck bleibt eine verwaiste Zeile ohne Nummer/Titel mit altem Inhalt "
-                          "(Seeds 2, 37, 60 im Korpus); Besitzer K-PL (planner: Abhaengigkeit Kopf <-> Inhalt, wie RT-01/02)")
 def test_rt122_section_geloescht_automatisch_inhalt_offen_laesst_verwaiste_zeile(tmp_path):
     pdf_el = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."),
               ("h", "{-2 Zwei-}"), ("p", "{-Die Reaktionszeit darf 150 ms nicht ueberschreiten.-}"),

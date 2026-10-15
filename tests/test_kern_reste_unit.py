@@ -235,3 +235,78 @@ def test_neue_zeile_durch_verbundene_zellen_bleibt_pruefen(tmp_path):
     l, neu = _lauf_mit(tmp_path, eig)
     assert neu.status == "pruefen"
     assert any("durch die Zeile" in h for h in neu.hinweise), neu.hinweise
+
+
+# ===========================================================================================================
+# K-PL 1: gestrichene Section und gestrichener Inhalt sind eine Gruppe (RT-122)
+# ===========================================================================================================
+_PDF_LOESCH = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."),
+               ("h", "{-2 Zwei-}"), ("p", "{-Die Reaktionszeit darf 150 ms nicht ueberschreiten.-}"),
+               ("h", "3 Drei"), ("p", "Alle Steckverbindungen sind eindeutig beschriftet."),
+               ("h", "4 Vier"), ("p", "Die Lieferung umfasst alles Zubehoer fuer die Montage.")]
+
+
+def _excel_elemente(ersetze: dict[str, str] | None = None):
+    out = []
+    for art, m in _PDF_LOESCH:
+        m = m.replace("{-", "").replace("-}", "")
+        out.append((art, (ersetze or {}).get(m, m)))
+    return out
+
+
+def _loesch_lauf(tmp_path, excel_el):
+    from tests.redteam._bau import baue_alt, lauf
+    alt = baue_alt(tmp_path, excel_el, "L1")
+    l = lauf(tmp_path, _PDF_LOESCH, "L1", alt=alt)
+    kopf = next(a for a in l.aen if a.typ == "section_geloescht")
+    inhalt = next(a for a in l.aen if a.typ == "absatz_geloescht")
+    return l, kopf, inhalt
+
+
+def test_section_und_inhalt_sicher_werden_zusammen_geloescht(tmp_path):
+    from tests.redteam._bau import zeile_mit
+    l, kopf, inhalt = _loesch_lauf(tmp_path, _excel_elemente())
+    assert (kopf.status, inhalt.status) == ("uebernommen", "uebernommen")
+    assert zeile_mit(l.out, "Die Reaktionszeit") is None                      # der Inhalt ist weg
+    assert zeile_mit(l.out, "2 Zwei") is None
+    assert all(a.nachkontrolle == "ok" for a in (kopf, inhalt))
+
+
+def test_inhalt_unsicher_haelt_die_ueberschrift_auf_pruefen(tmp_path):
+    from tests.redteam._bau import zelle, zeile_mit
+    # Excel: mehr Text im Absatz, als im PDF gestrichen ist -> der Inhalt ist nur ein Vorschlag
+    el = _excel_elemente({"Die Reaktionszeit darf 150 ms nicht ueberschreiten.":
+                          "Die Reaktionszeit darf 150 ms nicht ueberschreiten. Die Messung erfolgt bei Nennlast."})
+    l, kopf, inhalt = _loesch_lauf(tmp_path, el)
+    assert inhalt.status == "pruefen"
+    assert kopf.status == "pruefen" and kopf.konfidenz == "mittel"
+    assert "zusammen" in kopf.grund and kopf.hinweise
+    assert kopf.ops, "der Vorschlag bleibt stehen, damit ein Mensch ihn freigeben kann"
+    z = zeile_mit(l.out, "Die Reaktionszeit")
+    assert (zelle(l.out, z, 1), zelle(l.out, z, 2)) == ("2", "Zwei")           # Nummer und Titel stehen noch: keine verwaiste Zeile
+
+
+def test_ein_unsicherer_absatz_haelt_die_ganze_gruppe_auf_pruefen(tmp_path):
+    from tests.redteam._bau import baue_alt, lauf
+    pdf = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."),
+           ("h", "{-2 Zwei-}"), ("p", "{-Die Reaktionszeit darf 150 ms nicht ueberschreiten.-}"),
+           ("p", "{-Alle Steckverbindungen sind eindeutig beschriftet.-}"),
+           ("h", "3 Drei"), ("p", "Die Lieferung umfasst alles Zubehoer fuer die Montage.")]
+    xl = [(a, m.replace("{-", "").replace("-}", "")) for a, m in pdf]
+    xl[3] = ("p", xl[3][1] + " Die Messung erfolgt bei Nennlast.")            # nur dieser Absatz ist unsicher
+    alt = baue_alt(tmp_path, xl, "L1")
+    l = lauf(tmp_path, pdf, "L1", alt=alt)
+    gruppe = [a for a in l.aen if a.typ in ("section_geloescht", "absatz_geloescht")]
+    assert len(gruppe) == 3, [(a.typ, a.status) for a in l.aen]
+    assert {a.status for a in gruppe} == {"pruefen"}, [(a.id, a.typ, a.status, a.grund) for a in gruppe]
+
+
+def test_ueberschrift_unsicher_haelt_auch_den_inhalt_auf_pruefen(tmp_path):
+    from tests.redteam._bau import zeile_mit
+    # Excel: die Ueberschrift hat mehr Woerter, als im PDF gestrichen sind -> nur ein Vorschlag
+    el = _excel_elemente({"2 Zwei": "2 Zwei und Drei"})
+    l, kopf, inhalt = _loesch_lauf(tmp_path, el)
+    assert kopf.status == "pruefen"
+    assert inhalt.status == "pruefen" and inhalt.konfidenz == "mittel"
+    assert "zusammen" in inhalt.grund
+    assert zeile_mit(l.out, "Die Reaktionszeit") is not None                  # der Inhalt wurde nicht allein geloescht
