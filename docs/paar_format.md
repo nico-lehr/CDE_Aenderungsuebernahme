@@ -64,8 +64,8 @@ Zahlen verschiedener Generator-Versionen sind **nicht vergleichbar**.
              "abdeckung_ohne_nachfrage": 0.73, "lese_luecke_woerter": 12, "idempotent": 60, "kollateral": 0},
   "fehlerarten": {"pdf_falsch_gelesen": 0, "layout_falsch": 0, "zuordnung_falsch": 0, "plan_falsch": 0, "bilanz_kaputt": 0, "unklar": 0},
   "je_stoerer": {"fussnote": {"paare": 5, "stille_fehler": 0, "abdeckung_ohne_nachfrage": 0.8}},
-  "kriterien": [{"nr": 2, "name": "Stille Fehler", "wert": "0", "einheit": "0 Zellen, 0 Paar-Befunde, 0 Regel-27-Verstöße; 0 Änderungen betroffen",
-                 "ziel": "0", "ampel": "ok"}],
+  "kriterien": [{"nr": 2, "name": "Stille Fehler", "wert": "0", "einheit": "Zellen und Befunde", "ziel": "0", "ampel": "ok",
+                 "detail": "0 Zellen, 0 Paar-Befunde, 0 Regel-27-Verstöße; 0 Änderungen betroffen; davon nur Leerraum/Zeichenform: 0"}],
   "paare": [
     {"name": "synth_0001_standard", "bilanz_stimmt": true, "vollstaendig": true, "stille_fehler": 0,
      "fehler": [{"blatt": 1, "zeile": 12, "spalte": 3, "aenderung": "a7", "art": "zuordnung_falsch"}]}
@@ -75,7 +75,7 @@ Zahlen verschiedener Generator-Versionen sind **nicht vergleichbar**.
 Der Bericht nennt nur Zahlen, Paar-Namen, Blatt-Nummer, Zeile, Spalte, Änderungs-ID und Fehlerart. Bestehende Felder bleiben, neue kommen nur dazu.
 
 ### Zähleinheit (wichtig beim Lesen der Zahlen)
-Jede Kriterien-Zeile hat das Feld `einheit` (im `bericht.md` die Spalte „Einheit“), und `gesamt.zaehleinheiten` fasst es zusammen. Verschiedene Einheiten sind nicht vergleichbar:
+Jede Kriterien-Zeile hat das Feld `einheit` (im `bericht.md` die Spalte „Einheit“; Erläuterungen stehen im Feld `detail`), und `gesamt.zaehleinheiten` fasst es zusammen. Verschiedene Einheiten sind nicht vergleichbar:
 **Zellen** (Soll-Zellen, Treffergenauigkeit, Abdeckung, Kollateral), **Änderungen** (je Änderung: `aenderungen_uebernommen_korrekt`, `…_falsch`, `aenderungen_zu_pruefen`, `aenderungen_nicht_uebernommen`, `regel27_verstoesse`), **Paare** (Bilanz, Idempotenz, Originale), **Wörter** (Lese-Lücke), **Seiten** (Plausibilität), **Befunde** (Struktur).
 „Stille Fehler“ ist eine gemischte Zahl und wird deshalb aufgeteilt: `stille_fehler_zellen` + `stille_fehler_paar_befunde` (Bilanz, nicht gemeldete Lücke) + `regel27_verstoesse`; dazu `stille_fehler_aenderungen` (betroffene Änderungen) und `stille_fehler_nur_textform` (davon Zellen, die sich nur in Leerraum, unsichtbaren Zeichen oder Absatzgrenzen vom Soll unterscheiden).
 
