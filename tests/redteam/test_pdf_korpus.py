@@ -87,10 +87,6 @@ def _pruefe_stille_abweichung(a, ab: dict, was: str) -> None:
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-105 Korpus synth_0024_schwer (Stoerer 'verschmolzen'): eine Ersetzung ohne Leerzeichen "
-                          "wird ein einziges gestrichenes Wort, das neue Wort geht verloren (wie RT-60, hier im "
-                          "Korpus); Besitzer K-PDF")
 def test_rt105_korpus_verschmolzene_ersetzung_seed24(tmp_path):
     a, ab = _abweichung(tmp_path, 24, "schwer")
     _pruefe_stille_abweichung(a, ab, "Paar 24")

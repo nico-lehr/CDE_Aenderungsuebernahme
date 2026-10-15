@@ -342,3 +342,68 @@ def test_blaue_ueberschriften_bleiben_neu_wenn_es_keine_gestaltung_sein_kann(tmp
     kopf = [b for b in a.blocks if b.kind == "ueberschrift"]
     assert kopf and all(t.status == ADD for b in kopf for t in b.tokens)
     assert a.luecken == []
+
+
+# =================================================================================================
+# Verschmolzene Ersetzungen: kein Wortteil geht verloren
+# =================================================================================================
+def _einzel(tmp_path, markup: str, **kw):
+    d = dok(**kw)
+    d.block(markup)
+    return lese(tmp_path, d)
+
+
+def test_ersetzung_ohne_leerzeichen_behaelt_alten_und_neuen_text(tmp_path):
+    a = _einzel(tmp_path, "Die {-Netzleistung-}{+Leistung+} betraegt 5 kW.")
+    t = next(t for t in alle_tokens(a) if "eistung" in t.old + t.new)
+    assert (t.old, t.new, t.status) == ("Netzleistung", "Leistung", MOD)
+    b = a.blocks[0]
+    assert b.alt_text == "Die Netzleistung betraegt 5 kW." and b.neu_text == "Die Leistung betraegt 5 kW."
+
+
+@pytest.mark.parametrize("variante", ["farbe", "strich", "hintergrund", "annot"])
+def test_ersetzung_ohne_leerzeichen_in_allen_stilen(tmp_path, variante):
+    a = _einzel(tmp_path, "Die {-Netzleistung-}{+Leistung+} betraegt 5 kW.", variante=variante)
+    b = a.blocks[0]
+    assert b.alt_text == "Die Netzleistung betraegt 5 kW." and b.neu_text == "Die Leistung betraegt 5 kW."
+
+
+def test_unveraenderter_wortanfang_bleibt_im_alten_stand(tmp_path):
+    a = _einzel(tmp_path, "Die Anlage ist ab{+gesichert+} und sicher.")
+    t = token(a, "abgesichert")
+    assert (t.old, t.new, t.status) == ("ab", "abgesichert", MOD)
+    assert a.blocks[0].alt_text == "Die Anlage ist ab und sicher."
+
+
+def test_teilmarkierung_am_wortende_bleibt_ein_aendern(tmp_path):
+    a = _einzel(tmp_path, "Die Rack{+s+} werden geprueft und {-Modul-}{+Module+} ebenso.")
+    t = token(a, "Racks")
+    assert (t.old, t.new, t.status) == ("Rack", "Racks", MOD)
+    t2 = token(a, "Module")
+    assert (t2.old, t2.new) == ("Modul", "Module")
+
+
+def test_gleich_lange_ersetzung_bleibt_ein_aendern(tmp_path):
+    a = _einzel(tmp_path, "Es sind {-100-}{+120+} kWh.")
+    t = token(a, "120")
+    assert (t.old, t.new, t.status) == ("100", "120", MOD)
+
+
+def test_satzzeichen_am_markierten_wort_bleibt_ein_wort(tmp_path):
+    a = _einzel(tmp_path, "Es sind {+120 kWh+}. Danach folgt Text.")
+    t = token(a, "kWh.")
+    assert t.status == ADD and t.new == "kWh." and t.old == ""
+
+
+def test_linie_die_knapp_den_letzten_buchstaben_verfehlt_streicht_das_ganze_wort(tmp_path):
+    from tests.fixtures.pdf_writer import breite
+    y = 842 - (64 + 11 * 0.55)
+
+    def pdf(abdeckung_bis: str) -> bytes:
+        inhalt = zeile(56, 64, "Wartung") + "0 G 0.8 w 56 %.2f m %.2f %.2f l S\n" % (y, 56 + breite(abdeckung_bis, 11), y)
+        return roh_pdf([RohSeite(inhalt=inhalt)])
+    a = lese(tmp_path / "eins", pdf("Wartun"))                  # ein Buchstabe fehlt: Linie knapp daneben
+    assert (token(a, "Wartung").old, token(a, "Wartung").status) == ("Wartung", DEL)
+    a = lese(tmp_path / "zwei", pdf("Wart"))                    # drei Buchstaben fehlen: bleibt Teilmarkierung
+    t = alle_tokens(a)[0]
+    assert t.status == MOD and t.old == "Wartung" and t.new == "ung" and "teilweise_markiert" in t.hinweis

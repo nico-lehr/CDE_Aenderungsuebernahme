@@ -40,6 +40,7 @@ _HINWEIS_TEXT = {
     "unbekannte_farbe": "Einzelne Wörter haben eine Farbe, die nicht in der Legende steht; sie gelten als unverändert.",
     "linie_unklar": "Eine Linie läuft quer durch den Text (Zierlinie?). Sie wurde nicht als Durchstreichung gewertet.",
     "link": "Hyperlink: die blaue Farbe wurde nicht als „neu“ gewertet.",
+    "teilweise_markiert": "Ein Wort ist nur zum Teil markiert (Linie oder Fläche deckt nicht das ganze Wort). Bitte prüfen.",
     "design_blau": "Die Überschrift ist blau wie alle Überschriften des Dokuments. Das wurde als Gestaltung gewertet, nicht als „neu“.",
     "design_flaeche": "Eine Farbfläche hinter dem Text sieht nach Gestaltung aus (Tabellenkopf, Streifen). "
                       "Sie wurde nicht als Markierung gewertet.",
@@ -559,6 +560,30 @@ class _Markierer:
         return erg
 
 
+def _zeichenstatus(g: list[_Z], anteil: float) -> list[str]:
+    """Status je Zeichen eines Wortes. Der Status jedes Zeichens bleibt erhalten, damit nichts verloren geht:
+    'Netzleistung' (gestrichen) + 'Leistung' (neu) ohne Leerzeichen bleibt ein Wort mit altem UND neuem Text,
+    'ab' + 'gesichert' (neu) behaelt das unveraenderte 'ab'.
+    Nur bei Markierungen aus Geometrie (Linie, Flaeche, Kommentar) wird ein einzelnes unmarkiertes Randzeichen
+    (Satzzeichen, hoechstens ein Buchstabe) dem Rest angepasst, weil Linien und Flaechen oft knapp daneben liegen."""
+    n = len(g)
+    st = [z.status for z in g]
+    n_del = st.count(DEL)
+    n_add = st.count(ADD)
+    if n_del and n_add:
+        return st                      # Ersetzung ohne Leerzeichen: Zeichen einzeln behalten
+    marke = DEL if n_del else ADD if n_add else None
+    if marke is None or (n_del + n_add) / n < anteil:
+        return st
+    behalten = [i for i, z in enumerate(g) if z.status == KEEP]
+    buchstaben = [i for i in behalten if g[i].text[:1].isalnum()]
+    knapp_daneben = (len(buchstaben) == 1 and buchstaben[0] in (0, n - 1)
+                     and all(z.unscharf for z in g if z.status == marke))
+    if not buchstaben or knapp_daneben:
+        return [marke] * n
+    return st
+
+
 def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> tuple[list[PdfToken], list[_Info]]:
     """Zeichen einer Zeile -> Woerter (mit Statusanteilen)."""
     lay = cfg["layout"]
@@ -573,15 +598,7 @@ def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> t
     infos = []
     for g in gruppen:
         n = len(g)
-        n_del = sum(1 for z in g if z.status == DEL)
-        n_add = sum(1 for z in g if z.status == ADD)
-        anteil = cfg["durchstreichung"]["wort_anteil"]
-        if n_del / n >= anteil:
-            st = [DEL] * n
-        elif n_add / n >= anteil and n_del == 0:
-            st = [ADD] * n
-        else:
-            st = [z.status for z in g]
+        st = _zeichenstatus(g, cfg["durchstreichung"]["wort_anteil"])
         old = "".join(z.text for z, s in zip(g, st) if s in (KEEP, DEL))
         new = "".join(z.text for z, s in zip(g, st) if s in (KEEP, ADD))
         if all(s == KEEP for s in st):
@@ -608,6 +625,8 @@ def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> t
             hin.add("unbekannte_farbe")
         if _LIGATUR.search(old + new):
             hin.add("ligatur")
+        if status == MOD and any(z.unscharf for z in g):
+            hin.add("teilweise_markiert")
         tokens.append(PdfToken(old=old, new=new, status=status, page=seite, bbox=bbox, hinweis=";".join(sorted(hin))))
         infos.append(info)
     return tokens, infos

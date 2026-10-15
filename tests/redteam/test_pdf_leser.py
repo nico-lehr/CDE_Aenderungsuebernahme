@@ -19,9 +19,6 @@ from tests.fixtures.pdf_writer import PdfDokument
 # a) Verschmolzene Ersetzung
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-60 Verschmolzene Ersetzung {-Netzleistung-}{+Leistung+}: wird EIN gestrichenes Wort "
-                          "'NetzleistungLeistung', der neue Text geht verloren; Besitzer K-PDF")
 def test_rt60_verschmolzene_ersetzung_ungleich_lang(tmp_path):
     d = dok()
     d.block("Die {-Netzleistung-}{+Leistung+} betraegt 5 kW.")
@@ -38,9 +35,6 @@ def test_rt60_verschmolzene_ersetzung_ungleich_lang(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-61 'ab{+gesichert+}': das unveraenderte 'ab' fehlt im alten Stand (old=''), "
-                          "obwohl es im PDF schwarz steht; Besitzer K-PDF")
 def test_rt61_unveraenderter_wortteil_bleibt_im_alten_stand(tmp_path):
     d = dok()
     d.block("Die Anlage ist ab{+gesichert+} und sicher.")
