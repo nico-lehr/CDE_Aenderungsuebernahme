@@ -1,5 +1,7 @@
 # Red-Team R3: Analyse der 43 „stillen Fehler“ im Entwicklungskorpus
 
+> **Hinweis (15.10.2026, nach den Reparaturen):** Diese Tabelle beschreibt den Stand **vor** den Reparaturen. Fast alle Fälle sind inzwischen behoben (Marker entfernt, Tests laufen als Schutz-Tests); RT-126/128 wurden synthetisch neu gebaut. Der heutige Stand steht in `docs/status.md`.
+
 Alles **erfunden** (Regel 16). `src/`, `config/` und `tests/fixtures/` sind unverändert; es wurde nur Neues unter `tests/redteam/` angelegt.
 Der Testkorpus (Seeds ab 1000) wurde **nicht** erzeugt oder gemessen (Regel 11); `_bau_korpus.paar()` bricht bei Seeds ≥ 1000 ab.
 

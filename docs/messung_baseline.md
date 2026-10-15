@@ -25,3 +25,16 @@ Lesehilfe: Die Störer-Familien überlappen (ein Paar hat mehrere), deshalb sind
 Kopf-/Fußzeile (24), CMYK/Grau (23), Bild (23), Farbtöne (21), Lfd-Spalte (19), Silbentrennung / nummerierte Listen / Sonderzeichen (je 18), Zwei-Spalten (17).
 
 Nachmessen: `python -m src.cli messen --korpus entwicklung --mit-vorschlaegen`; Korpus neu erzeugen: `python scripts/erzeuge_paare.py --korpus entwicklung --seeds 1-60`.
+
+## Verlauf der stillen Fehler (Entwicklungskorpus, gleiche Seeds 1–60)
+
+| Messung | Stand des Tools | Stille Fehler | Treffergenauigkeit automatisch | Zweiter Lauf ändert nichts |
+|---|---|---|---|---|
+| 001 | Baseline (nur Schema 2, Messwerkzeug, API) | 64 | 92,3 % | 0 von 60 |
+| 002 | + Planen/Anwenden (K-PL), API | 62 | 92,6 % | 43 von 60 |
+| 003 | + Excel-Zuordnung (K-XL), Excel-Sicherheit | 43 | 95,5 % | 50 von 60 |
+| 004 | + PDF-Leser (Lücken, Verschmelzung, Farben, Rotation) | 15 | 97,6 % | 51 von 60 |
+| 005 | + Kern-Reste und **ehrlichere Messung** | **5** | **98,5 %** | 51 von 60 |
+
+Zwischen 004 und 005 wurde das Messwerkzeug strenger (Regel-27-Prüfung, strenger Zellvergleich, Struktur-Vergleich, Formelzellen getrennt) und zugleich
+von 16 Phantom-Fehlern befreit. Die Soll-Zellen-Zahl (Haupt-Spalten) ist deshalb nicht über alle Messungen vergleichbar (755 → 699 → 681).
