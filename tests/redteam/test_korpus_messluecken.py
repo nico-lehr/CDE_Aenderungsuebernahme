@@ -6,8 +6,8 @@ Sabotage greift nur im Messwerkzeug an (das Ergebnis des Tools wird verfaelscht)
 
   * Teil A (WAECHTER, normale Tests, muessen gruen bleiben): Sabotage, die die Messung bemerkt. Das schuetzt davor, dass
     ein spaeterer Umbau von messen.py diese Faelle verliert.
-  * Teil B (xfail strict, Besitzer Mess-Bauer): Sabotage, die die Messung NICHT bemerkt. Wird die Messung besser,
-    wird der Test XPASS (rot) und der Mess-Bauer entfernt den Marker.
+  * Teil B (Besitzer Mess-Bauer): Sabotage, die die Messung frueher NICHT bemerkte (RT-135 bis RT-142). Sie ist repariert, die
+    Tests sind jetzt normale Tests (ohne xfail) und halten die neue Wirkung fest.
 
 Alles ERFUNDEN (Regel 16). Vorschlaege zur Reparatur: tests/redteam/README_korpus.md.
 """
@@ -115,11 +115,6 @@ SABOTAGE_TEXT = {
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-135 MESSLUECKE: Verfaelschungen, die nur Leerraum, Absatzgrenzen (Zeilenumbruch), weiche/unsichtbare "
-                          "Zeichen oder Ligaturen betreffen, sind fuer die Messung unsichtbar (_k normalisiert alles weg); "
-                          "u. a. RT-06/07/12 (doppeltes Leerzeichen, Ligatur) und verschmolzene Absaetze bleiben unbemerkt; "
-                          "Besitzer Mess-Bauer (messen.py, _k)")
 @pytest.mark.parametrize("name", sorted(SABOTAGE_TEXT))
 def test_rt135_messung_bemerkt_unsichtbare_textverfaelschung(tmp_path, name):
     res = messe_mit_sabotage(_basis_sauber(tmp_path), SABOTAGE_TEXT[name])
@@ -158,17 +153,54 @@ SABOTAGE_STRUKTUR = {
 }
 
 
+STRUKTUR_ART = {"blatt_umbenannt": "blatt", "blatt_ausgeblendet": "sichtbarkeit", "zeile_ausgeblendet": "zeile_versteckt",
+                "spalte_ausgeblendet": "spalte_versteckt", "zellen_verbunden": "verbunden", "datenpruefung_dazu": "validierung",
+                "schrift_fett_rot": "schrift"}
+
+
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-136 MESSLUECKE: umbenanntes oder ausgeblendetes Blatt, ausgeblendete Zeile/Spalte, verbundene Zellen, "
-                          "Datenvalidierung und Schriftformat (R1: RT-18..26, RT-35/36) sind fuer die Messung unsichtbar, "
-                          "weil nur Zellwerte verglichen werden; Besitzer Mess-Bauer (messen.py, _lese_excel)")
 @pytest.mark.parametrize("name", sorted(SABOTAGE_STRUKTUR))
 def test_rt136_messung_bemerkt_strukturschaden(tmp_path, name):
+    """Der Befund `struktur_geaendert` (eigene Zaehlung, ohne Textinhalte) benennt die Art des Schadens."""
     res = messe_mit_sabotage(_basis_sauber(tmp_path), SABOTAGE_STRUKTUR[name])
-    if not _bemerkt(res):
-        scheitern(f"Strukturschaden '{name}' bleibt unbemerkt (stille Fehler {res['stille_fehler']}, Kollateral "
-                  f"{res['kollateral']}, Hinweise {res['hinweise']})")
+    art = STRUKTUR_ART[name]
+    if not res.get("struktur_geaendert") or not res["struktur_nach_art"].get(art):
+        scheitern(f"Strukturschaden '{name}' bleibt unbemerkt (struktur_geaendert {res.get('struktur_geaendert')}, "
+                  f"{res.get('struktur_nach_art')}, stille Fehler {res['stille_fehler']}, Hinweise {res['hinweise']})")
+    bericht = messen.fasse_zusammen([dict(res, name="synth_9100")], "entwicklung", "1", False)
+    ampel = next(k["ampel"] for k in bericht["kriterien"] if k["name"].startswith("Struktur unverändert"))
+    assert ampel == "NICHT ok"
+
+
+def test_rt136_waechter_zeilen_einfuegen_verschiebt_legitim_und_ist_kein_befund(tmp_path):
+    """Gegenprobe: Das Tool fuegt Zeilen in der Mitte ein (die Zeile mit eigener Hoehe darunter wandert mit). Das ist KEIN
+    Strukturbefund -- sonst waere jede Einfuegung ein Phantom-Fehler. (Ausgeblendete Zeilen, verbundene Zellen und Validierung
+    UNTER der Einfuegestelle setzt das Tool absichtlich auf 'pruefen'; deren Verschiebung prueft test_messen.py direkt.)"""
+    elemente = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."),
+                ("h", "2 Zwei"), ("p", "Die Reaktionszeit darf 150 ms nicht ueberschreiten."),
+                ("h", "{+2.5 Neu+}"), ("p", "{+Ein neuer Absatz mit Zusatz.+}"),
+                ("h", "3 Drei"), ("p", "Alle Steckverbindungen sind eindeutig beschriftet."),
+                ("h", "4 Vier"), ("p", "Die Lieferung umfasst alles Zubehoer.")]
+    ordner = tmp_path / "paar"
+    ordner.mkdir()
+    baue_pdf(ordner / "aenderungen.pdf", elemente, "farbe")
+    baue_excel(ordner / "nachher.xlsx", zustaende(elemente, True), "L3", True)
+    baue_excel(ordner / "vorher.xlsx", zustaende(elemente, False), "L3", True)
+    from openpyxl import load_workbook
+    wb = load_workbook(str(ordner / "vorher.xlsx"))
+    ws = wb["CDE"]
+    ws.row_dimensions[7].height = 40                # unter der Einfuegestelle: wandert mit
+    ws.row_dimensions[3].hidden = True              # ueber der Einfuegestelle: bleibt
+    ws.merge_cells("D2:D3")
+    dv = DataValidation(type="list", formula1='"A,B"')
+    dv.add("D2:D3")
+    ws.add_data_validation(dv)
+    wb.save(str(ordner / "vorher.xlsx"))
+    res = messen.messe_paar(ordner, False, tmp_path / "ergebnis.xlsx")
+    aufbau(res["auto_gesamt"] >= 2 and len(load_workbook(str(tmp_path / "ergebnis.xlsx"))["CDE"]["A"]) > ws.max_row,
+           "Das Tool muss Zeilen einfuegen")
+    assert res["struktur_geaendert"] == 0, res["struktur_nach_art"]
+    assert res["stille_fehler"] == 0
 
 
 # ==================================================================================================
@@ -204,10 +236,6 @@ def _plane_mit_offener_aenderung():
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-137 MESSLUECKE (Regel 27): wendet ein Tool eine 'pruefen'-Aenderung ohne Freigabe an, sieht die "
-                          "Messung besser aus (stille Fehler sinken, Treffergenauigkeit und Abdeckung steigen) und meldet "
-                          "den Verstoss nicht; Besitzer Mess-Bauer (messen.py: Ist-Zelle ohne uebernommene Aenderung als Fehler)")
 def test_rt137_pruefen_ohne_freigabe_angewendet_wird_gemeldet(tmp_path):
     ordner = tmp_path / "paar"
     ordner.mkdir()
@@ -219,19 +247,21 @@ def test_rt137_pruefen_ohne_freigabe_angewendet_wird_gemeldet(tmp_path):
         with _alle_pruefen_ohne_freigabe_anwenden():
             bruch = messen.messe_paar(ordner, False)
     aufbau(ehrlich["aenderungen_nach_status"].get(PRUEFEN) == 1, "Erwartet: genau eine offene Aenderung")
-    aufbau(bruch["auto_richtig"] == bruch["auto_gesamt"] == 1 and bruch["erreicht_auto"] == bruch["soll_zellen"] == 1,
-           "Durch den Verstoss muss das Ergebnis dem Soll entsprechen (sonst gilt der Fall nicht)")
-    if bruch["stille_fehler"] == 0 and bruch["erreicht_auto"] >= ehrlich["erreicht_auto"]:
-        scheitern(f"Der Verstoss gegen Regel 27 bleibt unbemerkt und sieht BESSER aus: stille Fehler {ehrlich['stille_fehler']} "
-                  f"-> {bruch['stille_fehler']}, Abdeckung ohne Nachfrage {ehrlich['erreicht_auto']} -> {bruch['erreicht_auto']} "
-                  f"von {bruch['soll_zellen']} Soll-Zellen")
+    aufbau(bruch["auto_gesamt"] == 1 and bruch["soll_zellen"] == 1,
+           "Durch den Verstoss muss genau eine Zelle geaendert sein (sonst gilt der Fall nicht)")
+    # Die Zelle ist inhaltlich richtig. Trotzdem: eigener schwerer Befund, stiller Fehler, nicht "ohne Nachfrage erreicht".
+    if bruch["regel27_verstoesse"] != 1 or bruch["stille_fehler"] < 1 or bruch["erreicht_auto"] >= 1 or bruch["auto_richtig"] >= 1:
+        scheitern(f"Der Verstoss gegen Regel 27 wird nicht als solcher gemeldet: regel27_verstoesse {bruch['regel27_verstoesse']}, "
+                  f"stille Fehler {ehrlich['stille_fehler']} -> {bruch['stille_fehler']}, Abdeckung ohne Nachfrage "
+                  f"{ehrlich['erreicht_auto']} -> {bruch['erreicht_auto']} von {bruch['soll_zellen']} Soll-Zellen")
+    assert "regel27_verstoss" in bruch["stille_fehler_nach_art"]
+    bericht = messen.fasse_zusammen([dict(bruch, name="synth_9101")], "entwicklung", "1", False)
+    assert next(k["ampel"] for k in bericht["kriterien"] if k["name"].startswith("Regel 27")) == "NICHT ok"
+    assert next(k["ampel"] for k in bericht["kriterien"] if k["name"] == "Stille Fehler") == "NICHT ok"
+    assert ehrlich["regel27_verstoesse"] == 0 and ehrlich["stille_fehler"] == 0     # ohne Verstoss alles in Ordnung
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-138 MESSLUECKE (Regel 27), Korpus Seeds 11 und 58: Gleicher Verstoss wie RT-137 an echten Korpus-Paaren; "
-                          "die Messung meldet 0 stille Fehler, obwohl eine 'pruefen'-Aenderung ohne Freigabe angewendet wurde; "
-                          "Besitzer Mess-Bauer")
 @pytest.mark.parametrize("seed", [11, 58])
 def test_rt138_korpus_pruefen_ohne_freigabe_angewendet(seed):
     ordner = paar(seed, "standard")
@@ -239,9 +269,10 @@ def test_rt138_korpus_pruefen_ohne_freigabe_angewendet(seed):
     aufbau(bool(offen), "Das Paar hat keine offene Aenderung")
     with _alle_pruefen_ohne_freigabe_anwenden():
         bruch = messen.messe_paar(ordner, False)
-    if bruch["stille_fehler"] == 0:
-        scheitern(f"Seed {seed}: {len(offen)} 'pruefen'-Aenderung(en) ohne Freigabe angewendet -- die Messung zeigt 0 stille "
-                  f"Fehler, Treffergenauigkeit {bruch['auto_richtig']} von {bruch['auto_gesamt']}")
+    if bruch["stille_fehler"] == 0 or bruch["regel27_verstoesse"] < 1:
+        scheitern(f"Seed {seed}: {len(offen)} 'pruefen'-Aenderung(en) ohne Freigabe angewendet -- die Messung zeigt "
+                  f"{bruch['stille_fehler']} stille Fehler und {bruch['regel27_verstoesse']} Regel-27-Verstoesse, "
+                  f"Treffergenauigkeit {bruch['auto_richtig']} von {bruch['auto_gesamt']}")
 
 
 # ==================================================================================================
@@ -277,10 +308,6 @@ def _stuerzt_im_wiederholungslauf(sabotage=None):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-139 MESSLUECKE: Stuerzt der Wiederholungslauf (Idempotenz-Pruefung) eines Paares ab, wird das ganze "
-                          "Paar 'nicht messbar' mit 0 stillen Fehlern -- auch ein stiller Fehler des ERSTEN Laufs, der schon "
-                          "gemessen werden konnte, geht verloren; Besitzer Mess-Bauer (messen.py, messe_paar/_fehlgeschlagen)")
 def test_rt139_absturz_im_wiederholungslauf_versteckt_stillen_fehler(tmp_path):
     ordner = baue_basis_paar(tmp_path / "eltern" / "synth_9001_basis")
     einzeln = messe_mit_sabotage(ordner, SABOTAGE_ERKANNT["falsches_wort"])
@@ -292,12 +319,13 @@ def test_rt139_absturz_im_wiederholungslauf_versteckt_stillen_fehler(tmp_path):
     if g["stille_fehler"] == 0:
         scheitern(f"Der stille Fehler des ersten Laufs ({einzeln['stille_fehler']}) ist weg: Bericht zeigt {g['stille_fehler']} "
                   f"stille Fehler, Paar 'nicht messbar'")
+    assert g["stille_fehler"] == einzeln["stille_fehler"] and g["paare_teilweise_gemessen"] == 1
+    paar = bericht["paare"][0]
+    assert paar["idempotent"] is None and paar["ausgefallene_messteile"] == [{"teil": "idempotenz", "grund": "ValueError"}]
+    assert "Absturz im Wiederholungslauf" not in json.dumps(bericht)
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-140 MESSLUECKE: Bei einem abgestuerzten Paar steht Kriterium 2 'Stille Fehler' auf 'ok' (Wert 0), "
-                          "ebenso 'Kollateralschaden'; nur Kriterium 1 wird rot; Besitzer Mess-Bauer (messen.py, fasse_zusammen)")
 def test_rt140_abgestuerztes_paar_laesst_kriterium_stille_fehler_gruen(tmp_path):
     ordner = baue_basis_paar(tmp_path / "eltern" / "synth_9002_basis")
     with _stuerzt_im_wiederholungslauf():
@@ -313,12 +341,9 @@ def test_rt140_abgestuerztes_paar_laesst_kriterium_stille_fehler_gruen(tmp_path)
 # Teil B5: Ohne erwartet.json (= bei ALLEN echten Paaren) kann die Messung eine fehlende Luecken-Meldung nie bemerken
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-141 MESSLUECKE: Die Pruefung 'erwartete Luecke nicht gemeldet' liest nur erwartet.json (nur bei "
-                          "erzeugten Paaren). Bei echten Paaren (Nicos Beispiele) bleibt eine verschluckte Scan-Seite "
-                          "unbemerkt, Kriterium 1 'Bilanz stimmig' steht auf 'ok'; Besitzer Mess-Bauer "
-                          "(messen.py: Luecken auch aus dem PDF selbst ableiten, z. B. Seiten ohne Textebene)")
-def test_rt141_scan_seite_ohne_erwartet_json_bleibt_unbemerkt(tmp_path):
+def test_rt141_scan_seite_ohne_erwartet_json_wird_als_plausibilitaet_gemeldet(tmp_path):
+    """Ohne erwartet.json ist die Luecken-Pruefung (Kriterium 1) NICHT moeglich -- das wird ausgewiesen (nicht "ok"), und eine
+    unabhaengige Plausibilitaetspruefung direkt am PDF (pdfplumber) weist die Scan-Seite als HINWEIS aus, nie als Fehler."""
     ordner = tmp_path / "paar"
     ordner.mkdir()
     d = PdfDokument(variante="farbe")
@@ -338,34 +363,68 @@ def test_rt141_scan_seite_ohne_erwartet_json_bleibt_unbemerkt(tmp_path):
     with mock.patch.object(messen, "analysiere_pdf", ohne_luecken):
         res = messen.messe_paar(ordner, False)
     aufbau(not (ordner / "erwartet.json").exists() and res["luecken_gemeldet"] == 0, "Testaufbau: keine Luecke erwartet/gemeldet")
-    if res["stille_fehler"] == 0 and res["luecken_nicht_gemeldet"] == 0:
-        scheitern("Eine Scan-Seite mit Aenderungen wurde nicht als Luecke gemeldet, die Messung zeigt 0 stille Fehler "
-                  f"(Bilanz stimmt: {res['bilanz_stimmt']}, vollstaendig: {res['vollstaendig']})")
+    scan = [h for h in res["plausibilitaet_hinweise"] if h["art"] == "keine_textzeichen"]
+    if not scan or scan[0]["gemeldet"] or res["plausibilitaet_ungemeldet"] < 1:
+        scheitern("Eine Seite ohne Textzeichen (Scan) wird von der Plausibilitaetspruefung nicht als ungemeldet ausgewiesen: "
+                  f"{res['plausibilitaet_hinweise']}")
+    assert res["luecken_pruefbar"] is False
+    assert res["luecken_nicht_gemeldet"] == 0 and res["stille_fehler"] == 0     # nur ein Hinweis, nie ein eigener Fehler
+    bericht = messen.fasse_zusammen([dict(res, name="echt_0001")], "entwicklung", "", False)
+    k1 = next(k for k in bericht["kriterien"] if k["name"] == "Bilanz stimmig")
+    assert k1["ampel"] == "nicht gemessen" and "erwartet.json" in k1["wert"]
+    k1b = next(k for k in bericht["kriterien"] if k["name"].startswith("Plausibilit"))
+    assert k1b["ampel"] == "Hinweis"
+
+
+def test_rt141_mit_erwartet_json_ist_die_luecken_pruefung_moeglich(tmp_path):
+    ordner = baue_basis_paar(tmp_path / "basis")
+    (ordner / "erwartet.json").write_text(json.dumps({"format": 1, "profil": "standard", "luecken": []}), encoding="utf-8")
+    res = messen.messe_paar(ordner, False)
+    assert res["luecken_pruefbar"] is True
+    bericht = messen.fasse_zusammen([dict(res, name="synth_9102")], "entwicklung", "1", False)
+    assert next(k["ampel"] for k in bericht["kriterien"] if k["name"] == "Bilanz stimmig") == "ok"
 
 
 # ==================================================================================================
 # Teil B6: "Nicht verwaltete" Spalten: Soll-Zellen dort zaehlen weder bei der Abdeckung noch als Fehler
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-142 MESSLUECKE: Soll-Zellen in nicht verwalteten Spalten (Korpus: 305 von 1004 = 30 %) fehlen in "
-                          "Abdeckung und Fehlerzaehlung; hier 100 % Abdeckung und lauter ok, obwohl 6 von 7 geaenderten Zellen "
-                          "im Ergebnis fehlen; die Zahl steht nur im md-Bericht, in keinem Kriterium; Besitzer Mess-Bauer")
-def test_rt142_unverwaltete_soll_zellen_tauchen_in_keinem_kriterium_auf(tmp_path):
+def test_rt142_unverwaltete_soll_zellen_tauchen_in_einem_kriterium_auf(tmp_path):
     zusatz = " Dieser lange Zusatz steht nur in der ersten Zeile und macht die Inhaltsspalte zur Spalte mit den meisten Aenderungen."
     text = "Der Inhalt dieser Section steht hier und ist ein ganz normaler Satz ueber die Anlage Nummer {}."
     vorher = [KOPF] + [[str(i), f"Titel {i}", text.format(i), "A"] for i in range(1, 7)]
     nachher = [KOPF] + [[str(i), f"Titel {i}", text.format(i) + (zusatz if i == 1 else ""), "B"] for i in range(1, 7)]
     ergebnis = [KOPF] + [[str(i), f"Titel {i}", text.format(i) + (zusatz if i == 1 else ""), "A"] for i in range(1, 7)]
     res = messe_mit_fertigem_ergebnis(tmp_path, vorher, nachher, ergebnis)
-    aufbau(res["soll_zellen_unverwaltet"] == 6 and res["soll_zellen"] == 1 and res["erreicht_auto"] == 1,
-           f"Testaufbau: erwartet 1 verwaltete (erreicht) und 6 unverwaltete Soll-Zellen, gemessen {res['soll_zellen']} / "
-           f"{res['soll_zellen_unverwaltet']}")
+    aufbau(res["soll_zellen"] == 1 and res["erreicht_auto"] == 1,
+           f"Testaufbau: erwartet 1 verwaltete (erreichte) Soll-Zelle, gemessen {res['soll_zellen']} / {res['erreicht_auto']}")
+    # Die 6 Zellen der Bemerkungsspalte (A -> B) fehlen im Ergebnis: eigene Zaehlung, eigene Fehlerzaehlung, eigenes Kriterium
+    assert res["soll_zellen_unverwaltet_sonstige"] == 6 and res["soll_zellen_unverwaltet_sonstige_verfehlt"] == 6
     bericht = messen.fasse_zusammen([dict(res, name="synth_9003")], "entwicklung", "1", False)
-    # Kriterium 5 (Lese-Luecke) bleibt aussen vor: das PDF dieses Testpaars ist leer, die Lese-Luecke daher absichtlich 100 %
-    alle_ok = all(k["ampel"] in ("ok", "nicht gemessen") for k in bericht["kriterien"] if k["nr"] != 5)
-    erwaehnt = any("verwaltet" in k["name"].lower() for k in bericht["kriterien"])
-    if alle_ok and not erwaehnt:
-        scheitern(f"Abdeckung {bericht['gesamt']['abdeckung_ohne_nachfrage']} und alle Kriterien 'ok', obwohl "
-                  f"{res['soll_zellen_unverwaltet']} geaenderte Soll-Zellen (nicht verwaltete Spalte) im Ergebnis fehlen; "
-                  f"kein Kriterium nennt sie")
+    k = next((k for k in bericht["kriterien"] if "verwaltet" in k["name"].lower()), None)
+    if k is None or k["ampel"] == "ok":
+        scheitern(f"Abdeckung {bericht['gesamt']['abdeckung_ohne_nachfrage']}, aber {res['soll_zellen_unverwaltet_sonstige']} geaenderte "
+                  "Soll-Zellen (nicht verwaltete Spalte) fehlen im Ergebnis; kein Kriterium nennt sie")
+    assert k["ampel"] == "NICHT ok" and "6" in k["wert"]
+    assert bericht["gesamt"]["soll_zellen_alle"] == 7
+
+
+def test_rt142_formelzellen_und_nummerierung_fallen_nicht_heraus(tmp_path):
+    """Formelzellen und neu nummerierte Spalten werden getrennt gezaehlt (mit eigener Fehlerzaehlung); harmlose Fuellung neuer
+    Zeilen bleibt 'unverwaltet' und ist aufgeschluesselt; Formeln zaehlen nicht als Soll-Woerter der Lese-Luecke."""
+    zusatz = " Dieser lange Zusatz steht nur in der ersten Zeile und macht die Inhaltsspalte zur Spalte mit den meisten Aenderungen."
+    text = "Der Inhalt dieser Section steht hier und ist ein ganz normaler Satz ueber die Anlage Nummer {}."
+    neu_text = "Ein ganz neuer Absatz ohne Bezug zu den anderen hier."
+    kopf = KOPF + ["Summe", "Lfd"]
+    vorher = [kopf] + [[str(i), f"Titel {i}", text.format(i), "A", f"=LEN(C{i + 1})", str(i)] for i in range(1, 7)]
+    nachher = [kopf] + [[str(i), f"Titel {i}", text.format(i) + (zusatz if i == 1 else ""), "A", f"=LEN(C{i + 2})", str(i + 1)]
+                        for i in range(1, 7)] + [["7", "Neu", neu_text, "B", None, None]]
+    ergebnis = [kopf] + [[str(i), f"Titel {i}", text.format(i) + (zusatz if i == 1 else ""), "A", f"=LEN(C{i + 1})", str(i)]
+                         for i in range(1, 7)] + [["7", "Neu", neu_text, "B", None, None]]
+    res = messe_mit_fertigem_ergebnis(tmp_path, vorher, nachher, ergebnis)
+    assert res["soll_zellen_formel"] == 6 and res["soll_zellen_formel_verfehlt"] == 6       # verschobene Formeln: verfehlt
+    assert res["soll_zellen_unverwaltet_sonstige"] == 6 and res["soll_zellen_unverwaltet_sonstige_verfehlt"] == 6   # Lfd neu nummeriert
+    assert res["soll_zellen_unverwaltet"] == 1                                                 # "B" der neuen Zeile
+    assert res["soll_zellen_unverwaltet_aufschluesselung"] == {"neue_zeile": 1, "entfernte_zeile": 0}
+    nur_haupt = messen.fasse_zusammen([dict(res, name="synth_9104")], "entwicklung", "1", False)["gesamt"]
+    assert nur_haupt["soll_zellen_alle"] == res["soll_zellen"] + 6 + 6 + 1

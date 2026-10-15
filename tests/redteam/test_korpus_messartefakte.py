@@ -104,11 +104,11 @@ def test_rt126_synthetisch_offene_aenderung_in_derselben_zelle(tmp_path, art):
            "Erwartet: mindestens eine uebernommene und genau eine offene Aenderung")
     aufbau(res["vorschlaege_gesamt"] == 1 and res["vorschlaege_richtig"] == 1,
            "Mit Freigabe der offenen Aenderung muss die Zelle dem Soll entsprechen")
-    if res["stille_fehler"] or res["aenderungen_uebernommen_falsch"]:
-        scheitern(f"{res['stille_fehler']} stille Fehler {res['stille_fehler_nach_art']}, {res['aenderungen_uebernommen_falsch']} "
+    if res["stille_fehler"] or res.get("aenderungen_uebernommen_falsch"):
+        scheitern(f"{res['stille_fehler']} stille Fehler {res['stille_fehler_nach_art']}, {res.get('aenderungen_uebernommen_falsch')} "
                   f"Aenderung(en) 'falsch', obwohl die angewendete Aenderung richtig ist ({art}) und die offene sichtbar auf "
                   f"'pruefen' steht")
-    aufbau(res["zellen_warten_auf_freigabe"] == 1 and res["pruefen_zellen"] == 1,
+    aufbau(res.get("zellen_warten_auf_freigabe") == 1 and res["pruefen_zellen"] == 1,
            "Die Zelle muss als 'wartet auf Freigabe' und 'zu pruefen' gezaehlt werden")
 
 
