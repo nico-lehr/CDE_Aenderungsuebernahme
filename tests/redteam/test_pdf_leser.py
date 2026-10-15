@@ -7,30 +7,13 @@ Die FALSCHE Wirkung wird als AssertionError gemeldet (`scheitern`), Fehler im Te
 Massstab ("Bilanz-Prinzip"): Der Leser darf entweder KORREKT lesen oder muss die Unsicherheit SICHTBAR melden
 (PdfToken.hinweis, PdfBlock.hinweise, PdfAnalyse.luecken, Warnung). Nie still falsch.
 """
-import random
-
 import pytest
 
 from src.models import ADD, DEL
 from tests.redteam._bau import aufbau, scheitern
-from tests.redteam._bau_pdf import (RohSeite, alle_tokens, bloecke_mit, dok, formen, geaendert, hinweis_bei, kopf_fuss_zone,
+from tests.redteam._bau_pdf import (RohSeite, alle_tokens, eindeutiger_text as _eindeutiger_text, bloecke_mit, dok, formen, geaendert, hinweis_bei, kopf_fuss_zone,
                                     kurz, lese, meldungen, roh_pdf, token, tokens_mit, zeile)
 from tests.fixtures.pdf_writer import PdfDokument
-
-# Wortschatz fuer eindeutige Fliesstexte (jedes Wort kommt nur einmal vor, damit man Bloecke sicher zuordnen kann)
-_VOKAB = ("Kuehlung Schaltschrank Messwert Sicherung Lueftung Zuleitung Steuerung Abnahme Wartung Anschluss Spannung "
-          "Frequenz Schutzleiter Erdung Batterie Wechselrichter Transformator Schalter Verteiler Kabeltrasse Brandmelder "
-          "Sensor Pruefung Dokumentation Betriebszustand Fernwartung Stoerung Protokoll Lieferant Betreiber Hersteller "
-          "Gehaeuse Zugang Schliessung Beleuchtung Notstrom Ladegeraet Zaehler Messstelle Netzfilter Ueberwachung "
-          "Alarmierung Leitstelle Bereitschaft Inbetriebnahme Abschaltung Zeitplan Grenzwert Toleranz Kennzeichnung "
-          "Beschriftung Unterlage Freigabe Nachweis Zertifikat Kalibrierung Messbericht").split()
-
-
-def _eindeutiger_text(seed: int, n: int, erstes: str, letztes: str, mitte: str = "") -> str:
-    rng = random.Random(seed)
-    w = rng.sample(_VOKAB, n)
-    return f"{erstes} " + " ".join(w) + (f" {mitte}" if mitte else "") + f" {letztes}"
-
 
 # ==================================================================================================
 # a) Verschmolzene Ersetzung

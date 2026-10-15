@@ -11,6 +11,7 @@ Zwei Wege, ein Test-PDF zu bauen:
 """
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -85,6 +86,22 @@ def roh_pdf(seiten: list[RohSeite], breite: float = SEITE_B, hoehe: float = SEIT
         out += b"%010d 00000 n \n" % o
     out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objekte) + 1, xref)
     return bytes(out)
+
+
+# ---------------------------------------------------------------- Texte
+# Wortschatz fuer eindeutige Fliesstexte (jedes Wort kommt nur einmal vor, damit man Bloecke sicher zuordnen kann)
+VOKAB = ("Kuehlung Schaltschrank Messwert Sicherung Lueftung Zuleitung Steuerung Abnahme Wartung Anschluss Spannung "
+          "Frequenz Schutzleiter Erdung Batterie Wechselrichter Transformator Schalter Verteiler Kabeltrasse Brandmelder "
+          "Sensor Pruefung Dokumentation Betriebszustand Fernwartung Stoerung Protokoll Lieferant Betreiber Hersteller "
+          "Gehaeuse Zugang Schliessung Beleuchtung Notstrom Ladegeraet Zaehler Messstelle Netzfilter Ueberwachung "
+          "Alarmierung Leitstelle Bereitschaft Inbetriebnahme Abschaltung Zeitplan Grenzwert Toleranz Kennzeichnung "
+          "Beschriftung Unterlage Freigabe Nachweis Zertifikat Kalibrierung Messbericht").split()
+
+
+def eindeutiger_text(seed: int, n: int, erstes: str, letztes: str, mitte: str = "") -> str:
+    rng = random.Random(seed)
+    w = rng.sample(VOKAB, n)
+    return f"{erstes} " + " ".join(w) + (f" {mitte}" if mitte else "") + f" {letztes}"
 
 
 # ---------------------------------------------------------------- Dokument-Fabrik
