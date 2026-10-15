@@ -42,6 +42,9 @@ planer:                       # Planen und Anwenden (src/planner.py, src/applier
   # Tabellen-Text mit senkrechten Strichen als Spaltentrenner ("Pos. | Bauteil | Menge"): nie automatisch uebernehmen
   tabellen_muster: ['(?:^|\s)\|(?:\s|$)']
   tabellen_min_treffer: 1     # so viele Spaltentrenner im Neutext genuegen
+  # Hinweis-Codes der PDF-Woerter (src/pdf_reader.py), bei denen die Aenderung nie automatisch uebernommen wird: der Bereich
+  # wurde nicht sicher gelesen (Spalten nebeneinander: ein Satz kann zerrissen sein). Weitere moegliche Codes: tabelle
+  unsichere_hinweise: [mehrspaltig]
   doppelt_min_woerter: 3      # Ab so vielen Woertern gilt "gleicher Absatz steht schon" als sicher (nicht uebernommen); kuerzer = nur Vorschlag
 
 # --- Schema 2: bisher im Code fest eingebaute Werte (Verhalten unveraendert; werden von K-XL / K-PL verdrahtet) ---

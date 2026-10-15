@@ -24,7 +24,7 @@ from .excel_model import Kandidat, ExcelModell, zahl_als_text
 from .matcher import Matcher, Treffer
 from .models import (ADD, DEL, HOCH, KEEP, MITTEL, MOD, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN,
                      Aenderung, Operation, PdfBlock, PdfToken)
-from .pdf_reader import PdfAnalyse
+from .pdf_reader import PdfAnalyse, hinweis_text
 from .textutil import kopf_zerlegen, norm, section_nummer
 
 STATUS_VON_STUFE = {HOCH: UEBERNOMMEN, MITTEL: PRUEFEN}
@@ -140,6 +140,7 @@ class _Planer:
         self._nach_norms: dict[tuple[str, ...], list[Kandidat]] | None = None   # Normform -> Kandidaten (Idempotenz)
         self._ag: list[str] = []                    # Gruende, warum die Ankerstelle des aktuellen neuen Blocks unsicher ist
         self._risiko_cache: dict[tuple[str, int], list[str]] = {}               # (Blatt, Einfuegezeile) -> Risiken
+        self._unsicher: dict[str, list[str]] = {}                               # Aenderung -> Saetze: Woerter in unsicher gelesenem PDF-Bereich
 
     # ------------------------------------------------------------ Helfer
     def treffer(self, b: PdfBlock) -> Treffer | None:
@@ -154,7 +155,20 @@ class _Planer:
                        woerter=sum(1 for t in toks if t.status != KEEP), block_idx=b.idx,
                        kontext=(b.neu_text or b.alt_text)[:400])
         self.out.append(ae)
+        self._merke_unsicher(ae, toks)
         return ae
+
+    def _merke_unsicher(self, ae: Aenderung, toks: list[PdfToken]) -> None:
+        """Woerter, die der PDF-Leser in einem unsicher gelesenen Bereich (z. B. Spalten nebeneinander) gefunden hat, werden nie
+        automatisch eingetragen. Welche Hinweis-Codes das sind, steht in config planer.unsichere_hinweise."""
+        codes = set(_planer_cfg(self.cfg).get("unsichere_hinweise", []))
+        if not codes:
+            return
+        for t in toks:
+            for c in filter(None, t.hinweis.split(";")):
+                satz = hinweis_text(c)
+                if c in codes and satz and satz not in self._unsicher.setdefault(ae.id, []):
+                    self._unsicher[ae.id].append(satz)
 
     def _setze(self, ae: Aenderung, stufe: str, grund: str = "") -> None:
         # Neutext pruefen: Steuerzeichen koennen nicht geschrieben werden, Ligaturen/(cid:N) sind nie "sicher"
@@ -163,6 +177,13 @@ class _Planer:
         if p["steuerzeichen"]:
             self._nicht(ae, "Der neue Text enthält Steuerzeichen und kann nicht in die Excel geschrieben werden.")
             return
+        if self._unsicher.get(ae.id):
+            if stufe == HOCH:
+                stufe = MITTEL
+            for h in self._unsicher[ae.id]:
+                self._hinweis(ae, h)
+            grund = (grund + "; " if grund else "") + ("Der Text steht in einem Bereich des PDF, der nicht sicher gelesen werden "
+                                                       "konnte (siehe Hinweise).")
         if p["verdaechtig"]:
             if stufe == HOCH:
                 stufe = MITTEL
@@ -605,6 +626,8 @@ class _Planer:
                 koerper.append(self.pdf.blocks[k])
                 k += 1
         ae = self._basis(b, "section_neu" if ist_kopf else "absatz_neu", b.tokens, "", b.neu_text)
+        for kb in koerper:              # die Folgeabsaetze stehen in derselben Excel-Zeile: ihr Zweifel gilt auch fuer die Section
+            self._merke_unsicher(ae, kb.tokens)
         anker = self._anker(b)
         if anker is None:
             self._nicht(ae, "Keine Ankerstelle in der Excel gefunden (kein benachbarter Text zuordenbar).")

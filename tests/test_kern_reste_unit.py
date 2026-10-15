@@ -394,3 +394,96 @@ def test_neuer_absatz_mit_tabellen_pipes_bleibt_auf_pruefen_mit_hinweis(tmp_path
 def test_neuer_absatz_mit_ergaenzungsstrich_wird_weiter_automatisch_uebernommen(tmp_path):
     l, neu = _neu_lauf(tmp_path, "Der Ein- und Ausgang ist beschriftet und kWh-Zähler sind plombiert.")
     assert (neu.status, neu.konfidenz) == ("uebernommen", "hoch"), (neu.status, neu.grund, neu.hinweise)
+
+
+# ===========================================================================================================
+# K-PDF: Silbentrennung mit kurzem ersten Stueck (RT-115 Seed 51) und Zwei-Spalten-Satz (RT-119 Seed 42)
+# ===========================================================================================================
+def _tok(alt: str, neu: str, status: str):
+    from src.models import PdfToken
+    return PdfToken(old=alt, new=neu, status=status, page=1, bbox=(0, 0, 1, 1))
+
+
+def test_weicher_trennstrich_nach_zwei_buchstaben_wird_zusammengefuegt():
+    from src.pdf_reader import _verbinden
+    z = _verbinden(_tok("", "ko", "add"), _tok("", "ntrolliert", "add"), True, set(), 2)
+    assert z is not None and z.new == "kontrolliert"
+    z = _verbinden(_tok("Ne", "Ne", "keep"), _tok("nnleistung", "nnleistung", "keep"), True, set(), 2)
+    assert z is not None and (z.old, z.new) == ("Nennleistung", "Nennleistung")
+
+
+def test_trennstrich_nach_zwei_buchstaben_ascii_wie_vorher():
+    from src.pdf_reader import _verbinden
+    z = _verbinden(_tok("", "ko-", "add"), _tok("", "ntrolliert", "add"), False, set(), 2)
+    assert z is not None and z.new == "kontrolliert"
+
+
+def test_zu_kurzes_stueck_oder_fehlender_strich_wird_nicht_zusammengefuegt():
+    from src.pdf_reader import _verbinden
+    assert _verbinden(_tok("", "k", "add"), _tok("", "ontrolliert", "add"), True, set(), 2) is None     # ein Buchstabe
+    assert _verbinden(_tok("", "k-", "add"), _tok("", "ontrolliert", "add"), False, set(), 2) is None
+    assert _verbinden(_tok("", "ko", "add"), _tok("", "ntrolliert", "add"), False, set(), 2) is None    # kein Trennstrich (nicht weich)
+    assert _verbinden(_tok("", "ko", "add"), _tok("", "Ntrolliert", "add"), True, set(), 2) is None     # Grossbuchstabe dahinter
+    assert _verbinden(_tok("", "Ein", "add"), _tok("", "und", "add"), True, {"und"}, 2) is None          # Ausnahmewort
+    assert _verbinden(_tok("", "ko", "add"), _tok("Ntrolliert", "", "del"), True, set(), 2) is None     # verschiedener Status
+
+
+def test_mindestlaenge_der_silbe_steht_in_der_config():
+    from src import config
+    assert config.lade("farben")["layout"]["silbentrennung_min_buchstaben"] == 2
+
+
+def _spalten_lauf(tmp_path, cfg=None):
+    from src.pdf_reader import analysiere_pdf
+    from src.planner import plane
+    from tests.redteam._bau import Lauf, baue_alt, uebernimm
+    from tests.redteam._bau_pdf import dok
+    kopf = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."),
+            ("h", "2 Zwei"), ("p", "Die Reaktionszeit darf 150 ms nicht ueberschreiten.")]
+    links = ["Der Nennwert von 20 Monate gilt bei 40 Grad Umgebungstemperatur. Die Betriebsspannung darf 120 V nicht "
+             "ueberschreiten.", "Bei Luefterausfall wird ein Bericht an die Leitstelle uebermittelt."]
+    rechts = "Bei Ueberstrom wird ein Alarm an die Leitstelle uebermittelt."
+    el_excel = kopf + [("h", "3 Drei"), ("p", links[0]), ("p", links[1]), ("h", "4 Vier"),
+                       ("p", "Die Lieferung umfasst alles Zubehoer fuer die Montage.")]
+    d = dok()
+    for art, markup in kopf + [("h", "3 Drei")]:
+        d.ueberschrift(markup) if art == "h" else d.block(markup)
+    d.zwei_spalten(links, ["{+" + rechts + "+}"])
+    d.ueberschrift("4 Vier")
+    d.block("Die Lieferung umfasst alles Zubehoer fuer die Montage.")
+    pdf = tmp_path / "a.pdf"
+    d.speichern(pdf)
+    alt = baue_alt(tmp_path, el_excel, "L1")
+    analyse = analysiere_pdf(pdf)
+    from src.excel_model import ExcelModell
+    xl = ExcelModell(alt)
+    l = Lauf(plan=plane(analyse, xl, cfg) if cfg else plane(analyse, xl), xl=xl, alt=alt)
+    return analyse, uebernimm(l), rechts
+
+
+def test_geaenderte_woerter_im_zwei_spalten_bereich_tragen_den_hinweis(tmp_path):
+    analyse, l, _ = _spalten_lauf(tmp_path)
+    assert any(lu["art"] == "mehrspaltig" for lu in analyse.luecken)
+    geaendert = [t for b in analyse.blocks for t in b.tokens if t.status != "keep"]
+    assert geaendert and all("mehrspaltig" in t.hinweis for t in geaendert)
+    unveraendert = [t for b in analyse.blocks for t in b.tokens if t.status == "keep"]
+    assert not any("mehrspaltig" in t.hinweis for t in unveraendert)
+    assert any("mehreren Spalten" in h for b in analyse.blocks for h in b.hinweise)
+
+
+def test_zwei_spalten_aenderungen_werden_nie_automatisch_eingetragen(tmp_path):
+    from tests.redteam._bau import zelle, zeile_mit
+    analyse, l, rechts = _spalten_lauf(tmp_path)
+    assert l.aen and all(a.status == "pruefen" for a in l.aen), [(a.id, a.status) for a in l.aen]
+    assert all(any("Spalten" in h for h in a.hinweise) and "nicht sicher gelesen" in a.grund for a in l.aen)
+    z = zeile_mit(l.out, "Der Nennwert von 20 Monate")
+    assert "Alarm" not in zelle(l.out, z, 3)                       # nichts zerrissen in der Excel
+
+
+def test_zwei_spalten_hinweis_greift_nur_wenn_die_config_ihn_nennt(tmp_path):
+    from src import config
+    import copy
+    cfg = copy.deepcopy(config.lade("zuordnung"))
+    cfg["planer"]["unsichere_hinweise"] = []
+    analyse, l, _ = _spalten_lauf(tmp_path, cfg)
+    assert any(a.status == "uebernommen" for a in l.aen)          # ohne den Eintrag in der Config gilt das alte Verhalten
