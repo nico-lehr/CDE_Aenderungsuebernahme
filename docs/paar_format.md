@@ -64,10 +64,32 @@ Zahlen verschiedener Generator-Versionen sind **nicht vergleichbar**.
              "abdeckung_ohne_nachfrage": 0.73, "lese_luecke_woerter": 12, "idempotent": 60, "kollateral": 0},
   "fehlerarten": {"pdf_falsch_gelesen": 0, "layout_falsch": 0, "zuordnung_falsch": 0, "plan_falsch": 0, "bilanz_kaputt": 0, "unklar": 0},
   "je_stoerer": {"fussnote": {"paare": 5, "stille_fehler": 0, "abdeckung_ohne_nachfrage": 0.8}},
+  "kriterien": [{"nr": 2, "name": "Stille Fehler", "wert": "0", "einheit": "0 Zellen, 0 Paar-Befunde, 0 Regel-27-Verstöße; 0 Änderungen betroffen",
+                 "ziel": "0", "ampel": "ok"}],
   "paare": [
     {"name": "synth_0001_standard", "bilanz_stimmt": true, "vollstaendig": true, "stille_fehler": 0,
      "fehler": [{"blatt": 1, "zeile": 12, "spalte": 3, "aenderung": "a7", "art": "zuordnung_falsch"}]}
   ]
 }
 ```
-Der Bericht nennt nur Zahlen, Paar-Namen, Blatt-Nummer, Zeile, Spalte, Änderungs-ID und Fehlerart.
+Der Bericht nennt nur Zahlen, Paar-Namen, Blatt-Nummer, Zeile, Spalte, Änderungs-ID und Fehlerart. Bestehende Felder bleiben, neue kommen nur dazu.
+
+### Zähleinheit (wichtig beim Lesen der Zahlen)
+Jede Kriterien-Zeile hat das Feld `einheit` (im `bericht.md` die Spalte „Einheit“), und `gesamt.zaehleinheiten` fasst es zusammen. Verschiedene Einheiten sind nicht vergleichbar:
+**Zellen** (Soll-Zellen, Treffergenauigkeit, Abdeckung, Kollateral), **Änderungen** (je Änderung: `aenderungen_uebernommen_korrekt`, `…_falsch`, `aenderungen_zu_pruefen`, `aenderungen_nicht_uebernommen`, `regel27_verstoesse`), **Paare** (Bilanz, Idempotenz, Originale), **Wörter** (Lese-Lücke), **Seiten** (Plausibilität), **Befunde** (Struktur).
+„Stille Fehler“ ist eine gemischte Zahl und wird deshalb aufgeteilt: `stille_fehler_zellen` + `stille_fehler_paar_befunde` (Bilanz, nicht gemeldete Lücke) + `regel27_verstoesse`; dazu `stille_fehler_aenderungen` (betroffene Änderungen) und `stille_fehler_nur_textform` (davon Zellen, die sich nur in Leerraum, unsichtbaren Zeichen oder Absatzgrenzen vom Soll unterscheiden).
+
+### So wird gezählt (Messwerkzeug)
+* **Je Änderung bewertet:** Steht neben einer richtig angewendeten Änderung in derselben Zelle eine offene („prüfen“, ohne Freigabe), ist die Zelle kein Fehler, sondern wartet auf die Freigabe (`zellen_warten_auf_freigabe`, zählt unter „zu prüfen“).
+* **Strenger Zellvergleich:** doppelte und geschützte Leerzeichen, weiche und unsichtbare Zeichen, Ligaturen und Absatzgrenzen zählen. Nur ein Zeichen, das im PDF gar nicht vorkommen kann (z. B. geschütztes Leerzeichen im Soll), wird als „PDF-blind“ nur lose verglichen und ausgewiesen (`soll_zellen_pdf_blind`, `…_erreicht`); steht es im Ergebnis, aber nicht im Soll, ist es ein Fehler.
+* **Regel 27:** Wendet das Tool eine „prüfen“-Änderung ohne Freigabe an, zählt das als `regel27_verstoesse` und als stiller Fehler (Art `regel27_verstoss`); die Zelle zählt nicht als Treffer und nicht als „ohne Nachfrage erreicht“.
+* **Struktur:** `struktur_geaendert` (mit `struktur_nach_art`: blatt, sichtbarkeit, zeile_versteckt, spalte_versteckt, verbunden, validierung, zahlenformat, schrift) zählt UNERWARTETE Abweichungen von Blättern, ausgeblendeten Zeilen/Spalten, verbundenen Zellen, Datenvalidierung, Zahlenformat und Schrift/Füllung unveränderter Zellen. Zeilen werden über die Ausrichtung abgebildet, das legitime Verschieben beim Einfügen zählt nicht.
+* **Soll-Zellen außerhalb der Haupt-Spalten:** `soll_zellen` zählt nur die verwalteten Spalten (ohne Formeln). Getrennt: `soll_zellen_formel` (+ `…_verfehlt`), `soll_zellen_unverwaltet_sonstige` (+ `…_verfehlt`, z. B. neu nummerierte Spalte) und `soll_zellen_unverwaltet` (nur kurze Füllung neuer/entfernter Zeilen, aufgeschlüsselt in `…_aufschluesselung`). `nicht_verwaltet_verfehlt_orte` nennt nur Blatt/Zeile/Spalte/Klasse.
+* **Absturz eines Messteils:** Stürzt nur der Wiederholungslauf (Idempotenz), die Vorschläge oder die Struktur-Prüfung ab, bleiben die Funde des ersten Laufs erhalten. Das Paar zählt dann als „teilweise gemessen“ (`teilweise_gemessen`, `ausgefallene_messteile`, `paare_teilweise_gemessen`) und in `paare_abgestuerzt`. Bei abgestürzten Paaren steht keine Ampel auf „ok“, sondern auf „nicht vollständig gemessen“ (außer sie ist schon „NICHT ok“).
+
+### Ampel-Werte
+`ok` · `NICHT ok` · `nicht gemessen` · `nicht vollständig gemessen` (es gab abgestürzte Paare) · `Hinweis` (nur Plausibilität).
+
+### Ohne `erwartet.json` (alle echten Paare)
+Die Prüfung „erwartete Lücke nicht gemeldet“ liest `erwartet.json`. Fehlt die Datei (oder das Feld `luecken`), kann eine nicht gemeldete Lücke (Scan, Zwei-Spalten, Tabelle, Bild) **nie auffallen**: Kriterium 1 steht dann auf „nicht gemessen“ (nicht „ok“), Konsole und Bericht sagen das ausdrücklich (`luecken_pruefbar`, `luecken_nicht_pruefbar_paare`).
+Zusätzlich prüft die Messung das PDF **unabhängig vom Tool** direkt mit `pdfplumber`: Seiten ohne Textzeichen und Seiten mit einem großen eingebetteten Bild (`plausibilitaet_hinweise`: Seite, Art, ob das Tool dazu eine Lücke gemeldet hat; `plausibilitaet_ungemeldet`). Das ist **nur ein Hinweis**, nie ein Fehler.

@@ -1109,13 +1109,15 @@ class _Auswertung:
         nicht_ohne_grund = sum(1 for a in self.aend if a.status == NICHT and not a.grund)
 
         # --- Kennzahlen je AENDERUNG (nicht je Zelle) ---------------------------------------------------
+        # "falsch" = die Aenderung steht an einem stillen Fehler (Tool sagt "uebernommen", Ergebnis stimmt nicht) oder verstiess gegen
+        # Regel 27. Eine Soll-Zelle, die nur nicht erreicht wurde (z. B. weil der Leser Woerter verpasste), macht eine angewendete
+        # Aenderung nicht falsch.
         falsch_ids: set[str] = set(r27_alle)
-        for f in self.fehler.values():
-            if f.quelle == "paar":
-                continue
-            falsch_ids.update(i for i in f.aenderungen if nach_id.get(i) is not None and nach_id[i].status == UEBERNOMMEN)
+        for f in stille:
+            if f.quelle != "paar":
+                falsch_ids.update(i for i in f.aenderungen if nach_id.get(i) is not None and nach_id[i].status == UEBERNOMMEN)
         uebernommen_ids = {a.id for a in uebernommen}
-        stille_ids = {i for f in stille for i in f.aenderungen}
+        stille_ids = {i for f in stille for i in f.aenderungen if nach_id.get(i) is not None and nach_id[i].status == UEBERNOMMEN}
         return {
             "bilanz_stimmt": bilanz_ok,
             "vollstaendig": bool(self.bil_auto.get("vollstaendig")),
