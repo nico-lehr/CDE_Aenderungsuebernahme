@@ -159,46 +159,49 @@ def test_rt127_teilweise_geleerte_zeile_ist_kein_kollateral(tmp_path):
 
 
 # --- RT-128: Phantom-Kollateral an UNVERAENDERTEN Zellen, synthetisch aus dem logischen Modell aufgebaut ---------------------
-# Die Situation (Section-Loeschung laeuft automatisch, der Inhalt bleibt offen) wird nicht mehr vom Zustand des Korpus abhaengig
-# gemacht: das Tool arbeitet echt, nur der Status der Inhalts-Loeschung wird (wie bei unsicheren Treffern) auf "pruefen" gesetzt.
-# Die Faelle Seed 2 und 37 (je Zeile mit Zelle 3 und 4) waren die urspruenglichen Funde.
-def _elemente_geloeschte_section(zwei_absaetze: bool) -> list:
-    inhalt = [("p", "{-Die Reaktionszeit darf 150 ms nicht ueberschreiten.-}")]
-    if zwei_absaetze:
-        inhalt.append(("p", "{-Die Pruefung erfolgt einmal je Jahr durch den Betreiber.-}"))
+# Die Situation wird nicht mehr vom Zustand des Korpus abhaengig gemacht: Das Tool arbeitet echt, nur der Status der
+# Absatz-Loeschungen wird (wie bei unsicheren Treffern) gesetzt. Eine Section wird geloescht (Nummer/Titel laufen automatisch),
+# ein Absatz ihres Inhalts bleibt offen ("pruefen"), die anderen werden gestrichen: zurueck bleibt eine TEILWEISE geleerte Zeile
+# (Nummer und Titel weg, ein Absatz und die Bemerkung bleiben). Das Soll hat die ganze Zeile entfernt. Die Faelle Seed 2 und 37
+# (je Zeile mit Zelle 3 und 4) waren die urspruenglichen Funde.
+def _elemente_geloeschte_section(absaetze: int) -> list:
+    inhalt = [("p", "{-%s-}" % t) for t in ("Die Reaktionszeit darf 150 ms nicht ueberschreiten.",
+                                           "Die Pruefung erfolgt einmal je Jahr durch den Betreiber.",
+                                           "Das Protokoll wird zehn Jahre aufbewahrt.")[:absaetze]]
     return ([("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."), ("h", "{-2 Zwei-}")] + inhalt +
             [("h", "3 Drei"), ("p", "Alle Steckverbindungen sind eindeutig beschriftet."),
              ("h", "4 Vier"), ("p", "Die Lieferung umfasst alles Zubehoer fuer die Montage.")])
 
 
 @pytest.mark.redteam
-@pytest.mark.parametrize("layout,zwei_absaetze", [("L1", False), ("L1", True), ("L3", False), ("L3", True)],
-                         ids=["L1_ein_absatz", "L1_zwei_absaetze", "L3_ein_absatz", "L3_zwei_absaetze"])
-def test_rt128_synthetisch_phantom_kollateral_an_unveraenderter_zelle(tmp_path, layout, zwei_absaetze):
-    elemente = _elemente_geloeschte_section(zwei_absaetze)
+@pytest.mark.parametrize("absaetze,offen", [(2, 1), (2, 0), (3, 1), (3, 2)],
+                         ids=["2_Absaetze_zweiter_offen", "2_Absaetze_erster_offen", "3_Absaetze_mittlerer_offen",
+                              "3_Absaetze_letzter_offen"])
+def test_rt128_synthetisch_phantom_kollateral_an_unveraenderter_zelle(tmp_path, absaetze, offen):
+    elemente = _elemente_geloeschte_section(absaetze)
     baue_pdf(tmp_path / "aenderungen.pdf", elemente, "farbe")
-    baue_excel(tmp_path / "vorher.xlsx", zustaende(elemente, False), layout, True)
-    baue_excel(tmp_path / "nachher.xlsx", zustaende(elemente, True), layout, True)
+    baue_excel(tmp_path / "vorher.xlsx", zustaende(elemente, False), "L1", True)
+    baue_excel(tmp_path / "nachher.xlsx", zustaende(elemente, True), "L1", True)
     echt = messen.plane
 
-    def plane_inhalt_offen(pdf, xl, *a, **k):
+    def plane_ein_absatz_offen(pdf, xl, *a, **k):
         p = echt(pdf, xl, *a, **k)
+        absatz = [a_ for a_ in p.aenderungen if a_.typ == "absatz_geloescht"]
         for a_ in p.aenderungen:
             if a_.typ == "section_geloescht":
                 a_.status, a_.konfidenz = UEBERNOMMEN, "hoch"             # laeuft automatisch ...
-            elif a_.typ == "absatz_geloescht":
-                a_.status, a_.konfidenz = PRUEFEN, "mittel"               # ... der Inhalt bleibt offen
+        for i, a_ in enumerate(absatz):                                   # ... genau ein Absatz bleibt offen
+            a_.status, a_.konfidenz = (PRUEFEN, "mittel") if i == offen else (UEBERNOMMEN, "hoch")
         return p
 
-    with mock.patch.object(messen, "plane", plane_inhalt_offen):
+    with mock.patch.object(messen, "plane", plane_ein_absatz_offen):
         res = messen.messe_paar(tmp_path, False, tmp_path / "ergebnis.xlsx")
     ist = messen._lese_excel(tmp_path / "ergebnis.xlsx")[1]
-    # Aufbau: die Zeile mit "Reaktionszeit" ist verwaist (Nummer und Titel leer, Inhalt steht noch da); die Zeile davor ist unberuehrt
-    verwaist = next((i for i, z in enumerate(ist) if any("Reaktionszeit" in (c or "") for c in z)), None)
-    aufbau(verwaist is not None and not ist[verwaist][0] and not ist[verwaist][1],
-           "Erwartet: eine teilweise geleerte Zeile (Nummer/Titel leer, Inhalt steht noch)")
-    aufbau(res["aenderungen_nach_status"].get(UEBERNOMMEN, 0) >= 1 and res["aenderungen_nach_status"].get(PRUEFEN, 0) >= 1,
-           "Erwartet: eine uebernommene und eine offene Aenderung")
+    # Aufbau: eine Zeile ist teilweise geleert (Nummer/Titel leer, Inhalt steht noch, Bemerkung steht noch)
+    rest = [z for z in ist if not (z[0] or z[1]) and z[2] and len(z) > 3 and z[3]]
+    aufbau(len(rest) == 1, f"Erwartet: genau eine teilweise geleerte Zeile, gefunden {len(rest)}")
+    aufbau(res["aenderungen_nach_status"].get(UEBERNOMMEN, 0) >= 2 and res["aenderungen_nach_status"].get(PRUEFEN, 0) == 1,
+           "Erwartet: uebernommene Aenderungen und genau eine offene")
     if res["kollateral"] or res["stille_fehler"]:
         scheitern(f"Phantom: {res['kollateral']} Kollateral / {res['stille_fehler']} stille Fehler "
                   f"{res['stille_fehler_nach_art']} an Zellen, die in Vorher, Soll und Ergebnis gleich sind "
