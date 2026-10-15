@@ -1,0 +1,6 @@
+# config/paths.yaml -- alle Pfade des Projekts (Regel 28: nichts hartcodiert).
+# Relative Pfade gelten ab dem Projektordner. Umgebungsvariable CDE_DATA_ROOT
+# ueberschreibt data_dir (z.B. fuer ein anderes Laufwerk).
+data_dir: ./data
+runs_dir: ./data/runs
+frontend_dir: ./frontend

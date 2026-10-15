@@ -1,0 +1,19 @@
+# config/zuordnung.yaml -- Wie Aenderungen in der Excel gefunden und eingetragen werden.
+schwellen:
+  hoch: 0.90          # ab hier wird automatisch uebernommen (Konfidenz "hoch")
+  mittel: 0.65        # darunter bis hier: Vorschlag, Mensch bestaetigt ("pruefen")
+  eindeutig_abstand: 0.08   # zweitbester Treffer muss mindestens so viel schlechter sein
+  kurz_tokens: 4      # Bloecke mit <= so vielen Woertern brauchen passende Section
+kandidaten_pro_block: 10
+
+excel:
+  min_inhalt_zeichen: 25      # ab so vielen Zeichen gilt eine Zelle als Inhaltstext
+  section_spalte_min: 2       # mindestens so viele Nummern, damit eine Spalte "Section" ist
+
+einfuegen:
+  neuer_absatz: auto          # auto | zelle | zeile
+  neue_section: zeile
+geloeschtes:
+  inhalt: leeren              # leeren | zeile_entfernen
+markierung:
+  geaenderte_zellen: keine    # keine | kommentar | gelb

@@ -1,0 +1,28 @@
+# Python 3.11 (.venv). Versionen wie in der bess-pipeline gepinnt,
+# damit pip sie aus demselben Cache / denselben Quellen holen kann.
+blinker==1.9.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+click==8.5.0
+colorama==0.4.6
+cryptography==50.0.1
+et_xmlfile==2.0.0
+Flask==3.1.3
+idna==3.19
+iniconfig==2.3.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+openpyxl==3.1.5
+packaging==26.3
+pdfminer.six==20260107
+pdfplumber==0.11.10
+pillow==12.3.0
+pluggy==1.6.0
+pycparser==3.0
+Pygments==2.21.0
+pypdfium2==5.13.0
+pytest==9.1.1
+PyYAML==6.0.3
+Werkzeug==3.1.8

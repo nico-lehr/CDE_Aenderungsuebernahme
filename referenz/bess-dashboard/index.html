@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BESS Pipeline – Angebotsprüfung</title>
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+<link rel="icon" href="favicon.ico">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="cde-tab-styles.css">
+</head>
+<body>
+
+  <!-- ============ HEADER ============ -->
+  <header class="app-header">
+    <div class="brand">
+      <img class="brand-mark" src="rolls-royce-logo.png" alt="Rolls-Royce Logo" loading="lazy">
+      <div class="brand-text">
+        <span class="brand-name">BESS Pipeline</span>
+        <span class="brand-sub">Rolls-Royce Power Systems · Angebotsprüfung</span>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <span class="status-pill" id="status-pill">
+        <span class="status-dot" id="status-pill-dot"></span>
+        <span id="status-pill-label">Lokal</span>
+      </span>
+      <label class="switch">
+        <input class="switch__input" type="checkbox" role="switch" id="theme-toggle-checkbox"/>
+        <span class="switch__icon">
+          <span class="switch__icon-part switch__icon-part--1"></span>
+          <span class="switch__icon-part switch__icon-part--2"></span>
+          <span class="switch__icon-part switch__icon-part--3"></span>
+          <span class="switch__icon-part switch__icon-part--4"></span>
+          <span class="switch__icon-part switch__icon-part--5"></span>
+          <span class="switch__icon-part switch__icon-part--6"></span>
+          <span class="switch__icon-part switch__icon-part--7"></span>
+          <span class="switch__icon-part switch__icon-part--8"></span>
+          <span class="switch__icon-part switch__icon-part--9"></span>
+          <span class="switch__icon-part switch__icon-part--10"></span>
+          <span class="switch__icon-part switch__icon-part--11"></span>
+        </span>
+        <span class="switch__sr">Dark Mode</span>
+      </label>
+      <button class="icon-button" id="settings-open" type="button" aria-haspopup="dialog" aria-controls="settings-panel" aria-expanded="false" title="Einstellungen">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M19.4 13.5c.04-.33.06-.66.06-1s-.02-.67-.06-1l2.02-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.38.96a7.5 7.5 0 0 0-1.73-1L14.5 3.6a.5.5 0 0 0-.49-.42h-3.84a.5.5 0 0 0-.49.42l-.36 2.5a7.5 7.5 0 0 0-1.73 1l-2.38-.96a.5.5 0 0 0-.6.22L2.7 9.68a.5.5 0 0 0 .12.64L4.84 11.9c-.04.33-.06.66-.06 1s.02.67.06 1L2.82 15.5a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.4.31.6.22l2.38-.96c.53.43 1.1.77 1.73 1l.36 2.5c.05.24.26.42.49.42h3.84c.24 0 .44-.18.49-.42l.36-2.5a7.5 7.5 0 0 0 1.73-1l2.38.96c.24.1.5 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64L19.4 13.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============ NAVIGATION TABS ============ -->
+  <nav class="page-tabs" id="page-tabs">
+    <button class="page-tab active" data-page="upload">📤 Upload & Extraktion</button>
+    <button class="page-tab" data-page="wallet">💳 Wallet Validierung</button>
+    <button class="page-tab" data-page="cde">📋 CDE Mapping</button>
+  </nav>
+
+  <!-- ============ MAIN ============ -->
+  <main class="app-main">
+
+    <!-- ============ PAGE: UPLOAD ============ -->
+    <div class="page-container" id="page-upload" data-page="upload">
+
+      <section class="hero" id="hero">
+        <div class="hero-blob hero-blob-a" aria-hidden="true"></div>
+        <div class="hero-blob hero-blob-b" aria-hidden="true"></div>
+
+        <div class="intro">
+          <h1>Angebotsdokumente prüfen</h1>
+          <p>Lade ein oder mehrere BESS-Angebote hoch. Die Pipeline extrahiert Kriterien, prüft sie gegen den Quelltext und stuft sie nach dem Ampel-Prinzip ein.</p>
+        </div>
+      </section>
+
+      <!-- Project Management -->
+      <div class="project-controls" id="project-section">
+        <div class="project-header">
+          <div class="project-select-wrapper">
+            <label for="project-select" class="field-label">Projekt</label>
+            <select id="project-select"></select>
+          </div>
+          <div class="project-actions">
+            <button id="project-new-btn" class="btn btn-secondary" type="button">+ Neues Projekt</button>
+            <button id="project-delete-btn" class="btn btn-secondary" type="button" style="display: none;" title="Projekt löschen">Löschen</button>
+          </div>
+        </div>
+        <p id="project-info" class="project-info" style="display: none;"></p>
+      </div>
+
+      <!-- Dropzone -->
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Dokumente hochladen">
+        <input type="file" id="file-input" accept="application/pdf" multiple hidden>
+        <svg class="dropzone-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 15.5V4.5M12 4.5 8 8.5M12 4.5l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4.5 15v2.5A2.5 2.5 0 0 0 7 20h10a2.5 2.5 0 0 0 2.5-2.5V15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <p class="dropzone-title">Dokumente hierher ziehen</p>
+        <p class="dropzone-sub">oder klicken, um PDF-Dateien auszuwählen</p>
+      </div>
+
+      <!-- File list -->
+      <section class="file-section" id="file-section" hidden>
+        <div class="file-list-header">
+          <h2>Dokumente <span class="count-badge" id="file-count">0</span></h2>
+        </div>
+        <ul class="file-list" id="file-list"></ul>
+      </section>
+
+      <!-- Pipeline stage tracker -->
+      <section class="pipeline-tracker" id="pipeline-tracker" hidden>
+        <ol class="stage-list">
+          <li class="stage" data-stage="ingestion"><span class="stage-dot"></span><span class="stage-label">Ingestion</span></li>
+          <li class="stage" data-stage="chunking"><span class="stage-dot"></span><span class="stage-label">Chunking</span></li>
+          <li class="stage" data-stage="extraction"><span class="stage-dot"></span><span class="stage-label">Extraktion</span></li>
+          <li class="stage" data-stage="verification"><span class="stage-dot"></span><span class="stage-label">Verifikation</span></li>
+          <li class="stage" data-stage="feasibility"><span class="stage-dot"></span><span class="stage-label">Ampel</span></li>
+        </ol>
+      </section>
+
+      <!-- Primary action -->
+      <div class="action-row">
+        <div class="model-selector" hidden>
+          <label for="model-select-quick" class="field-label">Modell</label>
+          <!-- Kein hartcodiertes <option> mehr: wird von loadModels() befuellt
+               (frontend/script.js), sonst wuerde dieses Feld bis zum Laden
+               "qwen3:14b" senden und eine gespeicherte Auswahl im
+               Settings-Panel stumm ueberstimmen. Sichtbarer Ort der Auswahl
+               ist das Settings-Panel ("LLM-Modelle"); dieses Feld ist nur der
+               stille Spiegel, der tatsaechlich an /api/batch-extract geht. -->
+          <select id="model-select-quick"></select>
+        </div>
+        <span class="siri-wrap">
+          <button class="btn btn-primary" id="run-button" type="button" disabled>Prüfung starten</button>
+        </span>
+      </div>
+
+      <!-- Der Fortschritt liegt jetzt im Vollbild-Overlay am Seitenende
+           (#progress-overlay). Die fruehere Inline-Sektion sass unterhalb der
+           Aktionsleiste, war leicht zu uebersehen und zeigte ohnehin nur
+           0/50/100 %. -->
+
+    </div>
+
+    <!-- ============ PAGE: WALLET VALIDATION ============ -->
+    <div class="page-container" id="page-wallet" data-page="wallet" style="display: none;">
+      <section class="wallet-page">
+        <div class="wallet-header">
+          <div class="hero-blob hero-blob-a" aria-hidden="true"></div>
+          <div class="hero-blob hero-blob-b" aria-hidden="true"></div>
+          <div>
+            <h1>Wallet Validierung</h1>
+            <p class="wallet-subtitle" id="wallet-subtitle">Überprüfe und bearbeite die extrahierten Werte</p>
+          </div>
+          <div class="wallet-actions">
+            <label for="project-select-wallet" class="field-label">Projekt</label>
+            <select id="project-select-wallet"></select>
+          </div>
+        </div>
+
+        <!--
+          Warnliste: Abschnitte, die im letzten Lauf endgueltig nicht geprueft
+          werden konnten. Steht VOR dem Wallet-Inhalt, weil sie dessen
+          Aussagekraft einschraenkt -- ein leeres Feld heisst dann nicht
+          zwingend "steht nicht im Dokument". Bleibt leer und unsichtbar,
+          solange es nichts zu melden gibt; gefuellt von extraction-gaps.js.
+        -->
+        <div id="extraction-gaps" hidden></div>
+
+        <div id="wallet-content">
+          <div class="empty-state">
+            <div class="empty-state-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M6 10V8a6 6 0 1 1 12 0v2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                <rect x="4.5" y="10" width="15" height="10" rx="3" stroke="currentColor" stroke-width="1.6"/>
+              </svg>
+            </div>
+            <p class="empty-state-title">Kein Projekt ausgewählt</p>
+            <p class="empty-state-text">Wähle oben ein Projekt aus und führe eine Extraktion durch, um Wallet-Daten zu sehen.</p>
+          </div>
+        </div>
+
+        <div class="wallet-actions-footer" id="wallet-actions-footer" style="display: none;">
+          <button class="btn btn-secondary" id="wallet-save-snapshot-btn" type="button">💾 Stand speichern</button>
+          <button class="btn btn-primary" id="wallet-export-btn" type="button" disabled>✅ Zu Wallet-Excel exportieren</button>
+        </div>
+
+        <div class="excel-outputs" id="wallet-saved-states">
+          <h3 class="excel-outputs-title">🗂 Gespeicherte Stände</h3>
+          <div id="wallet-saved-states-content">
+            <p class="excel-outputs-empty">Noch keine Stände gespeichert</p>
+          </div>
+        </div>
+
+        <div class="excel-outputs" id="wallet-version-history">
+          <h3 class="excel-outputs-title">📊 Excel-Exporte</h3>
+          <div id="wallet-version-history-content">
+            <p class="excel-outputs-empty">Noch keine Excel-Dateien generiert</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ PAGE: CDE MAPPING ============ -->
+    <div class="page-container" id="page-cde" data-page="cde" style="display: none;">
+      <section class="cde-page">
+        <div class="cde-header">
+          <div class="hero-blob hero-blob-a" aria-hidden="true"></div>
+          <div class="hero-blob hero-blob-b" aria-hidden="true"></div>
+          <div>
+            <h1>CDE Mapping</h1>
+            <p class="cde-subtitle" id="cde-subtitle">Hierarchie-basierte Extraktion von Anforderungen aus Offer-Dokumenten</p>
+          </div>
+          <div class="cde-actions">
+            <label for="project-select-cde" class="field-label">Projekt</label>
+            <select id="project-select-cde"></select>
+          </div>
+        </div>
+
+        <div class="cde-status-bar" id="cde-status-bar" style="display: none;">
+          <span class="status-badge" id="cde-status-badge"></span>
+          <span class="status-details" id="cde-status-details"></span>
+        </div>
+
+        <div class="cde-content" id="cde-content">
+          <div class="empty-state">
+            <div class="empty-state-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M6 10V8a6 6 0 1 1 12 0v2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                <rect x="4.5" y="10" width="15" height="10" rx="3" stroke="currentColor" stroke-width="1.6"/>
+              </svg>
+            </div>
+            <p class="empty-state-title">Kein Projekt ausgewählt</p>
+            <p class="empty-state-text">Wähle oben ein Projekt aus und führe eine Extraktion durch, um CDE-Ergebnisse zu sehen.</p>
+          </div>
+        </div>
+
+        <div class="cde-actions-footer" id="cde-actions-footer" style="display: none;">
+          <button class="btn btn-primary" id="cde-export-excel-btn" type="button" disabled>✅ Zur CDE-Excel exportieren</button>
+        </div>
+      </section>
+    </div>
+
+  </main>
+
+  <!-- ============ FOOTER ============ -->
+  <footer class="app-footer">
+    <div class="footer-content">
+      <div class="footer-section">
+        <h3 class="footer-title">BESS Pipeline</h3>
+        <p class="footer-description">Automatisierte Angebotsprüfung für BESS-Systeme mit intelligenter Extraktion und Ampel-Bewertung.</p>
+      </div>
+      <div class="footer-section">
+        <h3 class="footer-title">Verwendung</h3>
+        <p class="footer-text">Internes Werkzeug – ausschließlich für die interne Nutzung im Rahmen der Masterarbeit in Kooperation mit Rolls-Royce Power Systems AG. Keine Weitergabe an Dritte.</p>
+        <p class="footer-text">Ergebnisse werden KI-gestützt erzeugt und können Fehler enthalten. Sie ersetzen keine menschliche Prüfung.</p>
+      </div>
+      <div class="footer-bottom">
+        <p class="footer-credit">Entwickelt von Nico Lehr · Masterarbeit BESS-Pipeline</p>
+        <p class="footer-notice">© 2026 · Alle Rechte vorbehalten</p>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ============ SETTINGS PANEL ============ -->
+  <div class="overlay" id="settings-overlay" aria-hidden="true"></div>
+  <aside class="settings-panel" id="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-hidden="true">
+    <div class="settings-header">
+      <h2 id="settings-title">Einstellungen</h2>
+      <button class="icon-button" id="settings-close" type="button" aria-label="Schließen">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="settings-body">
+
+      <section class="settings-group">
+        <h3>Modell & Prüfung</h3>
+
+        <!-- Pruefprofil (docs/adr/0023): Optionen kommen aus
+             config/run_profiles.yaml ueber GET /api/run-profiles
+             (loadRunProfiles() in frontend/script.js). Ein Wechsel belegt
+             Modell, Chunking, Prompt-Sprache und Cross-Check mit den
+             Profilwerten vor; einzeln geaenderte Werte gelten als
+             "angepasst" und werden im Lauf so protokolliert. -->
+        <label class="field">
+          <span class="field-label">Prüfprofil</span>
+          <select id="model-profile-select">
+            <option value="" disabled selected>Lade Profile…</option>
+          </select>
+        </label>
+        <p class="field-hint" id="run-profile-status" aria-live="polite"></p>
+
+        <div class="field field-static">
+          <span class="field-label">Temperature</span>
+          <span class="static-badge">0.0 · deterministisch</span>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <h3>Extraktionsprozesse</h3>
+
+        <label class="toggle-row">
+          <span>Wallet-Extraktion aktiv</span>
+          <input type="checkbox" id="wallet-extraction-toggle" checked>
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+
+        <label class="toggle-row">
+          <span>CDE-Extraktion aktiv</span>
+          <input type="checkbox" id="cde-extraction-toggle" checked>
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+
+        <p class="field-hint" id="extraction-toggles-status" aria-live="polite"></p>
+      </section>
+
+      <section class="settings-group" id="settings-group-llm-modelle">
+        <h3>LLM-Modelle</h3>
+
+        <label class="field">
+          <span class="field-label">Extraktion (Haupt-Modell)</span>
+          <!-- Optionen kommen von loadModels() (frontend/script.js) aus
+               GET /api/models -- den real auf dem Ollama-Ziel installierten
+               Modellen, nicht mehr hartcodiert (siehe ADR 0012). -->
+          <select id="model-main-select">
+            <option value="" disabled selected>Lade Modelle…</option>
+          </select>
+        </label>
+        <!-- Hinweis bei Modellen mit bekannt erhoehter Fehlerrate
+             (config/model_warnings.yaml, docs/adr/0024). Nur Hinweis, das
+             Modell bleibt waehlbar. Befuellt von renderModelWarning(). -->
+        <p class="model-warning" id="model-main-warning" role="status" hidden></p>
+
+        <p class="field-hint" id="model-status" aria-live="polite"></p>
+
+        <div class="inference-target-actions">
+          <button class="btn btn-primary" id="model-save" type="button">Übernehmen</button>
+        </div>
+
+        <!-- Cross-Check durch ein zweites Modell (docs/adr/0023): prueft
+             unsichere (oder alle) Treffer gegen die Originalpassage. Abgelehnte
+             oder unklare Werte werden verworfen, bleiben aber im Info-Popup
+             sichtbar. Laeuft nach allen Dokumenten, das Pruefmodell wird
+             einmal geladen. -->
+        <label class="field">
+          <span class="field-label">Cross-Check durch zweites Modell</span>
+          <select id="crosscheck-mode-select">
+            <option value="aus" selected>Aus</option>
+            <option value="ja_nein">Nur Ja/Nein- und Auswahlfelder</option>
+            <option value="unsicher">Nur unsichere Werte</option>
+            <option value="alle">Alle gefundenen Werte</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="field-label">Cross-Check-Modell</span>
+          <!-- Optionen von loadModels(); "" = tasks.verification aus
+               config/model_routing.yaml. Empfohlen: andere Modellfamilie
+               als das Extraktionsmodell. -->
+          <select id="model-crosscheck-select">
+            <option value="" selected>Standard (laut Konfiguration)</option>
+          </select>
+        </label>
+        <p class="model-warning" id="model-crosscheck-warning" role="status" hidden></p>
+      </section>
+
+      <section class="settings-group">
+        <h3>Chunking-Strategie</h3>
+
+        <label class="field">
+          <span class="field-label">Strategie</span>
+          <!-- Optionen kommen aus src/chunking/factory.py (STRATEGIES), Werte
+               ueber loadChunkingSelection() (frontend/script.js) aus
+               GET /api/settings/chunking. -->
+          <select id="chunking-strategy-select">
+            <option value="overlap_window">Overlap-Window (Standard)</option>
+            <option value="full_context">Full-Context</option>
+            <option value="semantic">Semantisch</option>
+            <option value="full_context_auto">Hybrid (Full-Context, sonst semantisch)</option>
+          </select>
+        </label>
+
+        <label class="field" id="chunking-window-size-field">
+          <span class="field-label">Fenstergroesse (Seiten)</span>
+          <input type="number" id="chunking-window-size-input" min="1" max="100" step="1">
+        </label>
+
+        <label class="field" id="chunking-overlap-field">
+          <span class="field-label">Overlap (Seiten)</span>
+          <input type="number" id="chunking-overlap-input" min="0" step="1">
+        </label>
+
+        <label class="field" id="chunking-breakpoint-field">
+          <span class="field-label">Themenwechsel-Perzentil (semantisch und Hybrid, Standard 80)</span>
+          <input type="number" id="chunking-breakpoint-percentile-input" min="1" max="99" step="1">
+        </label>
+
+        <p class="field-hint" id="chunking-status" aria-live="polite"></p>
+
+        <div class="inference-target-actions">
+          <button class="btn btn-primary" id="chunking-save" type="button">Übernehmen</button>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <h3>Inferenz-Ort</h3>
+
+        <div class="segmented" id="inference-target-mode">
+          <button type="button" class="segment active" data-value="local">Lokal</button>
+          <button type="button" class="segment" data-value="remote">Remote</button>
+          <button type="button" class="segment" data-value="api">API</button>
+        </div>
+
+        <label class="field" id="inference-target-address-field" hidden>
+          <span class="field-label">Remote-Adresse (Host:Port)</span>
+          <input type="text" id="inference-target-address" placeholder="z. B. cluster-host:11434">
+        </label>
+
+        <!-- Nur sichtbar/aktiv im Modus "API" (externe/Cloud-API, verlässt
+             das RR-Firmennetzwerk) -- siehe setInferenceTargetMode() in
+             script.js. Der scharfe Aufruf ist bis zur Regel-17-Freigabe im
+             Backend gesperrt (src/extraction/backends/api_client.py). -->
+        <div id="inference-target-api-fields" hidden>
+          <label class="field">
+            <span class="field-label">API-Endpunkt (URL)</span>
+            <input type="text" id="inference-target-api-endpoint" placeholder="z. B. https://api.anthropic.com">
+          </label>
+
+          <label class="field">
+            <span class="field-label">API-Key</span>
+            <input type="password" id="inference-target-api-key" placeholder="wird nach dem Speichern nicht mehr angezeigt" autocomplete="off">
+          </label>
+
+          <label class="field">
+            <span class="field-label">Modell</span>
+            <input type="text" id="inference-target-api-model" value="claude-haiku-4-5-20251001">
+          </label>
+
+          <p class="field-hint warning">
+            Achtung: Im Modus "API" verlassen Dokumentdaten das Rolls-Royce-Firmennetzwerk und werden über einen externen/Cloud-Anbieter verarbeitet. Diese Funktion ist erst nach ausdrücklicher Freigabe durch Rolls-Royce und den Betreuer produktiv nutzbar (Regel 17) — Architektur und Einstellungen können bereits jetzt vorbereitet werden.
+          </p>
+        </div>
+
+        <p class="field-hint" id="inference-target-status" aria-live="polite"></p>
+
+        <div class="inference-target-actions">
+          <button class="btn btn-secondary" id="inference-target-test" type="button">Verbindung testen</button>
+          <button class="btn btn-primary" id="inference-target-save" type="button">Speichern</button>
+        </div>
+      </section>
+
+      <!--
+        Rechenleistung: wie viele Dokumente gleichzeitig laufen und warum
+        genau so viele. Ohne die Begruendung sieht "1 Platz" wie ein Defekt
+        aus, obwohl in aller Regel nur die Kalibrierung fehlt.
+        Gefuellt von inference-status.js aus GET /api/inference-status.
+      -->
+      <section class="settings-group" id="settings-group-rechenleistung">
+        <h3>Rechenleistung</h3>
+
+        <!-- Schalter: OB parallel gearbeitet werden darf. WIE VIELE Dokumente
+             gleichzeitig, misst die Kalibrierung (ADR 0015/0018). -->
+        <label class="toggle-row">
+          <span>Mehrere Dokumente gleichzeitig verarbeiten</span>
+          <input type="checkbox" id="parallel-processing-toggle">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+        <p class="field-hint" id="parallel-processing-status" aria-live="polite"></p>
+
+        <div id="inference-status-box" class="inference-status">
+          <p class="field-hint">Wird geladen…</p>
+        </div>
+        <div class="inference-target-actions">
+          <button class="btn btn-secondary" id="inference-status-refresh" type="button">Neu prüfen</button>
+          <button class="btn btn-primary" id="slot-calibration-start" type="button" hidden>Jetzt kalibrieren</button>
+          <button class="btn btn-secondary" id="slot-calibration-cancel" type="button" hidden>Messung abbrechen</button>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <h3>Prompt-Sprache</h3>
+        <!-- RQ3 (docs/adr/0023): Sprache der Extraktions- und Cross-Check-
+             Prompts (src/extraction/prompt_texts.py). Feld-IDs, Enum-Werte
+             und Feld-Labels bleiben in beiden Sprachen gleich. Die Oberflaeche
+             selbst bleibt deutsch. -->
+        <div class="segmented" id="prompt-lang">
+          <button type="button" class="segment active" data-value="de">Deutsch</button>
+          <button type="button" class="segment" data-value="en">Englisch</button>
+        </div>
+        <p class="field-hint" id="run-options-status" aria-live="polite"></p>
+      </section>
+
+      <section class="settings-group">
+        <h3>Ausgabe & Export</h3>
+
+        <!-- Excel-Export laeuft ueber den Knopf auf der Wallet-Seite, einen
+             PDF-Pruefbericht gibt es noch nicht. -->
+        <div class="setting-inactive">
+          <span class="setting-inactive-badge">Noch ohne Funktion</span>
+          <div class="setting-inactive-content" inert aria-hidden="true">
+            <label class="toggle-row">
+              <span>Excel-Export (.xlsm)</span>
+              <input type="checkbox" id="export-xlsx" checked>
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+
+            <label class="toggle-row">
+              <span>PDF-Prüfbericht</span>
+              <input type="checkbox" id="export-pdf">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <div class="privacy-note">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+          </svg>
+          <p>Im Modus "Lokal" werden alle Daten ausschließlich auf diesem Rechner verarbeitet, es werden keine Dokumente an externe Server übertragen. Im Modus "Remote" (siehe "Inferenz-Ort" oben) verlässt die Verarbeitung diesen Rechner, bleibt aber innerhalb des Rolls-Royce-Firmennetzwerks. Im Modus "API" verlässt die Verarbeitung das Rolls-Royce-Firmennetzwerk vollständig und läuft über einen externen/Cloud-Anbieter.</p>
+        </div>
+      </section>
+
+    </div>
+
+    <div class="settings-footer">
+      <button class="btn btn-secondary" id="settings-cancel" type="button">Abbrechen</button>
+      <button class="btn btn-primary" id="settings-apply" type="button">Übernehmen</button>
+    </div>
+  </aside>
+
+  <div class="toast" id="toast"></div>
+
+  <!-- ============ FORTSCHRITTS-OVERLAY ============
+       Blockierendes Vollbild-Overlay waehrend eines Laufs (siehe
+       progress-overlay.js). Kein Abbrechen-Knopf: das Backend kennt keinen
+       Cancel-Endpunkt. Esc/Minimieren legt es als Pille unten rechts ab. -->
+  <div class="progress-overlay" id="progress-overlay" role="dialog" aria-modal="true"
+       aria-labelledby="progress-overlay-title" hidden>
+    <div class="progress-overlay-card">
+      <div class="progress-overlay-head">
+        <h2 class="progress-overlay-title" id="progress-overlay-title">Prüfung läuft…</h2>
+        <span class="progress-overlay-percent" id="progress-overlay-percent"
+              role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">0 %</span>
+      </div>
+      <div class="progress-overlay-track">
+        <div class="progress-overlay-fill" id="progress-overlay-fill"></div>
+      </div>
+      <p class="progress-overlay-message" id="progress-overlay-message" aria-live="polite">
+        Dokumente werden vorbereitet…
+      </p>
+      <p class="progress-overlay-detail" id="progress-overlay-detail"></p>
+      <!-- Befunde der Vorab-Pruefung (POST /batch-extract -> 422 {problems}): was fehlt,
+           warum, was zu tun ist -- in einfachen Worten, aufgebaut in progress-overlay.js. -->
+      <ul class="progress-overlay-problems" id="progress-overlay-problems" hidden></ul>
+      <div class="progress-overlay-actions">
+        <button class="btn btn-secondary" id="progress-overlay-minimize" type="button">Minimieren</button>
+        <!-- Nur sichtbar, wenn ein Lauf durch Serverneustart/Prozessende
+             unterbrochen wurde und die gespeicherten Startparameter (Dateien,
+             Modell, Chunking, run_token) fuer eine Wiederaufnahme vorliegen
+             (siehe POST /api/extraction/<task_id>/resume). -->
+        <button class="btn btn-primary" id="progress-overlay-resume" type="button" hidden>Lauf fortsetzen</button>
+        <button class="btn btn-secondary" id="progress-overlay-close" type="button" hidden>Schließen</button>
+      </div>
+    </div>
+  </div>
+
+  <button class="progress-dock" id="progress-dock" type="button"
+          aria-label="Laufende Prüfung wieder anzeigen" hidden>
+    <span class="progress-dock-ring" id="progress-dock-ring">
+      <span class="progress-dock-percent" id="progress-dock-percent">0 %</span>
+    </span>
+    <span class="progress-dock-label" id="progress-dock-label">Prüfung läuft…</span>
+  </button>
+
+  <script src="liquid-glass.js"></script>
+  <script src="custom-select.js"></script>
+  <script src="extraction-state.js"></script>
+  <script src="extraction-gaps.js"></script>
+  <script src="inference-status.js"></script>
+  <script src="editing-modal.js"></script>
+  <script src="wallet-tab.js"></script>
+  <script src="cde-tab.js"></script>
+  <script src="progress-overlay.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

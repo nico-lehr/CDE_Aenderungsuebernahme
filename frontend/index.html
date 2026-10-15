@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CDE-Änderungsübernahme</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand">
+    <img class="brand-mark" src="favicon.svg" alt="" width="34" height="34">
+    <div class="brand-text">
+      <span class="brand-name">CDE-Änderungsübernahme</span>
+      <span class="brand-sub">Änderungs-PDF → bestehende CDE-Excel · lokal</span>
+    </div>
+  </div>
+  <div class="header-actions">
+    <span class="status-pill" title="Alle Daten bleiben auf diesem Rechner"><span class="status-dot"></span><span id="pill-text">Lokal</span></span>
+    <button class="icon-button" id="theme-toggle" type="button" title="Hell / Dunkel" aria-label="Hell / Dunkel wechseln">🌓</button>
+  </div>
+</header>
+
+<nav class="page-tabs" id="page-tabs">
+  <button class="page-tab active" data-tab="lauf">1 · Neuer Lauf</button>
+  <button class="page-tab" data-tab="pruefen">2 · Prüfen &amp; Übernehmen</button>
+  <button class="page-tab" data-tab="verlauf">Verlauf</button>
+  <button class="page-tab" data-tab="farben">Farben im PDF</button>
+</nav>
+
+<main class="app-main">
+
+  <!-- ============ TAB: NEUER LAUF ============ -->
+  <section class="tab" id="tab-lauf">
+    <div class="intro">
+      <h1>Änderungen aus dem PDF in die Excel übernehmen</h1>
+      <p>Lade das Änderungs-PDF und die bestehende CDE-Excel hoch. <strong>Blau</strong> = neu, <strong>rot oder durchgestrichen</strong> = entfällt.
+         Die Original-Dateien bleiben unverändert, du bekommst eine neue Excel und ein Protokoll.</p>
+    </div>
+    <div class="drop-grid">
+      <label class="dropzone" id="dz-pdf" tabindex="0">
+        <input type="file" id="file-pdf" accept=".pdf,application/pdf" hidden>
+        <div class="dropzone-icon">📄</div>
+        <p class="dropzone-title">Änderungs-PDF</p>
+        <p class="dropzone-sub" id="dz-pdf-sub">PDF hierher ziehen oder klicken</p>
+      </label>
+      <label class="dropzone" id="dz-xlsx" tabindex="0">
+        <input type="file" id="file-xlsx" accept=".xlsx,.xlsm" hidden>
+        <div class="dropzone-icon">📊</div>
+        <p class="dropzone-title">Bestehende CDE-Excel</p>
+        <p class="dropzone-sub" id="dz-xlsx-sub">.xlsx hierher ziehen oder klicken</p>
+      </label>
+    </div>
+    <div class="action-row">
+      <button class="btn btn-primary" id="btn-analyse" type="button" disabled>Analysieren</button>
+      <span class="hint">Es wird noch nichts in die Excel geschrieben. Erst im nächsten Schritt entscheidest du.</span>
+    </div>
+    <p class="privacy-note">🔒 Alles läuft lokal auf diesem Rechner (Port <span id="port-text">5100</span>). Keine Cloud, keine KI-Schnittstelle.</p>
+  </section>
+
+  <!-- ============ TAB: PRUEFEN ============ -->
+  <section class="tab" id="tab-pruefen" hidden>
+    <div id="leer-pruefen" class="empty">Noch kein Lauf geöffnet. Starte einen neuen Lauf oder öffne einen aus dem Verlauf.</div>
+    <div id="pruefen-inhalt" hidden>
+      <div class="run-head">
+        <div>
+          <h2 id="run-titel">Lauf</h2>
+          <p class="hint" id="run-sub"></p>
+        </div>
+        <div class="run-actions">
+          <button class="btn btn-secondary" id="btn-alle-vorschlaege" type="button">Alle Vorschläge auswählen</button>
+          <button class="btn btn-primary" id="btn-uebernehmen" type="button">Excel erzeugen</button>
+        </div>
+      </div>
+
+      <div class="stats-grid" id="stats"></div>
+      <div id="bilanz-box" class="bilanz"></div>
+      <div id="warnungen" class="warn-box" hidden></div>
+      <div id="ergebnis-box" class="result-box" hidden></div>
+
+      <details class="layout-box" id="layout-box">
+        <summary>Erkannter Aufbau der Excel</summary>
+        <div id="layout-inhalt"></div>
+      </details>
+
+      <div class="filter-row" id="filter-row"></div>
+      <div class="table-wrap">
+        <table class="changes">
+          <thead><tr>
+            <th class="col-chk"></th><th>Nr.</th><th>Seite</th><th>Art</th><th>Section</th>
+            <th>Alt → Neu</th><th>Stelle in Excel</th><th>Status</th>
+          </tr></thead>
+          <tbody id="tabelle"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TAB: VERLAUF ============ -->
+  <section class="tab" id="tab-verlauf" hidden>
+    <h2>Bisherige Läufe</h2>
+    <p class="hint">Jeder Lauf bleibt gespeichert (Eingabe, Analyse, Ergebnisse). Löschen entfernt den ganzen Lauf von diesem Rechner.</p>
+    <div id="verlauf-liste"></div>
+  </section>
+
+  <!-- ============ TAB: FARBEN ============ -->
+  <section class="tab" id="tab-farben" hidden>
+    <h2>Farben im PDF</h2>
+    <p class="hint">Zeigt, welche Farben im geöffneten PDF vorkommen und wie sie gedeutet werden. Passt etwas nicht,
+      lassen sich die Schwellen in <code>config/farben.yaml</code> anpassen (Legende, Farbtöne, Durchstreichung).</p>
+    <div class="table-wrap"><table class="changes"><thead><tr><th>Farbe</th><th>Anzahl</th><th>Art</th><th>Klasse</th><th>Bedeutung</th></tr></thead>
+      <tbody id="farben-tabelle"></tbody></table></div>
+  </section>
+</main>
+
+<footer class="app-footer">
+  <p class="footer-credit">CDE-Änderungsübernahme · © Nico Lehr · regelbasiert, lokal, ohne Cloud</p>
+</footer>
+
+<div class="busy" id="busy" hidden><div class="busy-card"><div class="spinner"></div><p id="busy-text">Bitte warten …</p></div></div>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

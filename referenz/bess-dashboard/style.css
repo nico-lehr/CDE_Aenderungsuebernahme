@@ -1,0 +1,1969 @@
+:root {
+  --rr-blue: #0071E3;
+  --rr-blue-dark: #0058B0;
+  --rr-blue-light: #F0F6FF;
+  --rr-blue-glow: #64B5F6;
+  --green: #1E8E3E;
+  --amber: #B9770E;
+  --red: #D93025;
+  --white: #FFFFFF;
+  --grey-50: #FAFAFA;
+  --grey-100: #F5F5F7;
+  --grey-150: #E8E8ED;
+  --grey-300: #D2D2D7;
+  --grey-500: #86868B;
+  --ink: #1D1D1F;
+
+  /* aliases used by cde-tab-styles.css so both files share one palette */
+  --grey-0: var(--white);
+  --grey-200: var(--grey-150);
+  --grey-600: var(--grey-500);
+  --grey-700: #4B4B4F;
+  --grey-800: #2C2C2E;
+  --grey-900: #1C1C1E;
+  --text-primary: var(--ink);
+  --blue-400: var(--rr-blue);
+  --green-100: #E4F4E8;
+  --green-700: var(--green);
+  --green-900: #123D20;
+  --amber-100: #FBEFDA;
+  --amber-700: var(--amber);
+  --red-100: #FBE7E5;
+  --red-700: var(--red);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.12);
+
+  /* Liquid Glass */
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-bg-strong: rgba(255, 255, 255, 0.7);
+  --glass-border: rgba(255, 255, 255, 0.6);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --spring-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:root[data-theme="dark"] {
+  --glass-bg: rgba(44, 44, 46, 0.55);
+  --glass-bg-strong: rgba(44, 44, 46, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--grey-50);
+  background-image:
+    radial-gradient(circle at 8% 0%, rgba(0, 113, 227, 0.08), transparent 45%),
+    radial-gradient(circle at 95% 15%, rgba(30, 142, 62, 0.06), transparent 40%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  color: var(--ink);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+body { min-height: 100vh; display: flex; flex-direction: column; }
+
+[hidden] { display: none !important; }
+
+/* ============ HEADER ============ */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 32px;
+  border-bottom: 1px solid var(--glass-border);
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  box-shadow: inset 0 -1px 0 rgba(255,255,255,0.4), 0 1px 12px rgba(0,0,0,0.04);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  /* backdrop-filter bewusst NICHT mit-transitioniert: das animierte einen
+     Blur-Radius 400ms lang ueber die volle Seitenbreite, fuer einen
+     Unterschied von 14px zu 18px, den niemand sieht. */
+  transition: box-shadow 0.4s var(--spring-soft);
+}
+
+.app-header.is-scrolled {
+  backdrop-filter: blur(18px) saturate(200%);
+  -webkit-backdrop-filter: blur(18px) saturate(200%);
+  box-shadow: inset 0 -1px 0 rgba(255,255,255,0.5), 0 8px 24px rgba(0,0,0,0.08);
+}
+
+.brand { display: flex; align-items: center; gap: 14px; }
+
+.brand-mark {
+  width: 34px;
+  height: 40px;
+  object-fit: contain;
+  animation: brandGlow 4s ease-in-out 3;
+}
+
+@keyframes brandGlow {
+  0%, 100% {
+    filter:
+      drop-shadow(0 0 12px rgba(255, 255, 255, 0.9))
+      drop-shadow(0 0 30px rgba(90, 160, 255, 0.85))
+      drop-shadow(0 0 60px rgba(160, 90, 255, 0.55));
+  }
+  50% {
+    filter:
+      drop-shadow(0 0 18px rgba(255, 255, 255, 1))
+      drop-shadow(0 0 50px rgba(90, 220, 255, 0.95))
+      drop-shadow(0 0 90px rgba(255, 90, 200, 0.6));
+  }
+}
+
+.brand-text { display: flex; flex-direction: column; gap: 2px; }
+
+.brand-name { font-size: 15px; font-weight: 600; letter-spacing: -0.2px; }
+
+.brand-sub { font-size: 12px; color: var(--grey-500); font-weight: 400; }
+
+.header-actions { display: flex; gap: 10px; align-items: center; }
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  background: var(--grey-100);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-weight: 500;
+  color: var(--grey-700);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--green);
+  border-radius: 50%;
+}
+
+/* Bewusste, bestaetigte Ausnahme von der Design-Guideline (§1.2/1.5: Rot ist
+   dort Fehler-/Confidence-niedrig-/Konfliktzustaenden vorbehalten) -- hier
+   Statusfarbe fuer "Inferenz-Ort: API" (Dokumentdaten verlassen das
+   Rolls-Royce-Firmennetzwerk), vom Nutzer explizit so gewuenscht. */
+.status-dot.status-dot--api {
+  background: var(--red);
+}
+
+.icon-button {
+  width: 34px;
+  height: 34px;
+  border: none;
+  background: transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+  transition: background 0.15s ease;
+  padding: 0;
+}
+
+.icon-button {
+  transition: background 0.2s var(--spring-soft), transform 0.35s var(--spring);
+}
+.icon-button:hover { background: var(--grey-100); transform: rotate(18deg) scale(1.08); }
+.icon-button:active { opacity: 0.6; transform: scale(0.88); }
+
+/* ============ THEME SWITCHER ============ */
+.switch, .switch__input { position: relative; -webkit-tap-highlight-color: transparent; }
+.switch { margin-right: 8px; }
+
+.switch__input, .switch__input:before { background-color: var(--ink); }
+
+.switch__input {
+  border-radius: 0.75em;
+  cursor: pointer;
+  display: block;
+  width: 3em;
+  height: 1.5em;
+  transition: background-color 0.3s ease;
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  padding: 0;
+}
+
+.switch__input:before {
+  border-radius: 50%;
+  content: "";
+  display: block;
+  position: absolute;
+  top: 0.125em;
+  left: 0.125em;
+  width: 1.25em;
+  height: 1.25em;
+  transition: background-color 0.3s ease, transform 0.3s ease;
+  background-color: var(--ink);
+}
+
+.switch__icon, .switch__icon-part { display: block; position: absolute; top: 0; left: 0; }
+
+.switch__icon {
+  background-color: var(--white);
+  border-radius: 50%;
+  overflow: hidden;
+  pointer-events: none;
+  top: 0.125em;
+  left: 0.125em;
+  width: 1.25em;
+  height: 1.25em;
+  transition: transform 0.3s ease;
+}
+
+.switch__icon-part { transition: box-shadow 0.3s ease, transform 0.3s ease; }
+
+.switch__icon-part--1, .switch__icon-part--2, .switch__icon-part--3 { border-radius: 50%; }
+
+.switch__icon-part--1 {
+  background-color: var(--white);
+  top: calc(50% - 0.375em);
+  left: calc(50% - 0.375em);
+  width: 0.75em;
+  height: 0.75em;
+}
+
+.switch__icon-part--2 {
+  background-color: var(--ink);
+  top: calc(50% - 0.4375em);
+  left: calc(50% - 0.0625em);
+  width: 0.5em;
+  height: 0.5em;
+  transform: translate(-0.1875em, 0.1875em) scale(0.2);
+}
+
+.switch__icon-part--3 {
+  box-shadow: 0 0 0 0.625em var(--ink) inset;
+  width: 1.25em;
+  height: 1.25em;
+  transform: scale(0.25);
+}
+
+.switch__icon-part--3 ~ .switch__icon-part {
+  background-color: var(--ink);
+  border-radius: 0.0625em;
+  top: 50%;
+  left: 50%;
+  width: 0.125em;
+  height: 0.1875em;
+  transform-origin: 50% 0;
+}
+
+.switch__icon-part--4 { transform: translateX(-50%) rotate(0) translateY(0.25em); }
+.switch__icon-part--5 { transform: translateX(-50%) rotate(45deg) translateY(0.25em); }
+.switch__icon-part--6 { transform: translateX(-50%) rotate(90deg) translateY(0.25em); }
+.switch__icon-part--7 { transform: translateX(-50%) rotate(135deg) translateY(0.25em); }
+.switch__icon-part--8 { transform: translateX(-50%) rotate(180deg) translateY(0.25em); }
+.switch__icon-part--9 { transform: translateX(-50%) rotate(225deg) translateY(0.25em); }
+.switch__icon-part--10 { transform: translateX(-50%) rotate(270deg) translateY(0.25em); }
+.switch__icon-part--11 { transform: translateX(-50%) rotate(315deg) translateY(0.25em); }
+
+.switch__sr { overflow: hidden; position: absolute; width: 1px; height: 1px; }
+
+.switch__input:checked { background-color: var(--white); }
+.switch__input:checked:before, .switch__input:checked ~ .switch__icon { transform: translateX(1.5em); }
+.switch__input:checked ~ .switch__icon .switch__icon-part--2 { transform: translate(0, 0) scale(1); }
+.switch__input:checked ~ .switch__icon .switch__icon-part--3 { box-shadow: 0 0 0 0.25em var(--ink) inset; transform: scale(1); }
+.switch__input:checked ~ .switch__icon .switch__icon-part--4 { transform: translateX(-50%) rotate(0) translateY(0.625em) scale(0); }
+.switch__input:checked ~ .switch__icon .switch__icon-part--5 { transform: translateX(-50%) rotate(45deg) translateY(0.625em) scale(0); }
+.switch__input:checked ~ .switch__icon .switch__icon-part--6 { transform: translateX(-50%) rotate(90deg) translateY(0.625em) scale(0); }
+.switch__input:checked ~ .switch__icon .switch__icon-part--7 { transform: translateX(-50%) rotate(135deg) translateY(0.625em) scale(0); }
+.switch__input:checked ~ .switch__icon .switch__icon-part--8 { transform: translateX(-50%) rotate(180deg) translateY(0.625em) scale(0); }
+.switch__input:checked ~ .switch__icon .switch__icon-part--9 { transform: translateX(-50%) rotate(225deg) translateY(0.625em) scale(0); }
+.switch__input:checked ~ .switch__icon .switch__icon-part--10 { transform: translateX(-50%) rotate(270deg) translateY(0.625em) scale(0); }
+.switch__input:checked ~ .switch__icon .switch__icon-part--11 { transform: translateX(-50%) rotate(315deg) translateY(0.625em) scale(0); }
+
+/* Dark mode via data attribute */
+:root[data-theme="dark"] {
+  --white: #1C1C1E;
+  --grey-50: #000000;
+  --grey-100: #1C1C1E;
+  --grey-150: #2C2C2E;
+  --grey-300: #48484A;
+  --grey-500: #98989D;
+  --ink: #F5F5F7;
+  --grey-0: var(--white);
+  --grey-700: #C7C7CC;
+  --grey-800: #2C2C2E;
+  --grey-900: #000000;
+  --text-primary: var(--ink);
+  --green-100: rgba(30, 142, 62, 0.16);
+  --amber-100: rgba(184, 121, 12, 0.16);
+  --red-100: rgba(217, 48, 37, 0.16);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --white: #1C1C1E;
+    --grey-50: #000000;
+    --grey-100: #1C1C1E;
+    --grey-150: #2C2C2E;
+    --grey-300: #48484A;
+    --grey-500: #98989D;
+    --ink: #F5F5F7;
+    --grey-0: var(--white);
+    --grey-700: #C7C7CC;
+    --grey-800: #2C2C2E;
+    --grey-900: #000000;
+    --text-primary: var(--ink);
+  }
+}
+
+:root[data-theme="dark"] .app-header { background-color: rgba(28, 28, 30, 0.85); }
+:root[data-theme="dark"] .theme-icon-sun { display: none; }
+:root[data-theme="dark"] .theme-icon-moon { display: block; }
+
+/* ============ PAGE TABS NAVIGATION ============ */
+.page-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  padding: 8px 32px 0;
+  position: sticky;
+  /* = Hoehe von .app-header (gemessen 75,5px: padding 16+16, hoechstes Kind
+     ist .brand-text mit 42,5px -- nicht das 40px-Logo -- plus 1px border).
+     Abgerundet auf 75px: eine halbe Pixel Ueberlappung ist unsichtbar, eine
+     halbe Pixel Luecke zeigt durchscrollenden Inhalt. War 65px und damit
+     ~10px zu wenig, die Tab-Leiste verschwand oben unter dem Header. */
+  top: 75px;
+  z-index: 50;
+  /* backdrop-filter bewusst nicht mit-transitioniert, siehe .app-header. */
+  transition: background 0.4s ease, box-shadow 0.4s ease, border-color 0.4s ease;
+}
+
+.page-tabs.is-scrolled {
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(18px) saturate(200%);
+  -webkit-backdrop-filter: blur(18px) saturate(200%);
+  border-color: var(--glass-border);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.page-tab {
+  padding: 10px 18px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--grey-500);
+  border-bottom: 2px solid transparent;
+  transition: color 0.2s ease, transform 0.3s var(--spring);
+  letter-spacing: -0.1px;
+}
+
+.page-tab:hover { color: var(--ink); transform: translateY(-1px); }
+.page-tab:active { transform: scale(0.96); }
+
+.page-tab.active { color: var(--ink); border-bottom-color: var(--rr-blue); font-weight: 600; }
+
+@media (max-width: 768px) {
+  /* .app-header ist hier nur 70px hoch (padding 14px statt 16px, .brand-text
+     41px) -- ohne eigenes top entstuende zwischen Header und Tab-Leiste ein
+     5px-Spalt, durch den der Seiteninhalt scrollt. */
+  .page-tabs { padding: 8px 16px 0; top: 70px; }
+  .page-tab { padding: 10px 14px; font-size: 13px; }
+}
+
+/* ============ MAIN ============ */
+.app-main { flex: 1; max-width: 900px; margin: 0 auto; padding: 40px 24px; width: 100%; }
+
+/* Wallet & CDE pages break out of the 900px .app-main cap to use the full viewport width */
+#page-wallet,
+#page-cde {
+  width: 100vw;
+  max-width: 100vw;
+  margin-left: calc(50% - 50vw);
+  margin-right: calc(50% - 50vw);
+}
+
+/* ============ PROJECT CONTROLS ============ */
+.project-controls { margin-bottom: 40px; }
+
+.project-header { display: flex; gap: 12px; align-items: flex-end; }
+.project-header .cs-trigger { height: 41px; }
+.project-actions .btn { height: 41px; display: flex; align-items: center; }
+
+.project-select-wrapper { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.project-select-wrapper .cs { width: 100%; }
+
+.project-actions { display: flex; gap: 8px; }
+.project-actions .btn { white-space: nowrap; }
+
+.project-info { margin: 10px 0 0 0; font-size: 13px; color: var(--grey-500); }
+
+@media (max-width: 768px) {
+  .project-header { flex-direction: column; align-items: stretch; }
+  .project-select-wrapper { width: 100%; }
+  .project-actions { width: 100%; }
+  .project-actions .btn { flex: 1; }
+}
+
+/* ============ STATUS SUMMARY (shared) ============ */
+.status-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 28px; }
+
+.summary-card { padding: 18px; background: var(--glass-bg); backdrop-filter: blur(14px) saturate(150%); -webkit-backdrop-filter: blur(14px) saturate(150%); border-radius: 14px; border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow); text-align: center; transition: transform 0.3s var(--spring); }
+.summary-card:hover { transform: translateY(-2px); }
+.summary-value { font-size: 22px; font-weight: 600; color: var(--ink); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.summary-label { font-size: 12px; color: var(--grey-500); font-weight: 500; }
+
+.wallet-overview { display: flex; flex-direction: column; gap: 20px; }
+
+.wallet-history { padding: 20px; background: var(--glass-bg); backdrop-filter: blur(14px) saturate(150%); border: 1px solid var(--glass-border); border-radius: 16px; box-shadow: var(--glass-shadow); margin-bottom: 24px; }
+.wallet-history-label { display: block; font-size: 12px; color: var(--grey-500); font-weight: 600; margin-bottom: 10px; }
+.cs:has(> .wallet-history-select) { width: 100%; max-width: 300px; }
+
+.wallet-conflicts { padding: 20px; background: var(--glass-bg); backdrop-filter: blur(14px) saturate(150%); border: 1px solid var(--glass-border); border-radius: 16px; box-shadow: var(--glass-shadow); }
+.wallet-conflicts-title { font-size: 15px; font-weight: 600; margin: 0 0 12px 0; color: var(--ink); }
+.wallet-conflicts-empty { padding: 20px; text-align: center; color: var(--grey-500); font-size: 13px; }
+
+.conflict-item { padding: 12px; margin-bottom: 10px; background: var(--red-100); border-radius: 8px; }
+.conflict-item-name { font-weight: 600; color: var(--ink); font-size: 13px; margin-bottom: 6px; }
+.conflict-item-details { font-size: 12px; color: var(--grey-500); display: flex; gap: 16px; flex-wrap: wrap; }
+.conflict-source { padding: 6px; background: var(--white); border-radius: 6px; border: 1px solid var(--grey-150); }
+
+/* Radius 12px wie .table-responsive (siehe dort) -- die drei Tabellen der
+   Wallet-Seite sollen als eine Familie wirken; 16px ist laut
+   design-guideline.md §4 der Wert der Dropzone, nicht der von Karten. */
+.excel-outputs { padding: 20px; background: var(--glass-bg); backdrop-filter: blur(14px) saturate(150%); border: 1px solid var(--glass-border); border-radius: 12px; box-shadow: var(--glass-shadow); }
+.excel-outputs-title { font-size: 15px; font-weight: 600; margin: 0 0 12px 0; color: var(--ink); }
+
+/* Zellpadding 12px wie .wallet-table -- gleiche Zeilendichte in allen drei
+   Tabellen der Wallet-Seite (vorher 10px, das ergab ~4px Hoehenunterschied). */
+.excel-table-minimal { width: 100%; border-collapse: collapse; font-size: 13px; }
+.excel-table-minimal thead { border-bottom: 1px solid var(--grey-150); }
+.excel-table-minimal th { padding: 12px; text-align: left; font-weight: 600; color: var(--grey-500); font-size: 12px; }
+.excel-table-minimal td { padding: 12px; border-bottom: 1px solid var(--grey-150); }
+.excel-table-minimal tbody tr:hover { background: var(--grey-50); }
+.excel-table-minimal td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* Gespeicherte Wallet-Stände: Kennzeichnung und Hinweisleiste */
+.wallet-state-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--grey-150);
+  color: var(--grey-600);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.excel-table-minimal .btn.wallet-open-state-btn {
+  padding: 5px 14px;
+  font-size: 12px;
+}
+
+/* Amber signalisiert: hier wird ein aelterer Stand bearbeitet, nicht der aktuelle */
+.wallet-loaded-notice {
+  margin: 0 0 16px 0;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--amber-100);
+  color: var(--amber-700);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.excel-download-link {
+  display: inline-block;
+  padding: 6px 14px;
+  background: var(--rr-blue);
+  color: white;
+  border-radius: 999px;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+}
+.excel-download-link:hover { background: var(--rr-blue-dark); }
+
+.excel-outputs-empty { padding: 20px; text-align: center; color: var(--grey-500); font-size: 13px; }
+
+/* ============ DOWNLOAD TOGGLE (Wallet Versionshistorie) ============ */
+/* Adaptiert von Uiverse.io by nazar-gavrylyk: Marken-Farben (--rr-blue/--green) statt Original-Lila,
+   kompaktere Maße & kürzere Animationsdauer für einen sofort abgeschlossenen Datei-Download statt einer simulierten Installation. */
+.dl-toggle { display: flex; justify-content: center; align-items: center; }
+
+.dl-toggle-label {
+  background-color: transparent;
+  border: 2px solid var(--rr-blue);
+  display: flex;
+  align-items: center;
+  border-radius: 50px;
+  width: 104px;
+  height: 32px;
+  cursor: pointer;
+  transition: all 0.4s ease;
+  padding: 3px;
+  position: relative;
+}
+
+.dl-toggle-label::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background-color: var(--white);
+  width: 6px;
+  height: 6px;
+  transition: all 0.4s ease;
+  border-radius: 100%;
+  margin: auto;
+  opacity: 0;
+  visibility: hidden;
+}
+
+.dl-toggle-input { display: none; }
+
+/* Text liegt auf dem transparenten Pillen-Hintergrund (Karten-/Zeilenfarbe), nicht auf --rr-blue
+   -> --ink statt --white, damit es in Light- UND Dark-Mode lesbar bleibt. */
+.dl-toggle-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  transition: all 0.4s ease;
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  text-align: center;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.dl-toggle-title:last-child { opacity: 0; visibility: hidden; }
+
+.dl-toggle-circle {
+  height: 25px;
+  width: 25px;
+  border-radius: 50%;
+  background-color: var(--rr-blue);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  transition: all 0.4s ease;
+  position: relative;
+  box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+/* Icon & Häkchen-Quadrat liegen auf dem immer blauen Kreis -> fest weiß statt --white
+   (das in Dark Mode zu dunkelgrau wird und sonst kaum sichtbar wäre), analog zu .btn-primary. */
+.dl-toggle-icon {
+  color: white;
+  width: 16px;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  transition: all 0.4s ease;
+}
+
+.dl-toggle-square {
+  aspect-ratio: 1;
+  width: 8px;
+  border-radius: 2px;
+  background-color: white;
+  opacity: 0;
+  visibility: hidden;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  transition: all 0.4s ease;
+}
+
+.dl-toggle-circle::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  background-color: var(--rr-blue-dark);
+  width: 100%;
+  height: 0;
+  transition: all 0.4s ease;
+}
+
+.dl-toggle-label:has(.dl-toggle-input:checked) {
+  width: 34px;
+  animation: dl-toggle-installed 0.4s ease 1.5s forwards;
+}
+
+.dl-toggle-label:has(.dl-toggle-input:checked)::before {
+  animation: dl-toggle-rotate 1.2s ease-in-out 0.4s forwards;
+}
+
+.dl-toggle-input:checked + .dl-toggle-circle {
+  animation:
+    dl-toggle-pulse 1s forwards,
+    dl-toggle-circle-delete 0.2s ease 1.5s forwards;
+  rotate: 180deg;
+}
+
+.dl-toggle-input:checked + .dl-toggle-circle::before {
+  animation: dl-toggle-installing 1.1s ease-in-out forwards;
+}
+
+.dl-toggle-input:checked + .dl-toggle-circle .dl-toggle-icon {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.dl-toggle-input:checked ~ .dl-toggle-circle .dl-toggle-square {
+  opacity: 1;
+  visibility: visible;
+}
+
+.dl-toggle-input:checked ~ .dl-toggle-title {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.dl-toggle-input:checked ~ .dl-toggle-title:last-child {
+  animation: dl-toggle-show-done 0.4s ease 1.5s forwards;
+}
+
+@keyframes dl-toggle-pulse {
+  0% { scale: 0.95; box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7); }
+  70% { scale: 1; box-shadow: 0 0 0 9px rgba(255, 255, 255, 0); }
+  100% { scale: 0.95; box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+}
+
+@keyframes dl-toggle-installing {
+  from { height: 0; }
+  to { height: 100%; }
+}
+
+@keyframes dl-toggle-rotate {
+  0% { transform: rotate(-90deg) translate(15px) rotate(0); opacity: 1; visibility: visible; }
+  99% { transform: rotate(270deg) translate(15px) rotate(270deg); opacity: 1; visibility: visible; }
+  100% { opacity: 0; visibility: hidden; }
+}
+
+@keyframes dl-toggle-installed {
+  100% { width: 83px; border-color: var(--green); }
+}
+
+@keyframes dl-toggle-circle-delete {
+  100% { opacity: 0; visibility: hidden; }
+}
+
+@keyframes dl-toggle-show-done {
+  100% { opacity: 1; visibility: visible; right: 31px; }
+}
+
+@media (max-width: 768px) {
+  .status-summary { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ============ HERO ============ */
+.hero { margin-bottom: 48px; text-align: center; position: relative; overflow: visible; }
+
+/* Kein will-change: transform und keine transition (beide waren hier eher
+   schaedlich als nuetzlich):
+   - will-change haette den blur(50px)-Layer dauerhaft als GPU-Textur gehalten,
+     und zwar fuer alle 10 Blobs im Dokument -- liquid-glass.js animiert per
+     querySelector aber nur das erste Paar. Die Promotion setzt das Script
+     jetzt gezielt waehrend des Laufs selbst.
+   - transition: transform 0.2s wurde von jedem rAF-Frame neu angestossen und
+     arbeitete damit gegen die Glaettung im Script (Faktor 0.06). */
+.hero-blob {
+  display: block;
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(50px);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.hero-blob-a {
+  width: 320px;
+  height: 320px;
+  top: -140px;
+  left: -80px;
+  background: radial-gradient(circle at 30% 30%, rgba(0,113,227,0.35), rgba(0,113,227,0.05) 70%);
+}
+
+.hero-blob-b {
+  width: 260px;
+  height: 260px;
+  top: -60px;
+  right: -60px;
+  background: radial-gradient(circle at 60% 40%, rgba(30,142,62,0.28), rgba(30,142,62,0.04) 70%);
+}
+.intro h1 { font-size: 36px; font-weight: 600; margin: 0 0 12px 0; letter-spacing: -0.6px; }
+.intro p { font-size: 16px; color: var(--grey-500); max-width: 560px; margin: 0 auto; }
+
+/* ============ DROPZONE ============ */
+.dropzone {
+  border: 1px dashed var(--grey-300);
+  border-radius: 20px;
+  padding: 44px 24px;
+  margin: 32px 0;
+  text-align: center;
+  cursor: pointer;
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  box-shadow: var(--glass-shadow);
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.35s var(--spring);
+}
+
+.dropzone:hover { border-color: var(--rr-blue); background: var(--rr-blue-light); transform: translateY(-3px) scale(1.005); }
+.dropzone:active { transform: scale(0.99); }
+.dropzone:focus { outline: 2px solid var(--rr-blue); outline-offset: 2px; }
+
+.dropzone-icon { color: var(--rr-blue); margin-bottom: 14px; transition: transform 0.35s var(--spring); }
+.dropzone:hover .dropzone-icon { transform: translateY(-3px) rotate(-6deg); }
+
+.dropzone-title { font-size: 17px; font-weight: 600; margin: 0 0 6px 0; letter-spacing: -0.2px; }
+.dropzone-sub { font-size: 13px; color: var(--grey-500); margin: 0; }
+
+/* ============ FILE LIST ============ */
+.file-section { margin-bottom: 40px; }
+
+.file-list-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.file-list-header h2 { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 600; }
+
+.count-badge { background: var(--grey-150); color: var(--ink); font-size: 12px; padding: 3px 9px; border-radius: 999px; font-weight: 600; }
+
+.file-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+
+.file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  box-shadow: var(--glass-shadow);
+  transition: background 0.2s ease, transform 0.3s var(--spring);
+  animation: fileAppear 0.4s var(--spring-soft) both;
+}
+
+@keyframes fileAppear {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.file-item:hover { background: var(--glass-bg-strong); transform: translateY(-2px); }
+
+.file-info { display: flex; align-items: center; gap: 12px; flex: 1; }
+
+.file-icon {
+  width: 36px;
+  height: 36px;
+  background: var(--grey-150);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 11px;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+.file-icon.is-uploading { background: var(--rr-blue-light); }
+.file-icon.is-done { background: var(--green-100); color: var(--green); }
+.file-icon.is-error { background: var(--red-100); color: var(--red); }
+
+.file-icon-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--rr-blue-light);
+  border-top-color: var(--rr-blue);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.file-details h3 { margin: 0 0 2px 0; font-size: 14px; font-weight: 600; }
+.file-details p { margin: 0; font-size: 12px; color: var(--grey-500); }
+
+.remove-file {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--grey-500);
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.3s var(--spring);
+}
+
+.remove-file:hover { background: var(--red-100); color: var(--red); transform: rotate(90deg) scale(1.1); }
+
+/* ============ PIPELINE TRACKER ============ */
+.pipeline-tracker { margin-bottom: 40px; }
+
+.stage-list { list-style: none; padding: 0; margin: 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+
+.stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 10px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  text-align: center;
+  box-shadow: var(--glass-shadow);
+  transition: border-color 0.3s ease, transform 0.35s var(--spring);
+}
+
+.stage.active { border-color: var(--rr-blue); transform: scale(1.03); }
+.stage.complete { border-color: var(--green); }
+.stage.error { border-color: var(--red); }
+
+.stage-dot { width: 8px; height: 8px; background: var(--grey-300); border-radius: 50%; transition: background 0.2s ease; }
+
+.stage.active .stage-dot { background: var(--rr-blue); }
+.stage.complete .stage-dot { background: var(--green); }
+.stage.error .stage-dot { background: var(--red); }
+
+.stage-label { font-size: 12px; font-weight: 500; color: var(--ink); white-space: nowrap; }
+
+/* ============ ACTION ROW ============ */
+.action-row { display: flex; gap: 14px; align-items: flex-end; justify-content: center; margin-bottom: 40px; flex-wrap: wrap; }
+
+.model-selector { display: flex; flex-direction: column; gap: 6px; }
+.model-selector .cs { min-width: 180px; }
+
+.btn {
+  border: none;
+  border-radius: 999px;
+  padding: 10px 22px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease, background 0.2s ease, transform 0.3s var(--spring);
+  letter-spacing: -0.1px;
+}
+
+.btn:active { transform: scale(0.94); }
+
+.btn-primary { background: var(--rr-blue); color: white; box-shadow: 0 4px 14px rgba(0,113,227,0.3); }
+.btn-primary:hover:not(:disabled) { background: var(--rr-blue-dark); transform: translateY(-1px); }
+.btn-primary:active:not(:disabled) { opacity: 0.85; transform: scale(0.94); }
+
+.btn-primary:disabled { background: var(--grey-150); color: var(--grey-500); cursor: not-allowed; box-shadow: none; }
+
+.btn-secondary { background: var(--grey-100); color: var(--ink); border: none; }
+.btn-secondary:hover { background: var(--grey-150); transform: translateY(-1px); }
+
+.demo-note { font-size: 13px; color: var(--grey-500); font-style: italic; }
+
+#run-button {
+  padding: 14px 30px;
+  font-size: 16px;
+  position: relative;
+  z-index: 1;
+}
+
+#run-button:not(:disabled) {
+  background: linear-gradient(90deg, var(--rr-blue), var(--rr-blue-glow), var(--rr-blue));
+  background-size: 300%;
+  animation: siri-ani 8s linear 2;
+}
+
+#run-button:not(:disabled):hover {
+  background: linear-gradient(90deg, var(--rr-blue), var(--rr-blue-glow), var(--rr-blue));
+  background-size: 300%;
+}
+
+.siri-wrap { position: relative; display: inline-block; border-radius: 999px; }
+
+.siri-wrap::before {
+  content: "";
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  right: -3px;
+  bottom: -3px;
+  z-index: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--rr-blue), var(--rr-blue-glow), var(--rr-blue));
+  background-size: 300%;
+  opacity: 0;
+  filter: blur(4px);
+  transition: opacity 0.4s ease, filter 0.4s ease;
+}
+
+.siri-wrap:has(#run-button:not(:disabled))::before {
+  opacity: 0.35;
+  animation: siri-ani 8s linear 2, siri-pulse 2.4s ease-in-out 3;
+}
+
+@keyframes siri-ani {
+  0% { background-position: 0%; }
+  100% { background-position: 400%; }
+}
+
+@keyframes siri-pulse {
+  0%, 100% { filter: blur(4px); opacity: 0.25; }
+  50% { filter: blur(8px); opacity: 0.5; }
+}
+
+/* ============ FORTSCHRITTS-OVERLAY ============
+   Blockierendes Vollbild-Overlay waehrend eines Laufs. Liegt ueber allem
+   (z-index-Leiter im Haus: 100 Header, 500 Info-Popup, 600 Lightbox,
+   999 Settings-Scrim, 1000 Settings-Panel, 1200 Custom-Select, 2000 Toast) --
+   deshalb 2500 fuer das Overlay und 2400 fuer die Pille.
+
+   PERFORMANCE: Dieser Scrim blurrt bei inset:0 das GESAMTE Viewport, und zwar
+   genau dann, wenn die Maschine ohnehin mit der Extraktion beschaeftigt ist --
+   auf einer Intel-iGPU der teuerste Posten der ganzen App. Deshalb hier
+   bewusst sparsam: blur(6px) statt 14px, kein saturate() (das waere ein
+   zweiter Farbmatrix-Pass ueber die volle Flaeche), dafuer ein etwas
+   dichterer Scrim als Ausgleich. Die Karte darin fuehrt aus demselben Grund
+   KEINEN eigenen backdrop-filter mehr -- ihr Backdrop ist bereits dieser
+   geblurrte Scrim, ein zweiter Pass kostet voll und zeigt fast nichts. */
+.progress-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: progress-overlay-in 0.3s var(--spring-soft);
+}
+.progress-overlay[hidden] { display: none; }
+
+@keyframes progress-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.progress-overlay-card {
+  width: min(520px, 100%);
+  padding: 32px;
+  background: var(--glass-bg-strong);
+  /* Kein eigener backdrop-filter -- siehe Begruendung am .progress-overlay. */
+  border: 1px solid var(--glass-border);
+  border-radius: 18px;
+  /* Overlays duerfen einen eigenen, staerkeren Schatten fuehren (Guideline 5). */
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  animation: progress-overlay-card-in 0.35s var(--spring);
+}
+
+@keyframes progress-overlay-card-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+.progress-overlay-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin-bottom: 18px; }
+.progress-overlay-title { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.3px; color: var(--ink); }
+.progress-overlay-percent { font-size: 20px; font-weight: 600; color: var(--rr-blue); font-variant-numeric: tabular-nums; }
+
+.progress-overlay-track {
+  height: 8px;
+  background: var(--grey-150);
+  border-radius: 100px;
+  overflow: hidden;
+  /* Haelt Repaints des Balkens aus dem Rest der Karte heraus. */
+  contain: paint;
+}
+
+/* Gefuellt wird ueber transform, nicht ueber width: width ist eine
+   Layout-Property, und da alle 500ms ein neuer Wert kommt, die Transition aber
+   400ms laeuft, lief hier faktisch eine Dauer-Layout-Animation. transform ist
+   reine Compositor-Arbeit.
+   Bewusst translateX statt scaleX: scaleX wuerde das border-radius horizontal
+   mit stauchen, die rechte Kappe also je nach Fortschritt zur Ellipse
+   verformen. Der Balken liegt stattdessen in voller Breite da und wird nach
+   links aus dem Track geschoben -- die Rundung bleibt damit exakt erhalten,
+   den Ueberstand klippt der Track.
+   --progress (0..1) setzt progress-overlay.js, analog zum --dock-progress der
+   Pille. */
+.progress-overlay-fill {
+  --progress: 0;
+  height: 100%;
+  width: 100%;
+  background: var(--rr-blue);
+  border-radius: 100px;
+  transform: translateX(calc((var(--progress) - 1) * 100%));
+  transition: transform 0.4s var(--spring-soft);
+}
+
+.progress-overlay-message { margin: 16px 0 4px 0; font-size: 14px; color: var(--ink); }
+.progress-overlay-detail { margin: 0; font-size: 12px; color: var(--grey-500); font-variant-numeric: tabular-nums; min-height: 16px; }
+.progress-overlay-problems { margin: 12px 0 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 12px; max-height: 40vh; overflow-y: auto; }
+.progress-overlay-problems[hidden] { display: none; }
+.progress-overlay-problems li { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--ink); padding-left: 12px; border-left: 3px solid var(--red); }
+.progress-overlay-problems li span { color: var(--grey-500); }
+.progress-overlay-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
+
+/* Fehlerzustand: Ampel-Rot -- hier laeuft nichts mehr. */
+.progress-overlay.is-error .progress-overlay-fill { background: var(--red); }
+.progress-overlay.is-error .progress-overlay-title,
+.progress-overlay.is-error .progress-overlay-percent { color: var(--red); }
+
+/* ---- Minimierte Pille unten rechts ---- */
+.progress-dock {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 2400;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px 10px 10px;
+  background: var(--glass-bg-strong);
+  /* Kleine Flaeche, aber sie lebt genau dann, wenn die Seite wieder
+     interaktiv ist -- deshalb auch hier ohne saturate(). */
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(12px) scale(0.96);
+  transition: opacity 0.3s var(--spring-soft), transform 0.3s var(--spring), box-shadow 0.3s ease;
+}
+.progress-dock[hidden] { display: none; }
+.progress-dock.visible { opacity: 1; transform: none; }
+.progress-dock:hover { box-shadow: 0 16px 40px rgba(0, 0, 0, 0.24); transform: translateY(-1px); }
+
+/* Der Ring zeichnet den Fortschritt aus --dock-progress (0..100), das
+   progress-overlay.js bei jedem Update setzt. */
+.progress-dock-ring {
+  --dock-progress: 0;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--rr-blue) calc(var(--dock-progress) * 1%),
+    var(--grey-150) 0
+  );
+}
+.progress-dock-ring::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--white);
+}
+.progress-dock-percent { position: relative; font-size: 11px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.progress-dock-label { font-size: 13px; font-weight: 500; color: var(--ink); }
+
+@media (max-width: 768px) {
+  .progress-overlay-card { padding: 24px; }
+  .progress-overlay-title, .progress-overlay-percent { font-size: 17px; }
+  .progress-dock { left: 16px; right: 16px; bottom: 16px; justify-content: center; }
+}
+
+/* Ruhiges Verhalten fuer alle, die Bewegung reduziert haben wollen
+   (Guideline 6 -- bislang nirgends beruecksichtigt, hier von Anfang an). */
+@media (prefers-reduced-motion: reduce) {
+  .progress-overlay,
+  .progress-overlay-card,
+  .brand-mark,
+  #run-button:not(:disabled),
+  .siri-wrap:has(#run-button:not(:disabled))::before { animation: none; }
+  .progress-overlay-fill,
+  .progress-dock { transition: none; }
+}
+
+/* ---- Seite einfrieren, solange das Overlay blockiert ----
+   Solange der Vollbild-Scrim oben steht, invalidiert JEDER Repaint darunter
+   dessen backdrop-filter fuer die betroffene Region. Eine 60fps-Animation
+   hinter dem Overlay kostet damit weit mehr als sie es ohne Overlay taete.
+   Also alles ausserhalb des Overlays anhalten, solange es offen ist.
+   progress-overlay.js setzt/entfernt die Klasse in showOverlay()/minimize()/
+   hide() -- bewusst NICHT an 'open': im minimierten Zustand schaut der Nutzer
+   auf die Seite, dort muss sie sich normal verhalten.
+
+   #progress-overlay, #progress-dock und #toast sind direkte body-Kinder und
+   bleiben ausgenommen; der Kind-Kombinator haelt das :not() auf den ~9
+   body-Kindern, statt es gegen jedes Element im Dokument zu pruefen. */
+body.is-run-blocked > :not(#progress-overlay):not(#progress-dock):not(#toast),
+body.is-run-blocked > :not(#progress-overlay):not(#progress-dock):not(#toast)::before,
+body.is-run-blocked > :not(#progress-overlay):not(#progress-dock):not(#toast)::after,
+body.is-run-blocked > :not(#progress-overlay):not(#progress-dock):not(#toast) *,
+body.is-run-blocked > :not(#progress-overlay):not(#progress-dock):not(#toast) *::before,
+body.is-run-blocked > :not(#progress-overlay):not(#progress-dock):not(#toast) *::after {
+  /* paused, nicht 'animation: none': endliche Animationen (brandGlow laeuft
+     3x) wuerden sonst nach jedem Lauf von vorn beginnen, und der
+     Upload-Spinner spraenge auf 0 Grad zurueck. */
+  animation-play-state: paused !important;
+  /* Nicht 'transition: none': das wuerde transitionend verschlucken, auf das
+     sich custom-select.js beim Schliessen stuetzt. 0.01ms feuert das Event
+     weiterhin, kostet aber nichts. */
+  transition-duration: 0.01ms !important;
+  /* animation-play-state allein raeumt die Compositor-Layer nicht ab --
+     relevant vor allem fuer .hero-blob mit seinem filter: blur(50px). */
+  will-change: auto !important;
+}
+
+/* ============ RESULTS ============ */
+.results { margin-bottom: 40px; }
+.results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+.results-header h2 { margin: 0; }
+.results-note { font-size: 13px; color: var(--grey-500); margin: 0 0 14px 0; }
+
+/* overflow-y + max-height: eigener Scroll-Kontext fuer die Wallet-Tabelle
+   (statt Scrollen auf Seitenebene) -- Voraussetzung dafuer, dass der
+   sticky Tabellenkopf (.wallet-table thead) zuverlaessig funktioniert,
+   ohne den top-Offset von App-Header/Page-Tabs ausrechnen zu muessen. */
+.table-responsive { overflow-x: auto; overflow-y: auto; max-height: 70vh; border-radius: 12px; border: 1px solid var(--grey-150); background: var(--white); }
+
+.results-table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--white); min-width: 800px; }
+
+.results-table thead { background: var(--grey-50); border-bottom: 1px solid var(--grey-150); position: sticky; top: 0; }
+.results-table th { padding: 12px; text-align: left; font-weight: 600; color: var(--grey-500); font-size: 12px; white-space: nowrap; }
+.results-table th.col-narrow { width: 80px; text-align: center; }
+
+.results-table td { padding: 12px; border-bottom: 1px solid var(--grey-150); vertical-align: middle; }
+.results-table td.col-narrow { text-align: center; width: 80px; }
+
+.results-table tbody tr:hover { background: var(--grey-50); }
+.results-table tbody tr.conflict { background: var(--red-100); }
+.results-table tbody tr.conflict:hover { background: var(--red-100); }
+
+.field-name { font-weight: 600; color: var(--ink); }
+.field-value { font-weight: 500; }
+
+.confidence-badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; background: var(--grey-100); color: var(--ink); }
+.confidence-badge.high, .confidence-badge.confidence-high { background: var(--green-100); color: var(--green); }
+.confidence-badge.medium, .confidence-badge.confidence-medium { background: var(--amber-100); color: var(--amber); }
+.confidence-badge.low, .confidence-badge.confidence-low { background: var(--red-100); color: var(--red); }
+
+.ampel { width: 10px; height: 10px; border-radius: 50%; margin: 0 auto; }
+.ampel.gruen { background: var(--green); }
+.ampel.gelb { background: var(--amber); }
+.ampel.rot { background: var(--red); }
+
+.status-badge { display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+.status-green, .status-badge-success { background: var(--green-100); color: var(--green); }
+.status-amber, .status-badge-pending { background: var(--amber-100); color: var(--amber); }
+.status-red, .status-badge-error { background: var(--red-100); color: var(--red); }
+.status-notfound { background: var(--grey-150); color: var(--grey-500); }
+
+.doc-link { color: var(--rr-blue); text-decoration: none; cursor: pointer; font-weight: 500; }
+.doc-link:hover { text-decoration: underline; }
+a { color: var(--rr-blue); }
+a:hover { color: var(--rr-blue-dark); }
+
+.info-icon {
+  width: 26px;
+  height: 26px;
+  background: var(--grey-150);
+  color: var(--ink);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.2s ease, transform 0.3s var(--spring);
+  margin: 0 auto;
+}
+
+.info-icon:hover { background: var(--grey-300); transform: scale(1.15); }
+.info-icon:active { transform: scale(0.9); }
+
+/* Vom Cross-Check verworfener Wert (docs/adr/0023): Amber = Review noetig.
+   Ueber --amber-100/--amber-700, die beide einen Dark-Mode-Wert haben. */
+.info-icon-warn { background: var(--amber-100); color: var(--amber-700); }
+.info-icon-warn:hover { background: var(--amber-100); transform: scale(1.15); }
+
+/* Unbestaetigtes Zitat (FieldExtraction.citation_unverified): das Zitat liess
+   sich nicht im Dokumenttext wiederfinden -- bei kleinen Modellen meist ein
+   Prompt-Echo, also ein unbelegter, oft halluzinierter Wert (docs/adr/0024).
+   Frueher Amber passend zur auf 0.60 gedeckelten Confidence; das war zu
+   leise. Jetzt die Fehlerfarbe: das Signal gilt dem Beleg, nicht der
+   Confidence -- Scorer und Ampel bleiben unveraendert (Benchmark-
+   Vergleichbarkeit). --red-100 hat einen Dark-Mode-Wert. */
+.info-icon-error { background: var(--red-100); color: var(--red-700); font-weight: 700; box-shadow: inset 0 0 0 1px var(--red); }
+.info-icon-error:hover { background: var(--red-100); transform: scale(1.15); }
+
+.info-popup {
+  position: fixed;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(14px) saturate(180%);
+  -webkit-backdrop-filter: blur(14px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  border-radius: 18px;
+  padding: 16px;
+  max-width: 340px;
+  box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,0.6);
+  z-index: 500;
+  animation: popIn 0.35s var(--spring);
+}
+
+@keyframes popIn {
+  from { opacity: 0; transform: scale(0.9) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.info-popup-title { font-weight: 600; font-size: 14px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--grey-150); color: var(--ink); }
+
+.info-popup-item { font-size: 13px; margin-bottom: 10px; line-height: 1.5; }
+.info-popup-item strong { color: var(--ink); display: block; font-weight: 600; margin-bottom: 3px; }
+.info-popup-item span { color: var(--grey-500); word-break: break-word; }
+
+.info-popup-close { position: absolute; top: 8px; right: 8px; background: transparent; border: none; cursor: pointer; color: var(--grey-300); font-size: 18px; padding: 4px; transition: transform 0.3s var(--spring), color 0.2s ease; }
+.info-popup-close:hover { color: var(--ink); transform: rotate(90deg) scale(1.15); }
+
+/* Herkunfts-Popup der Wallet-Tabelle (wallet-tab.js/showWalletFieldInfo) */
+.info-popup-item.wallet-info-warning { background: var(--amber-100); border-radius: 12px; padding: 8px 10px; }
+.info-popup-item.wallet-info-warning strong { color: var(--amber-700); }
+.info-popup-item.wallet-info-warning span { color: var(--ink); }
+/* Unbelegter Wert (citation_unverified): Fehlerfarbe, siehe .info-icon-error */
+.info-popup-item.wallet-info-error { background: var(--red-100); border-radius: 12px; padding: 8px 10px; }
+.info-popup-item.wallet-info-error strong { color: var(--red-700); }
+.info-popup-item.wallet-info-error span { color: var(--ink); }
+/* Herkunft (FieldExtraction.provenance): kurze IDs in Monospace, voller Wert
+   im title-Attribut. */
+.wallet-provenance-row { display: block; }
+.wallet-provenance-id { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 12px; }
+/* Kennzeichen in der Feldzeile: Wert per Carry-Forward aus einem frueheren
+   Lauf uebernommen. Bewusst neutral (Grau-Pill), keine Ampelfarbe -- das ist
+   eine Herkunftsangabe, kein Status. Details im Info-Popup. */
+.carried-badge { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px; background: var(--grey-100); border: 1px solid var(--grey-150); color: var(--grey-500); font-size: 11px; font-weight: 600; line-height: 16px; vertical-align: middle; cursor: help; white-space: nowrap; }
+/* Relativer Termin (ADR 0026): dieselbe Pill-Form, aber kraeftigere Kontur --
+   das ist ein Pruefhinweis, keine blosse Herkunftsangabe. Farbe passt zur
+   grauen Ampel (.ampel.grau), bewusst keine Fehlerfarbe. */
+.relative-badge { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px; background: var(--grey-100); border: 1px solid var(--grey-500); color: var(--grey-700); font-size: 11px; font-weight: 600; line-height: 16px; vertical-align: middle; cursor: help; white-space: nowrap; }
+/* Belegzitat: PDF-Fremdtext, kann lang sein und ohne Leerzeichen umbrechen
+   muessen. Wird per textContent gefuellt, nie per innerHTML. */
+.wallet-citation-text { display: block; }
+.wallet-info-conflict { background: var(--grey-50); border-radius: 8px; padding: 6px 8px; margin-top: 4px; color: var(--grey-500); }
+
+/* ============ STATISTICS ============ */
+.stats { margin-bottom: 40px; }
+.stats-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+.stats-header h2 { margin: 0; }
+.stats-note { font-size: 12px; color: var(--grey-500); }
+
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 28px; }
+
+.stat-card { padding: 20px; background: var(--glass-bg); backdrop-filter: blur(14px) saturate(150%); border: 1px solid var(--glass-border); border-radius: 16px; box-shadow: var(--glass-shadow); text-align: center; transition: transform 0.35s var(--spring); }
+.stat-card:hover { transform: translateY(-3px) scale(1.02); }
+.stat-value { display: block; font-size: 28px; font-weight: 600; color: var(--ink); margin-bottom: 6px; letter-spacing: -0.5px; }
+.stat-label { display: block; font-size: 12px; color: var(--grey-500); font-weight: 500; }
+
+.ampel-distribution { padding: 20px; background: var(--glass-bg); backdrop-filter: blur(14px) saturate(150%); border: 1px solid var(--glass-border); border-radius: 16px; box-shadow: var(--glass-shadow); }
+
+.field-label { display: block; font-size: 12px; font-weight: 600; color: var(--grey-500); margin-bottom: 10px; }
+
+.ampel-bar { height: 10px; display: flex; gap: 2px; margin-bottom: 14px; border-radius: 999px; overflow: hidden; background: var(--grey-150); }
+.ampel-bar-segment { flex: 0; transition: flex 0.4s ease; }
+.ampel-bar-segment.green { background: var(--green); }
+.ampel-bar-segment.amber { background: var(--amber); }
+.ampel-bar-segment.red { background: var(--red); }
+
+.ampel-legend { display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; }
+.ampel-legend span { display: flex; align-items: center; gap: 7px; font-weight: 500; }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot.green { background: var(--green); }
+.dot.amber { background: var(--amber); }
+.dot.red { background: var(--red); }
+
+/* ============ FOOTER ============ */
+.app-footer { background: var(--white); border-top: 1px solid var(--grey-150); padding: 40px 24px; margin-top: auto; }
+
+.footer-content { max-width: 900px; margin: 0 auto; }
+.footer-section { margin-bottom: 28px; }
+.footer-title { font-size: 14px; font-weight: 600; color: var(--ink); margin: 0 0 10px 0; }
+.footer-description, .footer-text { font-size: 13px; color: var(--grey-500); margin: 0; line-height: 1.6; }
+
+.footer-divider { height: 1px; background: var(--grey-150); margin: 20px 0; }
+
+.footer-bottom { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding-top: 16px; border-top: 1px solid var(--grey-150); }
+.footer-credit, .footer-notice { font-size: 12px; color: var(--grey-500); margin: 0; }
+
+/* ============ SETTINGS PANEL ============ */
+.overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0); z-index: 999; transition: background 0.25s ease; pointer-events: none; }
+.overlay.active { background: rgba(0, 0, 0, 0.3); pointer-events: auto; }
+
+.settings-panel {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 100%;
+  max-width: 400px;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  box-shadow: var(--shadow-lg), inset 1px 0 0 rgba(255,255,255,0.5);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.4s var(--spring-soft);
+}
+
+.settings-panel[aria-hidden="false"] { transform: translateX(0); }
+
+.settings-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid var(--grey-150); }
+.settings-header h2 { margin: 0; font-size: 18px; font-weight: 600; }
+
+.settings-body { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 24px; }
+
+.settings-group { display: flex; flex-direction: column; gap: 14px; }
+.settings-group h3 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--grey-500); margin: 0; }
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-static { display: flex; flex-direction: row; justify-content: space-between; align-items: center; }
+.field-label { font-size: 13px; font-weight: 500; color: var(--ink); }
+.field-select { width: 100%; }
+
+.static-badge { font-size: 12px; color: var(--grey-500); background: var(--grey-100); padding: 4px 10px; border-radius: 999px; }
+
+/* Einstellungen, die sichtbar, aber noch nicht angeschlossen sind: Inhalt
+   geblurrt und per [inert] nicht bedienbar, das Badge bleibt scharf. */
+.setting-inactive { display: flex; flex-direction: column; gap: 8px; }
+.setting-inactive-content { display: flex; flex-direction: column; gap: 14px; filter: blur(2px); opacity: 0.5; user-select: none; pointer-events: none; }
+.setting-inactive-badge { align-self: flex-start; font-size: 11px; font-weight: 600; color: var(--grey-500); background: var(--grey-100); border: 1px solid var(--grey-300); padding: 2px 8px; border-radius: 999px; }
+
+select, input[type="text"], input[type="number"] {
+  padding: 10px 14px;
+  border: 1px solid var(--grey-300);
+  border-radius: 12px;
+  background: var(--white);
+  color: var(--ink);
+  font-size: 14px;
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.2s ease;
+}
+
+input[type="text"]:hover, input[type="number"]:hover { border-color: var(--grey-500); }
+input[type="text"]:focus, input[type="number"]:focus {
+  outline: none;
+  border-color: var(--rr-blue);
+  box-shadow: 0 0 0 3px var(--rr-blue-light);
+}
+
+/* ============ CUSTOM SELECT ============ */
+/* Das native <select> bleibt als Datenquelle im DOM, wird aber unsichtbar:
+   die Liste, die der Browser aufklappt, laesst sich nicht themen. */
+.cs { position: relative; display: block; }
+
+select.cs-native {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+  clip-path: inset(50%);
+}
+
+.cs-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  box-shadow: var(--shadow-xs), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease, transform 0.3s var(--spring);
+}
+
+.cs-trigger:hover:not(:disabled) {
+  background: var(--glass-bg-strong);
+  border-color: var(--rr-blue);
+  transform: translateY(-1px);
+}
+
+.cs-trigger:focus-visible {
+  outline: none;
+  border-color: var(--rr-blue);
+  box-shadow: 0 0 0 3px var(--rr-blue-light), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.cs-trigger:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.cs.is-open .cs-trigger {
+  border-color: var(--rr-blue);
+  background: var(--glass-bg-strong);
+  box-shadow: 0 0 0 3px var(--rr-blue-light), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.cs-value { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-value.is-placeholder { color: var(--grey-500); }
+
+.cs-chevron {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--grey-500);
+  transition: transform 0.3s var(--spring), color 0.2s ease;
+}
+
+.cs-trigger:hover .cs-chevron { color: var(--ink); }
+.cs.is-open .cs-chevron { transform: rotate(180deg); color: var(--rr-blue); }
+
+/* Liste haengt an <body> und wird per JS positioniert — so kann sie nicht
+   an einem overflow:hidden eines Eltern-Containers abgeschnitten werden. */
+.cs-menu {
+  position: fixed;
+  z-index: 1200;
+  max-width: min(420px, calc(100vw - 24px));
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(16px) saturate(190%);
+  -webkit-backdrop-filter: blur(16px) saturate(190%);
+  box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  opacity: 0;
+  transform: translateY(-6px) scale(0.97);
+  transform-origin: top center;
+  transition: opacity 0.18s ease, transform 0.28s var(--spring-soft);
+}
+
+.cs-menu.is-above { transform-origin: bottom center; transform: translateY(6px) scale(0.97); }
+.cs-menu.is-visible { opacity: 1; transform: translateY(0) scale(1); }
+
+.cs-menu::-webkit-scrollbar { width: 8px; }
+.cs-menu::-webkit-scrollbar-thumb { background: var(--grey-300); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+
+.cs-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.cs-option + .cs-option { margin-top: 2px; }
+
+.cs-option:hover,
+.cs-option:focus-visible,
+.cs-option:focus {
+  outline: none;
+  background: var(--rr-blue-light);
+  color: var(--rr-blue-dark);
+}
+
+.cs-option.is-selected { color: var(--rr-blue); font-weight: 600; }
+
+.cs-option.is-disabled { color: var(--grey-500); cursor: not-allowed; }
+.cs-option.is-disabled:hover { background: transparent; color: var(--grey-500); }
+
+.cs-option-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cs-check {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  color: var(--rr-blue);
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.2s ease, transform 0.3s var(--spring);
+}
+
+.cs-option.is-selected .cs-check { opacity: 1; transform: scale(1); }
+
+.cs-empty { padding: 14px 12px; text-align: center; font-size: 13px; color: var(--grey-500); }
+
+:root[data-theme="dark"] .cs-option:hover,
+:root[data-theme="dark"] .cs-option:focus {
+  background: rgba(0, 113, 227, 0.22);
+  color: var(--white);
+  color: #EAF2FF;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .cs-option:hover,
+  :root:not([data-theme="light"]) .cs-option:focus {
+    background: rgba(0, 113, 227, 0.22);
+    color: #EAF2FF;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cs-menu, .cs-chevron, .cs-check, .cs-trigger { transition-duration: 0.01ms; }
+  .brand-mark {
+    animation: none;
+    filter:
+      drop-shadow(0 0 12px rgba(255, 255, 255, 0.9))
+      drop-shadow(0 0 30px rgba(90, 160, 255, 0.85))
+      drop-shadow(0 0 60px rgba(160, 90, 255, 0.55));
+  }
+}
+
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; cursor: pointer; }
+.toggle-row input[type="checkbox"] { display: none; }
+
+.toggle-track { width: 44px; height: 26px; background: var(--grey-300); border-radius: 999px; position: relative; transition: background 0.25s ease; cursor: pointer; flex-shrink: 0; }
+.toggle-track .toggle-thumb { width: 22px; height: 22px; background: white; border-radius: 50%; position: absolute; top: 2px; left: 2px; transition: left 0.35s var(--spring); box-shadow: var(--shadow-sm); }
+
+.toggle-row input[type="checkbox"]:checked + .toggle-track { background: var(--green); }
+.toggle-row input[type="checkbox"]:checked + .toggle-track .toggle-thumb { left: 20px; }
+
+.segmented { display: flex; background: var(--grey-100); border-radius: 10px; padding: 3px; gap: 2px; }
+.segment { flex: 1; padding: 8px 12px; border: none; background: transparent; border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--grey-500); cursor: pointer; transition: background 0.2s ease, color 0.2s ease, transform 0.3s var(--spring); }
+.segment:active { transform: scale(0.94); }
+.segment.active { background: var(--white); color: var(--ink); box-shadow: var(--shadow-xs); }
+
+.privacy-note { display: flex; gap: 12px; padding: 14px; background: var(--rr-blue-light); border-radius: 10px; color: var(--rr-blue-dark); }
+.privacy-note p { margin: 0; font-size: 13px; line-height: 1.5; }
+
+.inference-target-actions { display: flex; gap: 10px; }
+.inference-target-actions .btn { flex: 1; padding: 8px 16px; font-size: 13px; }
+
+.field-hint { font-size: 12px; margin: -4px 0 0 0; min-height: 16px; color: var(--grey-500); }
+.field-hint.success { color: var(--green); }
+.field-hint.error { color: var(--red); }
+
+/* Modell mit bekannt erhoehter Fehlerrate (config/model_warnings.yaml,
+   docs/adr/0024): Amber, weil "Review noetig" und nicht "Fehler" -- das
+   Modell bleibt waehlbar. Wash-Flaeche statt nur farbigem Text, damit der
+   Hinweis im Settings-Panel nicht zwischen den grauen .field-hint-Zeilen
+   untergeht. */
+.model-warning { font-size: 12px; line-height: 1.5; margin: -4px 0 0 0; padding: 8px 10px; border-radius: 12px; background: var(--amber-100); color: var(--amber-700); font-weight: 600; }
+.model-warning[hidden] { display: none; }
+
+.settings-footer { display: flex; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--grey-150); }
+.settings-footer .btn { flex: 1; }
+
+/* ============ TOAST ============ */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translate(-50%, 30px) scale(0.9);
+  max-width: 400px;
+  background: rgba(29, 29, 31, 0.75);
+  backdrop-filter: blur(14px) saturate(180%);
+  -webkit-backdrop-filter: blur(14px) saturate(180%);
+  color: white;
+  padding: 12px 18px;
+  border-radius: 14px;
+  font-size: 14px;
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.3s ease, transform 0.4s var(--spring);
+  z-index: 2000;
+  pointer-events: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.1);
+}
+
+.toast.visible { opacity: 1; transform: translate(-50%, 0) scale(1); pointer-events: auto; }
+
+/* ============ RESPONSIVE ============ */
+@media (max-width: 768px) {
+  .app-header { padding: 14px 16px; }
+  .brand { gap: 10px; }
+  .brand-name { font-size: 14px; }
+  .intro h1 { font-size: 28px; }
+  .dropzone { padding: 32px 16px; }
+  .app-main { padding: 28px 16px 56px; }
+  .settings-panel { max-width: 100%; }
+  .stage-list { flex-direction: column; gap: 8px; }
+  .stage { width: 100%; flex-direction: row; justify-content: flex-start; }
+  .stats-grid { grid-template-columns: 1fr; }
+  .footer-bottom { flex-direction: column; align-items: flex-start; }
+  .action-row { flex-direction: column; align-items: stretch; }
+  .model-selector .cs { min-width: auto; width: 100%; }
+  .btn { width: 100%; }
+  .results-table { font-size: 12px; }
+  .results-table th, .results-table td { padding: 8px; }
+  .info-popup { max-width: 280px; font-size: 11px; }
+}
+
+/* ============ PHASE 3: EDITING & HIGHLIGHTING ============ */
+.cell-edited { background-color: var(--amber-100); }
+.cell-updated { background-color: var(--green-100); }
+/* Eine Re-Extraktion hat eine manuelle Korrektur ueberschrieben -- bewusst
+   eine eigene Farbe, nicht dieselbe wie eine gewoehnliche Wertaenderung. */
+.cell-overwritten { background-color: var(--red-100); }
+/* Wert war vorher gefunden und ist es jetzt nicht mehr: gedaempft, weil hier
+   nichts Neues dasteht, das man pruefen koennte. */
+.cell-removed { background-color: var(--grey-100); }
+.change-indicator { cursor: help; margin-left: 4px; color: var(--amber); font-weight: 600; }
+.change-indicator.indicator-updated { color: var(--green); }
+.change-indicator.indicator-overwritten { color: var(--red); }
+.change-indicator.indicator-removed { color: var(--grey-500); }
+
+.edit-popup-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--grey-150); }
+.edit-popup-title { font-size: 14px; font-weight: 600; color: var(--ink); margin: 0; }
+.edit-popup-body { display: flex; flex-direction: column; gap: 8px; }
+.edit-popup-item { display: flex; flex-direction: column; gap: 4px; }
+.edit-popup-label { font-size: 11px; font-weight: 600; color: var(--grey-500); text-transform: uppercase; letter-spacing: 0.03em; }
+.edit-popup-value { font-size: 13px; color: var(--ink); font-weight: 500; }
+
+.edit-input, .edit-textarea { border: 1px solid var(--grey-300); border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 13px; color: var(--ink); background: var(--white); }
+.edit-input:focus, .edit-textarea:focus { outline: none; border-color: var(--rr-blue); box-shadow: 0 0 0 3px var(--rr-blue-light); }
+
+.edit-popup-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+/* table-layout: fixed -- Spaltenbreiten kommen aus dem <colgroup> in
+   wallet-tab.js und sind per Ziehgriff verstellbar (.col-resizer, siehe
+   cde-tab-styles.css), analog zum CDE-Tab. Zellinhalt steht in .cell-wrap
+   und bricht um (white-space: pre-line + overflow-wrap: anywhere), statt
+   abgeschnitten zu werden -- die Zeile waechst automatisch mit dem Inhalt. */
+/* border-collapse: separate -- unter collapse gehoeren die Zellkanten der
+   Tabelle statt der Zelle und scrollen deshalb unter dem sticky thead weg
+   (betraf Kopf-Unterkante UND die senkrechten Linien zwischen den th).
+   border-spacing: 0 ist dabei zwingend, der UA-Default waere 2px. */
+.wallet-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+/* sticky innerhalb von .table-responsive (eigener Scroll-Container, siehe
+   dort) -- Hintergrund kommt schon von .wallet-table th, kein Zusatz noetig.
+   z-index 10 ist der im Dashboard etablierte Tabellenkopf-Wert (.cde-table
+   thead, .raw-table thead) und liegt ueber dem Zeilen-Ziehgriff. */
+.wallet-table thead { position: sticky; top: 0; z-index: 10; }
+/* Kopf-Unterkante als inset-Schatten statt border-bottom: wird innerhalb der
+   Border-Box gemalt und reisst bei fraktionalem Zoom nicht auf. */
+.wallet-table th { position: relative; background: var(--grey-50); padding: 12px; text-align: left; font-weight: 600; color: var(--grey-500); font-size: 12px; box-shadow: inset 0 -1px 0 var(--grey-150); border-right: 1px solid var(--grey-150); }
+.wallet-table th:last-child { border-right: none; }
+.wallet-table .th-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wallet-table td { padding: 12px; border-bottom: 1px solid var(--grey-150); vertical-align: top; overflow-wrap: anywhere; }
+.wallet-table td.col-spacer, .wallet-table th.col-spacer { padding: 0; border-right: none; }
+.wallet-table tr:hover { background: var(--grey-50); }
+/* Die Markierungsklassen sitzen auf dem <tr>; ohne eigene :hover-Regel gewinnt
+   die Zeile darueber (hoehere Spezifitaet) und die Farbe verschwindet, sobald
+   die Maus die Zeile beruehrt. Betraf bisher schon .cell-edited. */
+.wallet-table tr.cell-edited, .wallet-table tr.cell-edited:hover { background: var(--amber-100); }
+.wallet-table tr.cell-updated, .wallet-table tr.cell-updated:hover { background: var(--green-100); }
+.wallet-table tr.cell-overwritten, .wallet-table tr.cell-overwritten:hover { background: var(--red-100); }
+.wallet-table tr.cell-removed, .wallet-table tr.cell-removed:hover { background: var(--grey-100); }
+.wallet-table .cell-wrap { white-space: pre-line; overflow-wrap: anywhere; }
+
+/* Zusammenfassung der Aenderungen ueber der Tabelle. Gruen statt amber: der
+   Hinweis meldet ein Ergebnis, keinen Sonderzustand wie .wallet-loaded-notice. */
+.wallet-diff-notice {
+  margin: 0 0 16px 0;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--green-100);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.wallet-diff-notice-hint { color: var(--grey-500); }
+
+/* ============ KATEGORIE-GRUPPIERUNG (A-F, siehe field_registry.py) ============ */
+/* Abschnittskopf je Kategorie, klappbar -- Radius/Farb-Bausteine wie sonst im
+   Dashboard (--grey-100 Flaeche, --grey-150 Trennlinie, siehe design-guideline.md). */
+.wallet-table tr.wallet-category-row { background: var(--grey-100); }
+.wallet-table tr.wallet-category-row:hover { background: var(--grey-100); }
+.wallet-table tr.wallet-category-row td { padding: 0; border-bottom: 1px solid var(--grey-150); }
+.wallet-category-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  transition: background 0.2s ease;
+}
+.wallet-category-toggle:hover { background: var(--grey-150); }
+.wallet-category-chevron {
+  display: inline-block;
+  color: var(--grey-500);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.wallet-category-row.is-collapsed .wallet-category-chevron { transform: rotate(-90deg); }
+.wallet-category-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--rr-blue-light);
+  color: var(--rr-blue);
+  font-size: 11px;
+  font-weight: 700;
+}
+.wallet-category-title { font-size: 13px; font-weight: 600; flex: 1; }
+.wallet-category-count { font-size: 12px; color: var(--grey-500); font-weight: 500; }
+
+.confidence-badge.confidence-na { background: var(--grey-100); color: var(--grey-500); }
+.ampel.ampel-na { background: var(--grey-300); }
+/* Vom Cross-Check verworfen (docs/adr/0023): neutraler Ring statt Ampelfarbe --
+   es gibt keinen Wert mehr, dessen Guete eine Farbe beschreiben koennte. */
+.ampel.verworfen { background: transparent; border: 2px solid var(--grey-300); box-sizing: border-box; }
+/* "Nicht automatisch pruefbar" (ADR 0026, z.B. relative Zeitangabe in einem
+   Datumsfeld): weder Fehler (rot) noch bestaetigter Fund (gruen) -- eigene
+   neutrale Farbe, dieselben Grau-Tokens wie .ampel-na, aber als eigene Klasse
+   gehalten, weil sie fachlich etwas anderes bedeutet ("kein Extraktionsziel"
+   vs. "Wert vorhanden, aber nicht pruefbar"). */
+.confidence-badge.confidence-neutral { background: var(--grey-100); color: var(--grey-500); }
+.ampel.grau { background: var(--grey-500); }
+.info-popup-item.wallet-info-neutral { background: var(--grey-100); border-radius: 12px; padding: 8px 10px; }
+.info-popup-item.wallet-info-neutral strong { color: var(--grey-700); }
+.info-popup-item.wallet-info-neutral span { color: var(--ink); }
+
+/* ============ SHEET "2. PROJECT INFO" (ADR 0013) ============ */
+/* <details> statt eigener JS-Aufklappstatus: startet zugeklappt (kein "open"-
+   Attribut), die Hauptansicht bleibt damit optisch unveraendert. */
+.wallet-project-info-section {
+  margin-top: 20px;
+  border: 1px solid var(--grey-150);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.wallet-project-info-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--grey-100);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  list-style: none;
+}
+.wallet-project-info-summary::-webkit-details-marker { display: none; }
+.wallet-project-info-summary::before {
+  content: "▸";
+  display: inline-block;
+  color: var(--grey-500);
+  transition: transform 0.2s ease;
+}
+.wallet-project-info-section[open] > .wallet-project-info-summary::before { transform: rotate(90deg); }
+.wallet-project-info-title { flex: 1; }
+.wallet-project-info-version { font-size: 12px; font-weight: 500; color: var(--grey-500); }
+.wallet-project-info-section .table-responsive { border-top: 1px solid var(--grey-150); }
+.wallet-project-info-section .wallet-table { font-size: 13px; }
+
+/* ============ ZEILENHOEHE ZIEHEN ============ */
+/* Griff sitzt in der Aktion-Zelle (immer vorhanden, feste Breite) statt
+   direkt an der <tr>-Grenze -- <tr> darf laut HTML nur td/th als Kinder
+   haben. Optisch/interaktiv analog zu .col-resizer (cde-tab-styles.css),
+   nur horizontal. */
+.wallet-table td.col-narrow { position: relative; }
+.row-resizer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  height: 9px;
+  cursor: row-resize;
+  touch-action: none;
+  /* 1 statt 6: der Griff ragt mit bottom: -4px in die Folgezeile und muss
+     ueber deren td.col-narrow liegen (z-index: auto) -- aber unter dem
+     sticky Tabellenkopf, sonst faengt er dessen Mausevents ab. */
+  z-index: 1;
+  background: transparent;
+}
+.row-resizer::after {
+  content: "";
+  position: absolute;
+  left: 25%;
+  right: 25%;
+  top: 4px;
+  height: 1px;
+  background: transparent;
+  transition: background 0.2s ease;
+}
+.row-resizer:hover::after,
+.row-resizer.is-resizing::after { background: var(--rr-blue); }
+.row-resizer.is-resizing { background: var(--rr-blue-light); }
+
+.wallet-edit-btn:hover { color: var(--rr-blue) !important; }
+
+.wallet-subtitle { color: var(--grey-500); margin: 6px 0 0 0; font-size: 14px; }
+
+.wallet-page { padding: 0; }
+.wallet-header { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 28px 32px; border-bottom: 1px solid var(--grey-150); position: relative; overflow: visible; }
+.wallet-actions { display: flex; flex-direction: column; gap: 10px; min-width: 280px; }
+.wallet-actions .cs { width: 100%; }
+.wallet-actions-footer { display: flex; justify-content: flex-end; gap: 12px; padding: 24px 32px; border-top: 1px solid var(--grey-150); }
+
+#wallet-content { padding-left: 32px; padding-right: 32px; box-sizing: border-box; }
+/* Beide Wallet-Karten rasten auf derselben Innenkante ein wie #wallet-content
+   (32px). #wallet-saved-states hatte bisher gar keine Regel und lief dadurch
+   randlos ueber die volle 100vw-Breite von #page-wallet -- 64px breiter als
+   die Nachbarkachel direkt darunter. */
+#wallet-saved-states,
+#wallet-version-history { margin-top: 28px; margin-left: 32px; margin-right: 32px; }
+
+/* Warnliste: Abschnitte, die endgueltig nicht geprueft werden konnten.
+   Amber statt Rot -- der Lauf ist nicht gescheitert, sein Ergebnis ist nur
+   unvollstaendig. Rot waere hier uebertrieben und wuerde die Meldung eines
+   echten Fehlschlags entwerten. */
+#extraction-gaps { margin: 20px 32px 0; }
+#extraction-gaps[hidden] { display: none; }
+
+.gaps-banner {
+  border: 1px solid var(--amber);
+  background: var(--amber-100);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+
+.gaps-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--amber-700);
+  margin-bottom: 6px;
+}
+
+.gaps-hint {
+  font-size: 13px;
+  color: var(--grey-600);
+  margin-bottom: 12px;
+  max-width: 62ch;
+}
+
+.gaps-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  display: grid;
+  gap: 8px;
+}
+
+/* Der Grund gehoert dazu, muss aber leiser sein als die Fundstelle: Wo der
+   Nutzer nachsehen muss, ist wichtiger als warum es schiefging. */
+.gap-reason {
+  font-size: 12px;
+  color: var(--grey-500);
+  margin-top: 2px;
+}
+
+/* Rechenleistung im Einstellungs-Panel. */
+.inference-status { margin-bottom: 12px; }
+.inference-status-headline { font-size: 14px; margin: 0 0 6px; }
+
+.inference-status-gpus {
+  margin: 8px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--grey-600);
+}
+
+.inference-status-plan {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--grey-600);
+}
+
+.inference-status .field-hint { margin: 0 0 6px; }
+.field-hint.warning { color: var(--amber-700); }
+
+/* Laufende Messung: "live"-Zustand, daher der Puls (Design-Guide 6). */
+/* --rr-blue-light hat keinen Dark-Wert (Design-Guide 1.4) und leuchtet auf
+   dunklem Grund -- daher eine eigene Wash-Variante statt der Basisfarbe. */
+:root {
+  --rr-blue-wash: var(--rr-blue-light);
+  --rr-blue-wash-ink: var(--rr-blue-dark);
+}
+:root[data-theme="dark"] {
+  --rr-blue-wash: rgba(10, 132, 255, 0.16);
+  --rr-blue-wash-ink: var(--ink);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --rr-blue-wash: rgba(10, 132, 255, 0.16);
+    --rr-blue-wash-ink: var(--ink);
+  }
+}
+
+.calibration-live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin: 0 0 8px;
+  background: var(--rr-blue-wash);
+  color: var(--rr-blue-wash-ink);
+  border-radius: 10px;
+  font-size: 13px;
+}
+.calibration-live::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--rr-blue);
+  animation: calibration-pulse 1.6s ease-in-out infinite;
+}
+.calibration-live-log {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--grey-500);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+@keyframes calibration-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.75); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .calibration-live::before { animation: none; }
+}
+
+.inference-target-actions .btn[hidden] { display: none; }
+.toggle-row input[type="checkbox"]:disabled + .toggle-track { opacity: 0.5; cursor: progress; }

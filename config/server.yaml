@@ -1,0 +1,6 @@
+# config/server.yaml -- Dashboard-Server.
+# Bewusst ANDERER Port als die bess-pipeline (die nutzt 5000), damit beide
+# Projekte gleichzeitig laufen koennen und sich nicht in die Quere kommen.
+# Kein Cookie/Session-Gebrauch: Browser teilen Cookies zwischen Ports.
+host: 127.0.0.1
+port: 5100

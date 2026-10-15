@@ -1,0 +1,41 @@
+# config/farben.yaml -- Wie Aenderungen im PDF erkannt werden.
+# Legende (Stand Auftrag): blau = neu hinzugekommen, rot oder durchgestrichen = entfaellt.
+legende:
+  blau: neu          # neu | entfaellt | ignorieren
+  rot: entfaellt
+  durchgestrichen: entfaellt
+
+# Schwellen in HSV (Farbton in Grad, Saettigung/Helligkeit 0..1).
+# Mit dem Dashboard-Bereich "Farben im PDF" pruefen, ob echte PDFs passen.
+farbton:
+  blau: [185, 265]
+  rot_bis: 18
+  rot_ab: 335
+text:
+  min_saettigung: 0.35
+  min_helligkeit: 0.25
+hintergrund:            # farbig hinterlegte (hervorgehobene) Woerter
+  aktiv: true
+  min_saettigung: 0.15
+  min_helligkeit: 0.40
+  max_flaeche_anteil: 0.25   # groessere Flaechen sind Tabellen-/Seitenhintergruende
+
+durchstreichung:
+  aktiv: true
+  band: [0.28, 0.72]         # Linie muss in diesem Hoehenband des Zeichens liegen
+  min_abdeckung: 0.5         # Anteil der Zeichenbreite, den die Linie ueberdeckt
+  max_linienstaerke_pt: 2.0
+  max_breite_anteil: 0.6     # laengere Linien sind Trennlinien/Tabellenrahmen
+  wort_anteil: 0.6           # ab diesem Zeichenanteil gilt das Wort als durchgestrichen
+
+annotationen:                # PDF-Kommentare (Hervorheben / Durchstreichen)
+  aktiv: true
+
+layout:
+  zeilen_toleranz: 0.5       # Anteil der Schriftgroesse fuer "gleiche Zeile"
+  wort_luecke: 0.18          # Luecke (Anteil Schriftgroesse) = Leerzeichen
+  absatz_faktor: 1.3         # Zeilenabstand > Faktor * typischer Zeilenabstand => neuer Absatz
+  ueberschrift_faktor: 1.08  # Schrift groesser als Fliesstext => Ueberschrift
+  kopf_fuss_anteil: 0.07     # oberer/unterer Seitenrand fuer Kopf-/Fusszeilen
+  silbentrennung_zusammenfuegen: true
+  keine_silbentrennung_vor: [und, oder, bzw, sowie, bis, to, and, or]
