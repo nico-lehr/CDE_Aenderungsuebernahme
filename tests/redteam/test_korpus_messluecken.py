@@ -281,7 +281,7 @@ def test_rt138_korpus_pruefen_ohne_freigabe_angewendet(seed):
 def _starte_messung(eltern: Path, name: str) -> dict:
     """Wie `python -m src.cli messen --paar NAME --ordner ELTERN`; liest den Bericht (landet im Temp-Datenordner)."""
     code = messen.main(["--korpus", "entwicklung", "--ordner", str(eltern), "--paar", name])
-    aufbau(code == 0, f"messen.main lieferte Code {code}")
+    aufbau(code in (0, 1), f"messen.main lieferte Code {code}")      # 1 = Messung gelungen, Ziel verfehlt (K-MESS2); 2 waere kaputte Eingabe
     neu = sorted(config.pfad("messung_dir").iterdir())[-1]
     return json.loads((neu / "bericht.json").read_text(encoding="utf-8"))
 

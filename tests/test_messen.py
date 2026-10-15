@@ -310,7 +310,7 @@ def test_erwartet_json_stoerer_und_luecken(tmp_path):
         "format": 1, "profil": "standard", "stoerer": ["fussnote"], "woerter_markiert": 99,
         "luecken": [{"art": "scan_seite", "seite": 2}]}), encoding="utf-8")
     baue_paar(korpus, "synth_4001")                               # ohne erwartet.json: muss ebenfalls laufen
-    assert messen.main(["--korpus", "entwicklung"]) == 0
+    assert messen.main(["--korpus", "entwicklung"]) == 1          # nicht gemeldete Luecke = stiller Fehler -> Ziel verfehlt (Exit-Code 1)
     b = json.loads(next(config.pfad("messung_dir").glob("001_entwicklung/bericht.json")).read_text(encoding="utf-8"))
     assert b["je_stoerer"]["fussnote"]["paare"] == 1
     erst = b["paare"][0]
@@ -329,7 +329,7 @@ def test_bericht_und_konsole_enthalten_keine_inhalte(tmp_path, monkeypatch, caps
     baue_paar(korpus, "synth_5001")
     # ein Paar mit Fehlern, damit auch die Fehlerpfade geprueft werden
     sabotiere_ergebnis(monkeypatch, lambda ziel, aend, q: zellen_aendern(ziel, {"C2": "Quokka Pinguin Flamingo anders"}))
-    assert messen.main(["--korpus", "entwicklung", "--mit-vorschlaegen"]) == 0
+    assert messen.main(["--korpus", "entwicklung", "--mit-vorschlaegen"]) == 1     # stille Fehler -> Ziel verfehlt (Exit-Code 1)
     konsole = capsys.readouterr().out.lower()
     ordner = next(config.pfad("messung_dir").glob("001_entwicklung"))
     texte = [konsole, (ordner / "bericht.json").read_text(encoding="utf-8").lower(),
@@ -701,7 +701,7 @@ def test_ohne_verstoss_keine_regel27_meldung(tmp_path):
 
 
 # ---- Struktur (RT-136), direkt mit gebauten Arbeitsmappen ---------------------------------------------
-def _mappe(pfad: Path, zeilen: list[list[str]], hidden=(), hoehe=None, merges=(), dv=None, fett=(), fmt=None, fuellung=()) -> Path:
+def _mappe(pfad: Path, zeilen: list[list[str]], hidden=(), hoehe=None, merges=(), dv=None, fett=(), fmt=None, fuellung=(), extra=None) -> Path:
     wb = Workbook()
     ws = wb.active
     ws.title = "CDE"
@@ -723,6 +723,8 @@ def _mappe(pfad: Path, zeilen: list[list[str]], hidden=(), hoehe=None, merges=()
         ws[adr].fill = PatternFill("solid", fgColor="FFFF00")
     if fmt:
         ws[fmt[0]].number_format = fmt[1]
+    if extra:
+        extra(ws)
     wb.save(str(pfad))
     return pfad
 
@@ -905,10 +907,505 @@ def test_bericht_nennt_zaehleinheiten_und_neue_kennzahlen_ohne_inhalt(tmp_path, 
     for feld in ("aenderungen_uebernommen_korrekt", "aenderungen_uebernommen_falsch", "aenderungen_zu_pruefen",
                  "aenderungen_nicht_uebernommen", "regel27_verstoesse", "struktur_geaendert", "soll_zellen_formel",
                  "soll_zellen_unverwaltet_sonstige", "plausibilitaet_ungemeldet", "stille_fehler_zellen",
-                 "stille_fehler_paar_befunde", "luecken_nicht_pruefbar_paare", "zaehleinheiten"):
+                 "stille_fehler_paar_befunde", "luecken_nicht_pruefbar_paare", "zaehleinheiten",
+                 "abdeckung_alle", "erreicht_alle", "struktur_geprueft", "struktur_nicht_geprueft", "kriterien_nicht_ok",
+                 "struktur_vorschlaege_geaendert", "standard_paare_angenommen"):
         assert feld in g, feld
     md = (ordner / "bericht.md").read_text(encoding="utf-8")
     assert "| Einheit |" in md and "Einheit: Änderungen" in md
     text = (capsys.readouterr().out + md + json.dumps(b)).lower()
     for wort in MARKANT:
         assert wort not in text, wort
+
+
+# =======================================================================================
+# K-MESS2: blinde Flecken der Struktur-Pruefung und des Datentyps schliessen
+# Jede Eigenschaft hat drei Faelle: korrekt mitverschoben (kein Befund), unerwartet nicht verschoben/veraendert (Befund), entfernt (Befund).
+# =======================================================================================
+import datetime                                        # noqa: E402
+
+from openpyxl.comments import Comment                  # noqa: E402
+from openpyxl.formatting.rule import CellIsRule        # noqa: E402
+from openpyxl.workbook.defined_name import DefinedName  # noqa: E402
+from openpyxl.worksheet.table import Table            # noqa: E402
+
+
+def _hoehe(zeile, wert):
+    return lambda ws: setattr(ws.row_dimensions[zeile], "height", wert)
+
+
+def _breite(buchstabe, wert):
+    return lambda ws: setattr(ws.column_dimensions[buchstabe], "width", wert)
+
+
+def _fix(adresse):
+    return lambda ws: setattr(ws, "freeze_panes", adresse)
+
+
+def _filter(bereich):
+    return lambda ws: setattr(ws.auto_filter, "ref", bereich)
+
+
+def _tabelle(bereich):
+    return lambda ws: ws.add_table(Table(displayName="Tab1", ref=bereich))
+
+
+def _name(text):
+    return lambda ws: ws.parent.defined_names.add(DefinedName("Liste", attr_text=text))
+
+
+def _link(adresse, url="https://example.org/a"):
+    def f(ws):
+        ws[adresse].hyperlink = url
+    return f
+
+
+def _komm(*adressen, text="Hinweis"):
+    def f(ws):
+        for adr in adressen:
+            ws[adr].comment = Comment(text, "Autor")
+    return f
+
+
+def _bedingt(bereich):
+    return lambda ws: ws.conditional_formatting.add(
+        bereich, CellIsRule(operator="equal", formula=['"x"'], fill=PatternFill("solid", bgColor="FFFF00")))
+
+
+def _alle(*funktionen):
+    def f(ws):
+        for fn in funktionen:
+            fn(ws)
+    return f
+
+
+def _art(b, art):
+    return b["struktur_nach_art"][art]
+
+
+def test_struktur_zeilenhoehe_wandert_mit_zurueckbleiben_ist_befund(tmp_path):
+    assert _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_hoehe(7, 40), e_extra=_hoehe(9, 40))["struktur_geaendert"] == 0
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_hoehe(7, 40), e_extra=_hoehe(7, 40)), "zeilenhoehe") >= 1
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_hoehe(7, 40)), "zeilenhoehe") == 1                 # Hoehe verloren
+    assert _art(_befund(tmp_path, VZ, VZ, v_extra=_hoehe(3, 20), e_extra=_hoehe(3, 35)), "zeilenhoehe") == 1  # unveraenderte Zeile
+    assert _art(_befund(tmp_path, VZ, VZ, e_extra=_hoehe(3, 35)), "zeilenhoehe") == 1                         # Hoehe dazugekommen
+
+
+def test_struktur_zeilenhoehe_einer_geaenderten_zeile_ist_keine_aussage(tmp_path):
+    nachher = [z[:] for z in VZ]
+    nachher[2][2] = "Text zu Eintrag 2 wurde ganz neu gefasst"
+    assert _befund(tmp_path, VZ, nachher, v_extra=_hoehe(3, 20), e_extra=_hoehe(3, 35))["struktur_geaendert"] == 0
+
+
+def test_struktur_spaltenbreite(tmp_path):
+    assert _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_breite("C", 40), e_extra=_breite("C", 40))["struktur_geaendert"] == 0
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_breite("C", 40), e_extra=_breite("C", 55)), "spaltenbreite") == 1
+    assert _art(_befund(tmp_path, VZ, VZ, v_extra=_breite("C", 40)), "spaltenbreite") == 1                       # Breite verloren
+    assert _art(_befund(tmp_path, VZ, VZ, e_extra=_breite("B", 30)), "spaltenbreite") == 1                       # Breite dazugekommen
+
+
+def test_struktur_fixierte_zeilen(tmp_path):
+    assert _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_fix("A2"), e_extra=_fix("A2"))["struktur_geaendert"] == 0
+    # Fixierung unterhalb der Einfuegestelle: die fixierten Zeilen 1 bis 6 werden zu 1 bis 8, die erste bewegliche Zeile ist dann 9
+    assert _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_fix("A7"), e_extra=_fix("A9"))["struktur_geaendert"] == 0
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_fix("A7"), e_extra=_fix("A7")), "fixierung") == 1
+    assert _art(_befund(tmp_path, VZ, VZ, v_extra=_fix("A2")), "fixierung") == 1                               # Fixierung verloren
+    assert _art(_befund(tmp_path, VZ, VZ, e_extra=_fix("A2")), "fixierung") == 1                               # Fixierung dazugekommen
+    assert _art(_befund(tmp_path, VZ, VZ, v_extra=_fix("A2"), e_extra=_fix("C2")), "fixierung") == 1          # Spalten dazu
+
+
+def test_struktur_autofilter(tmp_path):
+    assert _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_filter("A1:D8"), e_extra=_filter("A1:D10"))["struktur_geaendert"] == 0
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_filter("A1:D8"), e_extra=_filter("A1:D8")), "autofilter") == 1
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_filter("A1:D8")), "autofilter") == 1                # Filter verloren
+    assert _art(_befund(tmp_path, VZ, VZ, e_extra=_filter("A1:D8")), "autofilter") == 1                        # Filter dazugekommen
+
+
+def test_struktur_excel_tabellen(tmp_path):
+    assert _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_tabelle("A1:D8"), e_extra=_tabelle("A1:D10"))["struktur_geaendert"] == 0
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_tabelle("A1:D8"), e_extra=_tabelle("A1:D8")), "tabelle") >= 1
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_tabelle("A1:D8")), "tabelle") == 1                  # Tabelle verloren
+    assert _art(_befund(tmp_path, VZ, VZ, e_extra=_tabelle("A1:D8")), "tabelle") == 1                          # Tabelle dazugekommen
+
+
+def test_struktur_benannte_bereiche(tmp_path):
+    assert _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_name("CDE!$C$2:$C$8"), e_extra=_name("CDE!$C$2:$C$10"))["struktur_geaendert"] == 0
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_name("CDE!$C$2:$C$8"), e_extra=_name("CDE!$C$2:$C$8")), "benannter_bereich") == 1
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_name("CDE!$C$2:$C$8")), "benannter_bereich") == 1  # Name verloren
+    assert _art(_befund(tmp_path, VZ, VZ, e_extra=_name("CDE!$C$2:$C$8")), "benannter_bereich") == 1          # Name dazugekommen
+
+
+def test_struktur_hyperlinks(tmp_path):
+    assert _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_link("B7"), e_extra=_link("B9"))["struktur_geaendert"] == 0
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_link("B7"), e_extra=_link("B7")), "hyperlink") >= 1
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_link("B7")), "hyperlink") == 1                      # Link verloren
+    assert _art(_befund(tmp_path, VZ, VZ, v_extra=_link("B3"), e_extra=_link("B3", "https://example.org/b")), "hyperlink") >= 1
+    assert _art(_befund(tmp_path, VZ, VZ, e_extra=_link("B3")), "hyperlink") == 1                              # Link dazugekommen
+
+
+def test_struktur_kommentare(tmp_path):
+    assert _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_komm("C7"), e_extra=_komm("C9"))["struktur_geaendert"] == 0
+    assert _art(_befund(tmp_path, VZ, VZ, v_extra=_komm("C3")), "kommentar") == 1                              # Kommentar verloren
+    assert _art(_befund(tmp_path, VZ, VZ, v_extra=_komm("C3"), e_extra=_komm("C3", text="Anders")), "kommentar") == 1
+    assert _art(_befund(tmp_path, VZ, VZ, e_extra=_komm("D4")), "kommentar") == 1                              # Kommentar dazugekommen
+    # in einer NEUEN Zeile darf das Tool einen Kommentar anlegen (Markierungsart "kommentar")
+    assert _befund(tmp_path, VZ, EINGEFUEGT, e_extra=_komm("C6"))["struktur_geaendert"] == 0
+    # an einer veraenderten Zelle darf der Kommentar ergaenzt werden, verloren gehen darf er nicht
+    nachher = [z[:] for z in VZ]
+    nachher[2][2] = "Text zu Eintrag 2 wurde ganz neu gefasst"
+    assert _befund(tmp_path, VZ, nachher, v_extra=_komm("C3"), e_extra=_komm("C3", text="Hinweis und mehr"))["struktur_geaendert"] == 0
+    assert _art(_befund(tmp_path, VZ, nachher, v_extra=_komm("C3")), "kommentar") == 1
+
+
+def test_struktur_bedingte_formatierung(tmp_path):
+    assert _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_bedingt("D2:D8"), e_extra=_bedingt("D2:D10"))["struktur_geaendert"] == 0
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_bedingt("D2:D8"), e_extra=_bedingt("D2:D8")), "bedingte_formatierung") >= 1
+    assert _art(_befund(tmp_path, VZ, EINGEFUEGT, v_extra=_bedingt("D2:D8")), "bedingte_formatierung") == 1   # Regel verloren
+    assert _art(_befund(tmp_path, VZ, VZ, e_extra=_bedingt("D2:D8")), "bedingte_formatierung") == 1           # Regel dazugekommen
+
+
+def test_struktur_alle_neuen_eigenschaften_korrekt_mitverschoben_sind_kein_befund(tmp_path):
+    """Gegenprobe: alle neuen Eigenschaften zusammen, korrekt mitverschoben, ergeben 0 (sonst waere jede Einfuegung ein Phantom-Fehler)."""
+    vorher = _alle(_hoehe(7, 40), _breite("C", 40), _fix("A2"), _filter("A1:D8"), _tabelle("A1:D8"), _name("CDE!$C$2:$C$8"),
+                   _link("B7"), _komm("C7"), _bedingt("D2:D8"))
+    nachher = _alle(_hoehe(9, 40), _breite("C", 40), _fix("A2"), _filter("A1:D10"), _tabelle("A1:D10"), _name("CDE!$C$2:$C$10"),
+                    _link("B9"), _komm("C9"), _bedingt("D2:D10"))
+    b = _befund(tmp_path, VZ, EINGEFUEGT, v_extra=vorher, e_extra=nachher)
+    assert b["struktur_geaendert"] == 0, b["struktur_nach_art"]
+    # und derselbe Aufbau ohne Mitverschieben: jede Eigenschaft meldet sich
+    b2 = _befund(tmp_path, VZ, EINGEFUEGT, v_extra=vorher, e_extra=vorher)
+    for art in ("zeilenhoehe", "autofilter", "tabelle", "benannter_bereich", "hyperlink", "kommentar", "bedingte_formatierung"):
+        assert _art(b2, art) >= 1, art
+
+
+# ---- Datentyp ---------------------------------------------------------------------------------------------------
+ZAHLZEILEN = [KOPF4] + [[i, f"Titel {i}", f"Text zu Eintrag {i} steht hier", "x"] for i in range(1, 8)]    # Nr als Zahl
+
+
+def test_typ_von_unterscheidet_zahl_text_formel_datum():
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"], ws["A2"], ws["A3"], ws["A4"], ws["A5"], ws["A6"] = 31, "31", "=1+1", datetime.date(2026, 10, 15), True, None
+    assert [messen._typ_von(ws[f"A{i}"]) for i in range(1, 7)] == ["zahl", "text", "formel", "datum", "bool", "leer"]
+    assert messen._zelltext(ws["A1"].value) == messen._zelltext(ws["A2"].value)          # der Text allein sieht keinen Unterschied
+
+
+def test_struktur_datentyp_an_unveraendertem_text(tmp_path):
+    assert _befund(tmp_path, ZAHLZEILEN, ZAHLZEILEN)["struktur_geaendert"] == 0
+    b = _befund(tmp_path, ZAHLZEILEN, VZ)                                    # alle sieben Nr-Zellen: Zahl -> Text
+    assert _art(b, "datentyp") == 7 and len(b["datentyp_orte"]) == 7
+    assert messen._lese_excel(tmp_path / "v.xlsx") == messen._lese_excel(tmp_path / "e.xlsx")     # der Text ist identisch
+    assert _art(_befund(tmp_path, VZ, ZAHLZEILEN), "datentyp") == 7          # und umgekehrt: Text -> Zahl
+
+
+def test_struktur_datentyp_formel_und_datum_werden_zu_text(tmp_path):
+    def formel(ws):
+        ws["C3"].value = "=1+1"
+
+    def formel_als_text(ws):
+        ws["C3"].value = "=1+1"
+        ws["C3"].data_type = "s"
+    assert _befund(tmp_path, VZ, VZ, v_extra=formel, e_extra=formel)["struktur_geaendert"] == 0
+    assert _art(_befund(tmp_path, VZ, VZ, v_extra=formel, e_extra=formel_als_text), "datentyp") == 1
+    assert _art(_befund(tmp_path, VZ, VZ, v_extra=lambda ws: setattr(ws["D2"], "value", datetime.date(2026, 10, 15)),
+                        e_extra=lambda ws: setattr(ws["D2"], "value", "2026-10-15 00:00:00")), "datentyp") == 1
+
+
+def test_zahl_wird_text_in_neuer_zeile_ist_stiller_fehler(tmp_path):
+    """Soll: die neue Section hat die NUMMER 4 (Zahl). Das Tool schreibt "4" als Text. Der Text ist gleich, der Datentyp nicht."""
+    p = baue_paar(tmp_path, "synth_6100", MIT_NEUER_SECTION)
+    wb = load_workbook(str(p / "nachher.xlsx"))
+    ws = wb["CDE"]
+    ws["A5"].value = 4
+    wb.save(str(p / "nachher.xlsx"))
+    res = messen.messe_paar(p)
+    assert res["stille_fehler"] == 1 and res["stille_fehler_nach_art"].get("datentyp_gewechselt") == 1
+    assert res["erreicht_auto"] == res["soll_zellen"] - 1 and res["auto_richtig"] == res["auto_gesamt"] - 1
+    assert (res["fehler"][0]["blatt"], res["fehler"][0]["spalte"], res["fehler"][0]["stumm"]) == (2, 1, True)
+    sauber = messen.messe_paar(baue_paar(tmp_path, "synth_6101", MIT_NEUER_SECTION))                  # Gegenprobe: Text bleibt Text
+    assert sauber["stille_fehler"] == 0 and sauber["erreicht_auto"] == sauber["soll_zellen"]
+
+
+def test_zahl_wird_text_an_unveraenderter_zelle_in_verwalteter_spalte_ist_stiller_fehler(monkeypatch, tmp_path):
+    p = baue_paar(tmp_path, "synth_6102")
+    for datei in ("vorher.xlsx", "nachher.xlsx"):
+        zellen_aendern(p / datei, {"A4": 3})                                  # Section-Nummer der dritten Section als Zahl
+    sabotiere_ergebnis(monkeypatch, lambda ziel, aend, q: zellen_aendern(ziel, {"A4": "3"}))
+    res = messen.messe_paar(p)
+    assert res["stille_fehler"] == 1 and res["stille_fehler_nach_art"].get("datentyp_gewechselt") == 1
+    assert res["struktur_nach_art"]["datentyp"] == 0                          # verwaltete Spalte: stiller Fehler, kein Strukturbefund
+    monkeypatch.undo()
+    ohne = baue_paar(tmp_path, "synth_6103")
+    for datei in ("vorher.xlsx", "nachher.xlsx"):
+        zellen_aendern(ohne / datei, {"A4": 3})
+    sauber = messen.messe_paar(ohne)                                           # Gegenprobe: das Tool laesst die Zahl in Ruhe
+    assert sauber["stille_fehler"] == 0 and sauber["struktur_geaendert"] == 0
+
+
+def test_zahl_wird_text_in_nicht_verwalteter_spalte_ist_strukturbefund(monkeypatch, tmp_path):
+    p = baue_paar(tmp_path, "synth_6104")
+    for datei in ("vorher.xlsx", "nachher.xlsx"):
+        zellen_aendern(p / datei, {"D4": 5})                                  # Bemerkung als Zahl
+    sabotiere_ergebnis(monkeypatch, lambda ziel, aend, q: zellen_aendern(ziel, {"D4": "5"}))
+    res = messen.messe_paar(p)
+    assert res["struktur_nach_art"]["datentyp"] == 1 and res["struktur_geaendert"] == 1
+    assert res["stille_fehler"] == 0
+
+
+# ---- Struktur der Excel mit allen freigegebenen Vorschlaegen ----------------------------------------------------
+def _sabotiere_vorschlags_excel(monkeypatch, wirkung):
+    original = messen.uebernehmen
+
+    def mit(aend, quelle, ziel, freigaben=None, cfg=None):
+        res = original(aend, quelle, ziel, freigaben, cfg)
+        if Path(ziel).name == "ergebnis_alle.xlsx":
+            wb = load_workbook(str(ziel))
+            wirkung(wb["CDE"])
+            wb.save(str(ziel))
+        return res
+    monkeypatch.setattr(messen, "uebernehmen", mit)
+
+
+def test_vorschlags_excel_wird_auf_struktur_geprueft_unerwartete_abweichung_ist_befund(tmp_path, monkeypatch):
+    p = baue_paar(tmp_path, "synth_6200")
+    _sabotiere_vorschlags_excel(monkeypatch, lambda ws: setattr(ws, "freeze_panes", "A5"))
+    res = messen.messe_paar(p, mit_vorschlaegen=True)
+    assert res["struktur_vorschlaege_geaendert"] == 1 and res["struktur_vorschlaege_nach_art"]["fixierung"] == 1
+    assert res["struktur_vorschlaege_angekuendigt"] == 0
+    assert res["struktur_geaendert"] == 0                                      # die Excel der Automatik ist in Ordnung
+    b = messen.fasse_zusammen([dict(res, name="synth_6200")], "entwicklung", "1", True)
+    k = next(k for k in b["kriterien"] if k["name"].startswith("Vorschlags-Excel"))
+    assert k["ampel"] == "NICHT ok" and b["gesamt"]["struktur_vorschlaege_geaendert"] == 1
+
+
+def test_vorschlags_excel_abweichung_ist_zulaessig_wenn_der_plan_sie_vorab_gemeldet_hat(tmp_path, monkeypatch):
+    p = baue_paar(tmp_path, "synth_6201")
+    original = messen.plane
+
+    def mit_warnung(pdf, xl, cfg=None):
+        plan = original(pdf, xl, cfg)
+        plan.aenderungen[0].hinweise.append("Hier laufen verbundene Zellen durch die Zeile; sie würden zerrissen oder verrutschen.")
+        return plan
+    monkeypatch.setattr(messen, "plane", mit_warnung)
+    _sabotiere_vorschlags_excel(monkeypatch, lambda ws: ws.merge_cells("G2:H3"))
+    res = messen.messe_paar(p, mit_vorschlaegen=True)
+    assert res["struktur_vorschlaege_geaendert"] == 0 and res["struktur_vorschlaege_angekuendigt"] == 1
+    assert res["struktur_vorschlaege_angekuendigt_nach_art"]["verbunden"] == 1
+    # dieselbe Abweichung OHNE Vorab-Warnung ist ein Befund
+    monkeypatch.setattr(messen, "plane", original)
+    ohne = messen.messe_paar(baue_paar(tmp_path, "synth_6202"), mit_vorschlaegen=True)
+    assert ohne["struktur_vorschlaege_geaendert"] == 1 and ohne["struktur_vorschlaege_angekuendigt"] == 0
+
+
+def test_ohne_vorschlaege_ist_die_vorschlags_struktur_nicht_gemessen(tmp_path):
+    res = messen.messe_paar(baue_paar(tmp_path, "synth_6203"))
+    assert res["struktur_vorschlaege_geaendert"] is None
+    b = messen.fasse_zusammen([dict(res, name="synth_6203")], "entwicklung", "1", False)
+    assert next(k for k in b["kriterien"] if k["name"].startswith("Vorschlags-Excel"))["ampel"] == "nicht gemessen"
+
+
+def test_sauberes_paar_mit_vorschlaegen_hat_keine_strukturbefunde(tmp_path):
+    res = messen.messe_paar(baue_paar(tmp_path, "synth_6204", MIT_NEUER_SECTION), mit_vorschlaegen=True)
+    assert res["struktur_geaendert"] == 0 and res["struktur_vorschlaege_geaendert"] == 0
+
+
+# ---- Ampel nennt, was sie prueft; Abdeckung ueber alle Soll-Zellen; 90-%-Regel ohne Profil -----------------------------
+def _paar_dict(**kw) -> dict:
+    d = {"name": "p", "stille_fehler": 0, "soll_zellen": 4, "erreicht_auto": 4, "auto_gesamt": 4, "auto_richtig": 4,
+         "bilanz_stimmt": True, "vollstaendig": True, "idempotent": True, "original_unveraendert": True, "kollateral": 0,
+         "fehler": [], "luecken_nicht_gemeldet": 0, "luecken_pruefbar": True, "soll_woerter": 10, "lese_luecke_woerter": 0,
+         "struktur_geaendert": 0, "plausibilitaet_hinweise": [], "plausibilitaet_ungemeldet": 0}
+    d.update(kw)
+    return d
+
+
+def _ampeln(paare, vorschlaege=False) -> dict:
+    return {k["name"]: k["ampel"] for k in messen.fasse_zusammen(paare, "entwicklung", "1", vorschlaege)["kriterien"]}
+
+
+def test_struktur_ampel_sagt_was_sie_prueft_und_was_nicht(tmp_path):
+    res = messen.messe_paar(baue_paar(tmp_path, "synth_6300"))
+    b = messen.fasse_zusammen([dict(res, name="synth_6300")], "entwicklung", "1", False)
+    k = next(k for k in b["kriterien"] if k["name"].startswith("Struktur unverändert"))
+    assert "geprüft:" in k["detail"] and "nicht geprüft:" in k["detail"]
+    geprueft, nicht_geprueft = k["detail"].split("nicht geprüft:")
+    for wort in ("bedingte Formatierung", "Hyperlink", "Kommentare", "benannte Bereiche", "Autofilter", "Tabellen", "fixierte",
+                 "Spaltenbreiten", "Zeilenhöhen", "Datentyp"):
+        assert wort in geprueft, wort
+    for wort in ("Rahmen", "Ausrichtung", "Diagramme", "Druckbereich"):
+        assert wort in nicht_geprueft, wort
+    md = messen._md(b)
+    assert "Struktur ok heißt nur" in md and "Nicht geprüft wurde" in md
+    assert b["gesamt"]["struktur_geprueft"] and b["gesamt"]["struktur_nicht_geprueft"]
+
+
+def test_abdeckung_ueber_alle_soll_zellen_ist_eine_eigene_ampel_mit_grenze_70_prozent():
+    name = "Abdeckung über ALLE Soll-Zellen (inkl. Füllspalten, Formeln)"
+    # Haupt-Spalten 100 %, aber nur 4 von 10 Soll-Zellen insgesamt (Fuellung und Formeln nicht erreicht): Haupt-Zeile ok, Gesamt-Zeile NICHT ok
+    knapp = _paar_dict(soll_zellen_unverwaltet=4, soll_zellen_formel=2, soll_zellen_formel_verfehlt=2, erreicht_alle=4)
+    a = _ampeln([knapp])
+    assert a[name] == "NICHT ok" and a["Abdeckung ohne Nachfrage (nur Haupt-Spalten)"] == "ok"
+    b = messen.fasse_zusammen([knapp], "entwicklung", "1", False)
+    assert b["gesamt"]["soll_zellen_alle"] == 10 and b["gesamt"]["erreicht_alle"] == 4 and b["gesamt"]["abdeckung_alle"] == 0.4
+    k = next(k for k in b["kriterien"] if k["name"] == name)
+    assert k["einheit"] == "Zellen" and "Formelzellen" in k["detail"] and "0 von 2" in k["detail"]
+    # 7 von 10 = 70 %: ok (Grenze gilt "mindestens")
+    assert _ampeln([_paar_dict(soll_zellen_unverwaltet=6, erreicht_alle=7)])[name] == "ok"
+    assert _ampeln([_paar_dict(soll_zellen_unverwaltet=6, erreicht_alle=6)])[name] == "NICHT ok"
+
+
+def test_abdeckung_alle_misst_die_echte_zaehlung_im_paar(tmp_path):
+    p = baue_paar(tmp_path, "synth_6301")
+    wb = load_workbook(str(p / "nachher.xlsx"))
+    ws = wb["CDE"]
+    ws["E2"] = "=LEN(C2)"                                  # Formelzelle: das Tool fasst sie nicht an
+    ws["D3"] = "Neue Bemerkung mit mehr als drei Woertern hier"      # sonstige nicht verwaltete Zelle
+    wb.save(str(p / "nachher.xlsx"))
+    res = messen.messe_paar(p)
+    assert res["soll_zellen"] == 3 and res["soll_zellen_alle"] == 5 and res["erreicht_alle"] == 3 and res["erreicht_formel"] == 0
+    assert messen.fasse_zusammen([dict(res, name="p")], "entwicklung", "1", False)["gesamt"]["abdeckung_alle"] == 0.6
+
+
+def test_neunzig_prozent_regel_gilt_auch_ohne_profil():
+    name = "Abdeckung ohne Nachfrage (nur Haupt-Spalten)"
+    knapp = dict(soll_zellen=4, erreicht_auto=3)                       # 75 %: unter 90 %, ueber 70 %
+    ohne_profil = _ampeln([_paar_dict(**knapp)])[name]
+    standard = _ampeln([_paar_dict(profil="standard", **knapp)])[name]
+    assert ohne_profil == standard == "NICHT ok"                       # frueher: ohne Profil "ok", mit Profil "NICHT ok"
+    assert _ampeln([_paar_dict(profil="schwer", **knapp)])[name] == "ok"
+    b = messen.fasse_zusammen([_paar_dict(**knapp), _paar_dict(profil="standard", soll_zellen=4, erreicht_auto=4)], "entwicklung", "1", False)
+    assert b["gesamt"]["standard_paare"] == 2 and b["gesamt"]["standard_paare_angenommen"] == 1
+    k = next(k for k in b["kriterien"] if k["name"] == name)
+    assert "Standard-Aufbau angenommen" in k["detail"]
+
+
+def test_paar_ohne_erwartet_json_wird_als_standard_angenommen_gemeldet(tmp_path, capsys):
+    res = messen.messe_paar(baue_paar(tmp_path, "echt_6400"))
+    assert res["profil_angenommen"] is True
+    korpus = korpus_dir()
+    baue_paar(korpus, "echt_6401")
+    messen.main(["--korpus", "entwicklung"])
+    assert "Standard-Aufbau angenommen" in capsys.readouterr().out
+
+
+# ---- Exit-Code ------------------------------------------------------------------------------------------------------
+def test_exit_code_0_ohne_verfehltes_kriterium_1_bei_nicht_ok_2_bei_kaputter_eingabe(tmp_path, monkeypatch, capsys):
+    korpus = korpus_dir()
+    baue_paar(korpus, "synth_6500")
+    assert messen.main(["--korpus", "entwicklung"]) == 0
+    assert "Exit-Code 0" in capsys.readouterr().out
+    b = json.loads(next(config.pfad("messung_dir").glob("001_entwicklung/bericht.json")).read_text(encoding="utf-8"))
+    assert b["gesamt"]["kriterien_nicht_ok"] == 0 and b["gesamt"]["ziel_verfehlt"] is False
+    sabotiere_ergebnis(monkeypatch, lambda ziel, aend, q: zellen_aendern(ziel, {"C2": "Etwas ganz anderes steht hier."}))
+    assert cli.main(["messen", "--korpus", "entwicklung"]) == 1                  # Messung gelungen, Ziel verfehlt
+    out = capsys.readouterr().out
+    assert "Exit-Code 1" in out and "NICHT ok" in out
+    b2 = json.loads(next(config.pfad("messung_dir").glob("002_entwicklung/bericht.json")).read_text(encoding="utf-8"))
+    assert b2["gesamt"]["kriterien_nicht_ok"] >= 1 and b2["gesamt"]["ziel_verfehlt"] is True
+    assert messen.main(["--korpus", "entwicklung", "--paar", "gibt_es_nicht"]) == 2   # kaputte Eingabe
+
+
+def test_exit_code_1_auch_wenn_nur_die_gesamtabdeckung_verfehlt_wird(tmp_path):
+    korpus = korpus_dir()
+    p = baue_paar(korpus, "synth_6501")
+    wb = load_workbook(str(p / "nachher.xlsx"))
+    ws = wb["CDE"]
+    ws["E2"] = "=LEN(C2)"                                                     # eine Formelzelle, die das Tool bewusst nicht anpasst
+    ws["D3"] = "Neue Bemerkung mit mehr als drei Woertern hier"               # eine sonstige nicht verwaltete Zelle (3 von 5 = 60 %)
+    wb.save(str(p / "nachher.xlsx"))
+    assert messen.main(["--korpus", "entwicklung"]) == 1
+    b = json.loads(next(config.pfad("messung_dir").glob("001_entwicklung/bericht.json")).read_text(encoding="utf-8"))
+    ampeln = {k["name"]: k["ampel"] for k in b["kriterien"]}
+    assert ampeln["Abdeckung über ALLE Soll-Zellen (inkl. Füllspalten, Formeln)"] == "NICHT ok"
+    assert ampeln["Abdeckung ohne Nachfrage (nur Haupt-Spalten)"] == "ok" and ampeln["Stille Fehler"] == "ok"
+
+
+# ---- Ende zu Ende: das echte Tool fuegt Zeilen ein, die neuen Eigenschaften duerfen keinen Phantom-Befund ergeben -----------------
+ELEMENTE_EINFUEGEN = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."),
+                      ("h", "2 Zwei"), ("p", "Die Reaktionszeit darf 150 ms nicht ueberschreiten."),
+                      ("h", "{+2.5 Neu+}"), ("p", "{+Ein neuer Absatz mit Zusatz.+}"),
+                      ("h", "3 Drei"), ("p", "Alle Steckverbindungen sind eindeutig beschriftet."),
+                      ("h", "4 Vier"), ("p", "Die Lieferung umfasst alles Zubehoer.")]
+
+
+def _paar_zum_einfuegen(tmp_path: Path, unten: bool) -> Path:
+    ordner = tmp_path / "paar"
+    ordner.mkdir()
+    baue_pdf(ordner / "aenderungen.pdf", ELEMENTE_EINFUEGEN, "farbe")
+    baue_excel(ordner / "nachher.xlsx", zustaende(ELEMENTE_EINFUEGEN, True), "L3", True)
+    baue_excel(ordner / "vorher.xlsx", zustaende(ELEMENTE_EINFUEGEN, False), "L3", True)
+    wb = load_workbook(str(ordner / "vorher.xlsx"))
+    ws = wb["CDE"]
+    ws.freeze_panes = "A2"
+    ws["B2"].hyperlink = "https://example.org/oben"
+    ws["C3"].comment = Comment("Hinweis oben", "Autor")
+    ws.conditional_formatting.add("D2:D3", CellIsRule(operator="equal", formula=['"A"'], fill=PatternFill("solid", bgColor="FFFF00")))
+    if unten:        # Dinge unterhalb der Einfuegestelle: die Automatik fasst sie nicht an (pruefen), die Vorschlags-Excel verschiebt sie nicht
+        ws["B8"].hyperlink = "https://example.org/unten"
+        ws["C8"].comment = Comment("Hinweis unten", "Autor")
+        ws.conditional_formatting.add("D6:D9", CellIsRule(operator="equal", formula=['"B"'], fill=PatternFill("solid", bgColor="FFFF00")))
+        ws.auto_filter.ref = "A1:D9"
+        wb.defined_names.add(DefinedName("Liste", attr_text="CDE!$C$2:$C$9"))
+    else:
+        ws.row_dimensions[7].height = 40
+    wb.save(str(ordner / "vorher.xlsx"))
+    return ordner
+
+
+def test_ende_zu_ende_zeilen_einfuegen_mit_eigenschaften_oberhalb_und_mitgezogenem_ist_kein_befund(tmp_path):
+    res = messen.messe_paar(_paar_zum_einfuegen(tmp_path, unten=False), mit_vorschlaegen=True)
+    assert res["auto_gesamt"] >= 2                                              # die Zeilen wurden wirklich eingefuegt
+    assert res["struktur_geaendert"] == 0 and res["struktur_vorschlaege_geaendert"] == 0, res["struktur_nach_art"]
+    assert res["stille_fehler"] == 0
+
+
+def test_ende_zu_ende_nicht_mitgezogenes_wird_in_der_vorschlags_excel_als_angekuendigt_gezaehlt(tmp_path):
+    res = messen.messe_paar(_paar_zum_einfuegen(tmp_path, unten=True), mit_vorschlaegen=True)
+    assert res["pruefen_zellen"] >= 1 and res["struktur_geaendert"] == 0          # die Automatik hat nichts angefasst
+    assert res["struktur_vorschlaege_geaendert"] == 0                             # der Plan hatte jede Abweichung vorab gemeldet
+    assert {a for a, n in res["struktur_vorschlaege_angekuendigt_nach_art"].items() if n} == \
+        {"bedingte_formatierung", "autofilter", "benannter_bereich"}
+
+
+# ---- Ende zu Ende mit Sabotage am Ergebnis des Tools: jede neue Eigenschaft meldet sich im Paar-Ergebnis und in der Ampel ---------
+def _paar_mit_eigenschaften_oben(tmp_path: Path) -> Path:
+    ordner = _paar_zum_einfuegen(tmp_path, unten=False)
+    wb = load_workbook(str(ordner / "vorher.xlsx"))
+    ws = wb["CDE"]
+    ws.auto_filter.ref = "A1:D3"                                       # beide oberhalb der Einfuegestelle
+    wb.defined_names.add(DefinedName("Liste", attr_text="CDE!$C$2:$C$3"))
+    wb.save(str(ordner / "vorher.xlsx"))
+    return ordner
+
+
+SABOTAGE_STRUKTUR_NEU = {
+    "hyperlink": lambda ws: setattr(ws["B2"], "hyperlink", None),
+    "kommentar": lambda ws: setattr(ws["C3"], "comment", None),
+    "bedingte_formatierung": lambda ws: setattr(ws.conditional_formatting, "_cf_rules", {}),
+    "autofilter": lambda ws: setattr(ws.auto_filter, "ref", None),
+    "benannter_bereich": lambda ws: ws.parent.defined_names.pop("Liste"),
+    "fixierung": lambda ws: setattr(ws, "freeze_panes", None),
+    "spaltenbreite": lambda ws: setattr(ws.column_dimensions["C"], "width", 99),
+    "zeilenhoehe": lambda ws: setattr(ws.row_dimensions[3], "height", 77),
+}
+
+
+def test_ende_zu_ende_ausgangslage_fuer_die_sabotage_ist_ohne_befund(tmp_path):
+    res = messen.messe_paar(_paar_mit_eigenschaften_oben(tmp_path))
+    assert res["auto_gesamt"] >= 2 and res["struktur_geaendert"] == 0, res["struktur_nach_art"]
+
+
+@pytest.mark.parametrize("art", sorted(SABOTAGE_STRUKTUR_NEU))
+def test_ende_zu_ende_sabotage_wird_als_strukturbefund_der_richtigen_art_gemeldet(tmp_path, monkeypatch, art):
+    ordner = _paar_mit_eigenschaften_oben(tmp_path)
+
+    def wirkung(ziel, aend, quelle):
+        wb = load_workbook(str(ziel))
+        SABOTAGE_STRUKTUR_NEU[art](wb["CDE"])
+        wb.save(str(ziel))
+    sabotiere_ergebnis(monkeypatch, wirkung)
+    res = messen.messe_paar(ordner)
+    assert res["struktur_nach_art"][art] >= 1, (art, res["struktur_nach_art"])
+    b = messen.fasse_zusammen([dict(res, name="synth_6600")], "entwicklung", "1", False)
+    assert next(k for k in b["kriterien"] if k["name"].startswith("Struktur unverändert"))["ampel"] == "NICHT ok"
+    assert b["gesamt"]["kriterien_nicht_ok"] >= 1

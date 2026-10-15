@@ -18,12 +18,14 @@ Ob es bei echten Dokumenten trägt, zeigt erst die Messung an deinen echten Paar
 | 3 | Treffergenauigkeit automatisch (Zellen) | 100 % | 92,3 % | 98,5 % (601 von 610) | NICHT ok |
 | 3 | je Änderung (automatisch übernommen) | 100 % | nicht gemessen | 98,5 % (765 von 777) | NICHT ok |
 | 3 | Genauigkeit der Vorschläge nach Freigabe | ≥ 95 % | 60,9 % | 72,3 % | NICHT ok |
-| 4 | Abdeckung ohne Nachfrage | ≥ 70 % (Standard 90 %) | 77,1 % | 88,2 % | ok |
+| 4 | Abdeckung ohne Nachfrage (nur Haupt-Spalten, 681 von 995 Soll-Zellen; ohne Profil gilt jetzt auch die 90-%-Regel) | ≥ 70 % (Standard 90 %) | 77,1 % | 88,0 % (599 von 681; Standard-Paare 97,5 %) | ok |
+| 4 | **Abdeckung über ALLE Soll-Zellen** (Haupt-Spalten, Füllung, sonstige, Formeln; Stand K-MESS2) | ≥ 70 % | nicht gemessen | **60,2 %** (599 von 995: Füllung 0 von 226, sonstige 0 von 6, Formeln 0 von 82) | **NICHT ok** |
 | 4 | Nicht-Übernahmen ohne Grund | 0 | 0 | 0 | ok |
 | 5 | Lese-Lücke | ≤ 2 % | 5,8 % | 1,4 % | ok |
 | 6 | Zweiter Lauf ändert nichts (Idempotenz) | alle Paare | 0 von 60 | 57 von 60 (nach K-FINAL; vorher 51) | NICHT ok |
 | 6 | Kollateralschaden | 0 | 2 | 0 | ok |
-| 6 | Struktur unverändert (Blätter, versteckte Zeilen, Merges …) | 0 | nicht gemessen | 0 | ok |
+| 6 | Struktur unverändert. **Geprüft:** Blätter, versteckte Zeilen/Spalten, Verbünde, Validierung, bedingte Formatierung, Hyperlink-Adressen, Kommentare, benannte Bereiche, Filter, Excel-Tabellen, Fixierung, Spaltenbreiten, Zeilenhöhen, Zahlenformat, Schrift/Füllung, Datentyp. **Nicht geprüft:** Rahmen, Ausrichtung, Schutz, Druckeinstellungen, Bilder, Diagramme, Gliederung, Makros | 0 | nicht gemessen | 0 (Automatik und Excel mit allen freigegebenen Vorschlägen; 3 angekündigte Abweichungen dort sind kein Befund) | ok |
+| 6 | Datentyp-Wechsel (Zahl wird Text) an richtig befüllten Zellen, neu seit K-MESS2 | 0 | nicht gemessen | 2 Zellen in 2 Paaren (neue Section-Nummern stehen im Soll als Zahl, das Tool schreibt Text); zählen als stille Fehler | NICHT ok |
 | 6 | Originale unverändert | alle | 60 von 60 | 60 von 60 | ok |
 | – | Formelzellen in neuen/verschobenen Zeilen | – | nicht gemessen | 82 von 82 **nicht angepasst** (bewusst, siehe unten) | NICHT ok |
 | 7 | Geschwindigkeit | 20 000 Zeilen < 60 s | Einzelzelle weit unten: 6,7 s / 525 MB | 0,01 s / 27 MB; 20 000 Zeilen Analyse 2,4 s | ok |

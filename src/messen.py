@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import copy
+import datetime
 import hashlib
 import json
 import re
@@ -35,7 +36,8 @@ from typing import Any, Callable
 
 from openpyxl import load_workbook
 from openpyxl.cell.rich_text import CellRichText
-from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
+from openpyxl.utils.cell import coordinate_from_string
 
 from . import config
 from .applier import uebernehmen
@@ -48,9 +50,24 @@ from .protokoll import bilanz
 BERICHT_FORMAT = 1
 FEHLERARTEN = ("pdf_falsch_gelesen", "layout_falsch", "zuordnung_falsch", "plan_falsch", "bilanz_kaputt", "unklar")
 STILLE_ARTEN = ("uebernommen_aber_falsch", "kollateral", "bilanz", "nachkontrolle_ok_aber_falsch",
-                "keine_wirkung", "luecke_nicht_gemeldet", "regel27_verstoss")
+                "keine_wirkung", "luecke_nicht_gemeldet", "regel27_verstoss", "datentyp_gewechselt")
 STRUKTUR_ARTEN = ("blatt", "sichtbarkeit", "zeile_versteckt", "spalte_versteckt", "verbunden", "validierung",
-                  "zahlenformat", "schrift")
+                  "zahlenformat", "schrift", "datentyp", "bedingte_formatierung", "hyperlink", "kommentar",
+                  "benannter_bereich", "autofilter", "tabelle", "fixierung", "spaltenbreite", "zeilenhoehe")
+# Was die Ampel "Struktur unveraendert" prueft und was NICHT (K-MESS2: ehrlich benennen)
+STRUKTUR_GEPRUEFT = ("Blätter (Name, Reihenfolge, Sichtbarkeit), ausgeblendete Zeilen und Spalten, verbundene Zellen, Datenvalidierung, "
+                     "bedingte Formatierung, Hyperlink-Adressen, Kommentare, benannte Bereiche, Autofilter, Excel-Tabellen, fixierte Zeilen/Spalten, "
+                     "Spaltenbreiten, Zeilenhöhen unveränderter Zeilen, Zahlenformat, Schrift und Füllung unveränderter Zellen, "
+                     "Datentyp (Zahl/Text/Formel/Datum) unveränderter Zellen und von Zellen, die das Tool richtig befüllt hat")
+STRUKTUR_NICHT_GEPRUEFT = ("Rahmen, Ausrichtung und Zellschutz, Blattschutz, Druckbereich und Seitenlayout, Kopf- und Fußzeilen, Bilder, "
+                           "Diagramme und Formen, Gliederungsebenen, Makros, Dokumenteigenschaften, Teilformatierung innerhalb einer Zelle, "
+                           "ob Formeln nach dem Verschieben noch auf die richtigen Zellen zeigen")
+# Woran man in den Hinweisen des Plans erkennt, dass ein Strukturrisiko VORAB gemeldet war (Text aus excel_model/planner/applier)
+STRUKTUR_RISIKO_STICHWORT = {
+    "verbunden": "verbundene zellen", "validierung": "datenüberprüfung", "bedingte_formatierung": "bedingte formatierung",
+    "autofilter": "autofilter", "tabelle": "excel-tabelle", "benannter_bereich": "benannte", "hyperlink": "hyperlink",
+    "zeile_versteckt": "ausgeblendete", "zahlenformat": "zahlenformat", "datentyp": "zahlenformat",
+}
 FUELL_MAX_WOERTER = 3       # Zelle einer neuen/entfernten Zeile in einer nicht verwalteten Spalte: bis hierhin "harmlose Fuellung"
 _LEER_SPEZIAL = frozenset("               　")
 _PDF_BLIND = _LEER_SPEZIAL | frozenset("­​‌‍⁠﻿")     # Zeichen, die ein PDF meist nicht traegt
@@ -90,13 +107,48 @@ def _zelltext(v: Any) -> str:
     return str(v)
 
 
-def _lese_excel(pfad: Path) -> list[list[list[str]]]:
-    """Alle Blaetter als Zeilen mit Zelltexten (Formeln als Text)."""
+def _typ_von(zelle: Any) -> str:
+    """Datentyp einer Zelle: leer | text | zahl | formel | datum | bool | fehler. Der Zelltext (`_zelltext`) macht aus der Zahl 31
+    und dem Text "31" dasselbe; der Typ nicht (K-MESS2)."""
+    v = zelle.value
+    if v is None or (isinstance(v, str) and v == ""):
+        return "leer"
+    dt = zelle.data_type
+    if dt == "f":
+        return "formel"
+    if dt == "b":
+        return "bool"
+    if dt == "e":
+        return "fehler"
+    if dt == "d" or isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
+        return "datum"
+    if dt == "n":
+        return "datum" if zelle.is_date else "zahl"
+    return "text"
+
+
+def _lese_excel_mit_typen(pfad: Path) -> tuple[list[list[list[str]]], list[list[list[str]]]]:
+    """Alle Blaetter als Zeilen: (Zelltexte, Datentypen) -- beide gleich geformt. Formeln stehen als Text."""
     wb = load_workbook(str(pfad), rich_text=True)
     try:
-        return [[[_zelltext(v) for v in row] for row in ws.iter_rows(values_only=True)] for ws in wb.worksheets]
+        texte: list[list[list[str]]] = []
+        typen: list[list[list[str]]] = []
+        for ws in wb.worksheets:
+            t_zeilen: list[list[str]] = []
+            y_zeilen: list[list[str]] = []
+            for row in ws.iter_rows():
+                t_zeilen.append([_zelltext(c.value) for c in row])
+                y_zeilen.append([_typ_von(c) for c in row])
+            texte.append(t_zeilen)
+            typen.append(y_zeilen)
+        return texte, typen
     finally:
         wb.close()
+
+
+def _lese_excel(pfad: Path) -> list[list[list[str]]]:
+    """Alle Blaetter als Zeilen mit Zelltexten (Formeln als Text)."""
+    return _lese_excel_mit_typen(pfad)[0]
 
 
 def _blattnamen(pfad: Path) -> list[str]:
@@ -386,8 +438,13 @@ class _Auswertung:
 
     def __init__(self, v_blaetter, n_blaetter, e_blaetter, e_alle_blaetter, namen: list[str], aenderungen, plan,
                  pdf_analyse, bil_auto, bil_plan, idempotent: bool | None, luecken_erwartet: list[dict] | None,
-                 vor_status: dict[str, str] | None = None, pdf_zeichen: set[str] | None = None) -> None:
+                 vor_status: dict[str, str] | None = None, pdf_zeichen: set[str] | None = None,
+                 typen: tuple[list, list] | None = None) -> None:
         self.namen = namen
+        # Datentypen (nachher, Ergebnis) je Blatt/Zeile/Spalte; None = nicht gemessen (Tests, die nur Texte liefern)
+        self.TN, self.TE = typen if typen is not None else (None, None)
+        self.typ_falsch_ist: set[Any] = set()     # Ist-Schluessel verwalteter Zellen, deren Datentyp vom Soll abweicht
+        self.typ_stille: list[tuple[int, int, int]] = []    # (Blatt-Index, Zeile, Spalte): Typwechsel an unveraendertem Text, verwaltet
         self.pdf_zeichen = pdf_zeichen            # alle Zeichen, die im PDF vorkommen (None = unbekannt -> streng)
         self.vor_status = vor_status or {}      # Status laut Plan, VOR dem Anwenden (fuer Regel 27)
         self.bi_von_name = {n: i for i, n in enumerate(namen)}
@@ -398,7 +455,11 @@ class _Auswertung:
         self.aend = aenderungen
         self.plan = plan
         self._inhaltsspalte: dict[int, int | None] = {}
-        self.S = [_diff(self.V[i], self.N[i]) for i in range(len(self.V))]     # 1. Lauf: nur fuer die Inhaltsspalte
+        self.S: list[Diff] = []
+        # Die Inhaltsspalte des Solls steht fest, BEVOR "leer" (verwaltete Spalten) gebraucht wird: erst ein Diff ohne `leer`,
+        # daraus die Inhaltsspalte; dann das eigentliche Soll-Diff (self.S, mit `leer`).
+        roh = [_diff(self.V[i], self.N[i]) for i in range(len(self.V))]
+        self._inhaltsspalte = {i: self._soll_inhaltsspalte_berechnen(i, roh[i]) for i in range(len(self.V))}
         self.S = [_diff(self.V[i], self.N[i], self._leer_fn(i)) for i in range(len(self.V))]
         self.I = [_diff(self.V[i], self.E[i], self._leer_fn(i)) for i in range(len(self.V))]
         self._tot = [self.S[i].weg | self.S[i].geleert | self.I[i].weg | self.I[i].geleert for i in range(len(self.V))]
@@ -431,12 +492,14 @@ class _Auswertung:
         self._bauen()
         self.luecken_erwartet = luecken_erwartet
         self.e_alle = None
+        self.e_alle_diffs: list[Diff] | None = None
         if e_alle_blaetter is not None:
             alle = [_diff(self.V[i], _zeilen(e_alle_blaetter[i]) if i < len(e_alle_blaetter) else [], self._leer_fn(i))
                     for i in range(len(self.V))]
             for i, d in enumerate(alle):
                 _anker_neu(d, self.V[i], self._tot[i] | d.weg | d.geleert)
             self.e_alle = self._ist_liste(alle)
+            self.e_alle_diffs = alle
 
     # ------------------------------------------------------------------ Hilfen
     def _ziele(self, ae) -> list[Ziel]:
@@ -472,6 +535,20 @@ class _Auswertung:
     def _tatsaechlich(self, bi: int, zeile: int, spalte: int) -> str:
         return self.I[bi].zellen.get((zeile, spalte), self._vorher(bi, zeile, spalte))
 
+    def _typ_an(self, matrix: list | None, bi: int, zeile: int | None, spalte: int) -> str:
+        if matrix is None or zeile is None or bi >= len(matrix):
+            return "leer"
+        try:
+            return matrix[bi][zeile - 1][spalte - 1]
+        except IndexError:
+            return "leer"
+
+    def _typ_abweichung(self, bi: int, zeile_nachher: int | None, zeile_ergebnis: int | None, spalte: int) -> bool:
+        """Hat die Zelle im Ergebnis einen anderen Datentyp als im Soll (nachher)? Ohne Typdaten oder ohne Zeilenpaar: nein."""
+        if self.TN is None or self.TE is None or zeile_nachher is None or zeile_ergebnis is None:
+            return False
+        return self._typ_an(self.TN, bi, zeile_nachher, spalte) != self._typ_an(self.TE, bi, zeile_ergebnis, spalte)
+
     # ------------------------------------------------------------------ Einheiten bauen
     def _bauen(self) -> None:
         # Soll-Einheiten: (Schluessel, bi, zeile, spalte, soll_key, art)
@@ -488,10 +565,17 @@ class _Auswertung:
                 erreicht = ist_da and _s(ist) == _s(inhalt)
                 v = self._vorher(bi, z, c)
                 art = "weg" if z in s.weg else "zelle"
+                klasse = self._klasse(bi, c, art, v, inhalt)
+                # gleicher Text, aber anderer Datentyp (Zahl 31 -> Text "31"): nicht erreicht (K-MESS2)
+                typ_falsch = bool(erreicht and _s(inhalt) and self._typ_abweichung(bi, s.zuordnung.get(z), self.I[bi].zuordnung.get(z), c))
+                if typ_falsch:
+                    erreicht = False
+                    if klasse == "haupt":
+                        self.typ_falsch_ist.add(key)
                 self.einheiten.append({"key": key, "bi": bi, "zeile": z, "spalte": c, "soll": inhalt, "ist_da": ist_da,
-                                       "ist": ist, "erreicht": erreicht, "art": art,
+                                       "ist": ist, "erreicht": erreicht, "art": art, "typ_falsch": typ_falsch, "ist_key": key,
                                        "vorher": v, "verwaltet": self._verwaltet(bi, c),
-                                       "klasse": self._klasse(bi, c, art, v, inhalt), "blind": ("z", z, c) in s.blind})
+                                       "klasse": klasse, "blind": ("z", z, c) in s.blind})
                 self.soll_woerter[key] = _wort_diff(v, inhalt)
             for si, (anker, zellen, keys) in enumerate(s.neue):
                 for c, k in enumerate(keys, 1):
@@ -501,19 +585,31 @@ class _Auswertung:
                     ii = paar.get(si)
                     ist = None
                     erreicht = False
+                    typ_falsch = False
+                    ist_key = None
+                    klasse = self._klasse(bi, c, "neu", "", zellen[c - 1])
                     if ii is not None:
                         ik = self.I[bi].neue[ii][2]
                         ist = self.I[bi].neue[ii][1][c - 1] if c - 1 < len(self.I[bi].neue[ii][1]) else ""
                         erreicht = ort[si] and c - 1 < len(ik) and ik[c - 1] == k
+                        ist_key = ("n", bi, self.I[bi].neue[ii][0], ik, c)
+                        if erreicht and self._typ_abweichung(bi, s.neue_nr[si], self.I[bi].neue_nr[ii], c):
+                            typ_falsch, erreicht = True, False
+                            if klasse == "haupt":
+                                self.typ_falsch_ist.add(ist_key)
                     self.einheiten.append({"key": key, "bi": bi, "zeile": anker, "spalte": c, "soll": zellen[c - 1],
                                            "ist_da": ii is not None, "ist": ist, "erreicht": erreicht, "art": "neu",
+                                           "typ_falsch": typ_falsch, "ist_key": ist_key,
                                            "vorher": "", "verwaltet": self._verwaltet(bi, c),
-                                           "klasse": self._klasse(bi, c, "neu", "", zellen[c - 1]), "si": si,
+                                           "klasse": klasse, "si": si,
                                            "blind": ("n", si, c) in s.blind})
                     self.soll_woerter[key] = ([], _wort_liste(zellen[c - 1]))
 
         # Ist-Aenderungen (Auto): jede veraenderte Zelle bzw. neue Zeile
         self.ist = self._ist_liste(self.I)
+        for it in self.ist:                    # Text stimmt, Datentyp nicht (verwaltete Zelle): kein Treffer
+            if it["key"] in self.typ_falsch_ist:
+                it["richtig"] = False
         self.ist_woerter: dict[Any, tuple[Counter, Counter]] = {}
         for it in self.ist:
             if it["art"] == "neu":
@@ -603,14 +699,11 @@ class _Auswertung:
         return leer
 
     def _soll_inhaltsspalte(self, bi: int) -> int | None:
-        if bi not in self._inhaltsspalte:
-            self._inhaltsspalte[bi] = self._soll_inhaltsspalte_berechnen(bi)
-        return self._inhaltsspalte[bi]
+        return self._inhaltsspalte.get(bi)
 
-    def _soll_inhaltsspalte_berechnen(self, bi: int) -> int | None:
+    def _soll_inhaltsspalte_berechnen(self, bi: int, s: "Diff") -> int | None:
         """Spalte mit den meisten veraenderten Zeichen laut Soll (Inhaltsspalte im Soll)."""
         gewicht: Counter[int] = Counter()
-        s = self.S[bi]
         for (z, c), inhalt in s.zellen.items():
             gewicht[c] += len(inhalt) + len(self._vorher(bi, z, c))
         for _anker, zellen, _keys in s.neue:
@@ -809,7 +902,14 @@ class _Auswertung:
         treffer = [i for i in ids if any(w in unerklaert for w in (*self.ae_woerter[i][0], *self.ae_woerter[i][1]))]
         return treffer or list(ids)
 
+    def datentyp_orte_verwaltet(self, orte: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
+        """Welche Zellen mit Datentyp-Wechsel (unveraenderter Text, siehe `_struktur_befund`) liegen in einer VERWALTETEN Spalte
+        (und sind keine Formelzellen)? Dort hat das Tool gearbeitet: stiller Fehler. Alle anderen sind Strukturbefunde."""
+        return [(bi, r, c) for bi, r, c in orte
+                if self._verwaltet(bi, c) and not self._vorher(bi, r, c).lstrip().startswith("=")]
+
     def auswerten(self) -> dict[str, Any]:
+        typ_stille = self.typ_stille
         nach_id = {a.id: a for a in self.aend}
         # --- offene Aenderungen (pruefen / nicht uebernommen) je Ziel-Zelle bzw. Zeile ----------------
         offen_ziel: dict[tuple[int, int, int], list] = {}
@@ -850,6 +950,12 @@ class _Auswertung:
             for i in ids:
                 if i not in f.aenderungen:
                     f.aenderungen.append(i)
+
+        # Datentyp-Wechsel an Zellen, deren Text unveraendert blieb (Zahl wurde Text o. ae.), in verwalteten Spalten: stiller Fehler
+        for bi_t, z_t, c_t in typ_stille or []:
+            key_t = ("typ", bi_t, z_t, c_t)
+            stumm(key_t, bi_t, z_t, c_t, "datentyp_gewechselt", [])
+            self.fehler[key_t].art = "plan_falsch"
 
         # Regel 27 (1): Der Plan hatte die Aenderung auf "pruefen"/"nicht uebernommen", ohne Freigabe steht sie danach auf "uebernommen"
         r27: dict[str, tuple[int, int, int]] = {}
@@ -1020,6 +1126,8 @@ class _Auswertung:
                         continue
             if not verwandt:
                 ohne_n += 1
+            if e.get("typ_falsch") and e.get("ist_key") in self.fehler and self.fehler[e["ist_key"]].stumm:
+                continue                      # Text stimmt, Datentyp nicht: steht schon als stiller Fehler im Bericht (nicht doppelt)
             f = self._fehler(key, e["bi"], e["zeile"], e["spalte"], "soll")
             for i in sorted(verwandt):
                 if i not in f.aenderungen:
@@ -1061,6 +1169,17 @@ class _Auswertung:
                 f.art = self._art_fremd(it, f.aenderungen)
             else:
                 f.art = "plan_falsch"
+
+        # Soll-Zellen mit richtigem Text, aber falschem Datentyp: verwaltete = stiller Fehler (Art "datentyp_gewechselt"), die uebrigen
+        # (Fuellung, Formeln, sonstige) zaehlt `messe_paar` als Strukturbefund "datentyp".
+        for e in self.einheiten:
+            if e["klasse"] == "haupt" and e.get("typ_falsch"):
+                f = self.fehler.get(e["ist_key"]) or self.fehler.get(e["key"])
+                if f is not None and f.stumm:
+                    f.stille_arten.add("datentyp_gewechselt")
+                    f.art = f.art or "plan_falsch"
+        datentyp_soll_haupt = sum(1 for e in haupt if e.get("typ_falsch"))
+        datentyp_soll_sonst = sum(1 for e in self.einheiten if e["klasse"] != "haupt" and e.get("typ_falsch"))
 
         # (3) Bilanz
         bilanz_ok = bool(self.bil_auto["stimmt"]) and bool(self.bil_plan["stimmt"])
@@ -1130,6 +1249,14 @@ class _Auswertung:
             "regel27_verstoesse": len(r27_alle),
             "soll_zellen": soll_n,
             "erreicht_auto": erreicht,
+            "soll_zellen_alle": len(self.einheiten),
+            "erreicht_alle": erreicht + sum(1 for e in self.einheiten if e["klasse"] != "haupt" and e["erreicht"]),
+            "erreicht_formel": sum(1 for e in formeln if e["erreicht"]),
+            "soll_zellen_unverwaltet_erreicht": sum(1 for e in harmlose if e["erreicht"]),
+            "soll_zellen_unverwaltet_sonstige_erreicht": sum(1 for e in sonstige if e["erreicht"]),
+            "datentyp_soll_verwaltet": datentyp_soll_haupt,
+            "datentyp_soll_unverwaltet": datentyp_soll_sonst,
+            "datentyp_stille_unveraendert": len(typ_stille or []),
             "pruefen_zellen": pruefen_n,
             "nicht_uebernommen_zellen": nicht_n,
             "ohne_aenderung_zellen": ohne_n,
@@ -1282,11 +1409,175 @@ def _validierungen(ws: Any, abb: dict[int, int | None] | None) -> tuple[set, int
     return out, offen
 
 
+def _zeile_abb(abb: dict[int, int | None], r: int, vmax: int) -> int | None:
+    """Zeile `r` der Arbeitsmappe vorher -> Zeile im Ergebnis. Unterhalb der letzten belegten Zeile gilt deren Verschiebung."""
+    if r in abb:
+        return abb[r]
+    if r > vmax:
+        basis = abb.get(vmax)
+        return None if basis is None else r + (basis - vmax)
+    return None
+
+
+def _bereich_abb(rng: str, abb: dict[int, int | None] | None, vmax: int) -> tuple | None:
+    """'A2:C9' -> (Spalte von, Zeile von, Spalte bis, Zeile bis). Mit `abb` werden die Zeilen auf das Ergebnis abgebildet.
+    None = nicht abbildbar (Zeile entfernt oder nicht eindeutig). Ganze Spalten/Zeilen und Unlesbares bleiben unveraendert."""
+    try:
+        c1, r1, c2, r2 = range_boundaries(str(rng).replace("$", ""))
+    except Exception:
+        return ("roh", str(rng))
+    if abb is None or r1 is None or r2 is None:
+        return (c1, r1, c2, r2)
+    lo, hi = _zeile_abb(abb, r1, vmax), _zeile_abb(abb, r2, vmax)
+    return None if lo is None or hi is None else (c1, lo, c2, hi)
+
+
+def _menge_diff(erwartet: set, da: set, offen: int) -> int:
+    """Anzahl Unterschiede zwischen dem, was nach dem Verschieben erwartet wird, und dem, was da ist. Ist etwas nicht abbildbar
+    (`offen`), zaehlen nur die FEHLENDEN Eintraege (nie eine Vermutung ueber zusaetzliche)."""
+    return max(len(erwartet - da), 0 if offen else len(da - erwartet))
+
+
+def _bedingte_formatierung(ws: Any, abb: dict[int, int | None] | None, vmax: int) -> tuple[set, int]:
+    out: set = set()
+    offen = 0
+    for cf in ws.conditional_formatting:
+        regeln = tuple(sorted(
+            (str(r.type), str(r.operator), tuple(str(f) for f in (r.formula or [])), str(r.text), str(r.rank), str(r.percent),
+             str(r.bottom), str(r.aboveAverage), str(r.stopIfTrue)) for r in cf.rules))
+        for rng in str(cf.sqref).split():
+            b = _bereich_abb(rng, abb, vmax)
+            if b is None:
+                offen += 1
+            else:
+                out.add((b, regeln))
+    return out, offen
+
+
+def _hyperlinks(ws: Any, abb: dict[int, int | None] | None, vmax: int) -> tuple[set, int]:
+    out: set = set()
+    offen = 0
+    for (r, c), z in ws._cells.items():
+        link = getattr(z, "_hyperlink", None)          # verbundene Zellen (MergedCell) haben keinen Link
+        if link is None:
+            continue
+        x = r if abb is None else _zeile_abb(abb, r, vmax)
+        if x is None:
+            offen += 1
+        else:
+            out.add((x, c, link.target, link.location))
+    return out, offen
+
+
+def _tabellen(ws: Any, abb: dict[int, int | None] | None, vmax: int) -> tuple[set, int]:
+    out: set = set()
+    offen = 0
+    for t in ws.tables.values():
+        b = _bereich_abb(t.ref, abb, vmax)
+        if b is None:
+            offen += 1
+        else:
+            out.add((t.name, b))
+    return out, offen
+
+
+def _autofilter(ws: Any, abb: dict[int, int | None] | None, vmax: int) -> tuple[Any, bool]:
+    """-> (Bereich und Zahl der Filterspalten oder None, nicht abbildbar)"""
+    ref = ws.auto_filter.ref
+    if not ref:
+        return None, False
+    b = _bereich_abb(ref, abb, vmax)
+    return (None, True) if b is None else ((b, len(ws.auto_filter.filterColumn)), False)
+
+
+def _fixierung(ws: Any, abb: dict[int, int | None] | None, vmax: int) -> tuple[Any, bool]:
+    """Fixierte Zeilen/Spalten (Freeze Panes). Abgebildet wird die LETZTE fixierte Zeile (eine Einfuegung direkt darunter
+    verschiebt die Fixierung nicht). -> ((Spalte, erste nicht fixierte Zeile) oder None, nicht abbildbar)"""
+    fp = ws.freeze_panes
+    if not fp:
+        return None, False
+    spalte, zeile = coordinate_from_string(fp)
+    if zeile <= 1 or abb is None:
+        return (spalte, zeile), False
+    letzte = _zeile_abb(abb, zeile - 1, vmax)
+    return (None, True) if letzte is None else ((spalte, letzte + 1), False)
+
+
+def _spaltenbreiten(ws: Any, grenze: int) -> dict[int, float]:
+    out: dict[int, float] = {}
+    for buchstabe, dim in ws.column_dimensions.items():
+        if dim.width is None:
+            continue
+        lo = dim.min or column_index_from_string(buchstabe)
+        for c in range(lo, min(dim.max or lo, max(grenze, lo)) + 1):
+            out[c] = round(float(dim.width), 2)
+    return out
+
+
+def _kommentar_text(z: Any) -> tuple[str, str] | None:
+    k = getattr(z, "comment", None)
+    return None if k is None else (str(k.author or ""), str(k.text or ""))
+
+
+_NAMEN_REF = re.compile(r"(?<![A-Za-z0-9_.])(?:(?P<blatt>'(?:[^']|'')+'|[A-Za-z0-9_.]+)!)?(?P<d1>\$?)(?P<c1>[A-Z]{1,3})(?P<d2>\$?)"
+                        r"(?P<r1>\d+)(?::(?P<d3>\$?)(?P<c2>[A-Z]{1,3})(?P<d4>\$?)(?P<r2>\d+))?(?![A-Za-z0-9_(])")
+
+
+def _namen(wb: Any, abbs: list[dict[int, int | None]] | None, vmaxs: list[int]) -> tuple[dict, set]:
+    """Benannte Bereiche: (Geltungsbereich, Name) -> Verweistext. Mit `abbs` werden die Zeilen der Verweise auf das Ergebnis
+    abgebildet. -> (Namen, Namen mit nicht abbildbarem Verweis)"""
+    titel = [ws.title for ws in wb.worksheets]
+    offen: set = set()
+
+    def text(schluessel: Any, roh: str, standard: str | None) -> str:
+        if abbs is None or not roh:
+            return roh or ""
+        fehlt = False
+
+        def ersetze(m: "re.Match[str]") -> str:
+            nonlocal fehlt
+            blatt = m.group("blatt")
+            if blatt is None:
+                name = standard
+            else:
+                name = blatt[1:-1].replace("''", "'") if blatt.startswith("'") else blatt
+            if name not in titel:
+                return m.group(0)
+            i = titel.index(name)
+            if i >= len(abbs):
+                return m.group(0)
+            r1 = _zeile_abb(abbs[i], int(m.group("r1")), vmaxs[i])
+            r2 = _zeile_abb(abbs[i], int(m.group("r2")), vmaxs[i]) if m.group("r2") else None
+            if r1 is None or (m.group("r2") and r2 is None):
+                fehlt = True
+                return m.group(0)
+            aus = (blatt + "!" if blatt else "") + m.group("d1") + m.group("c1") + m.group("d2") + str(r1)
+            if m.group("r2"):
+                aus += ":" + m.group("d3") + m.group("c2") + m.group("d4") + str(r2)
+            return aus
+        neu = _NAMEN_REF.sub(ersetze, roh)
+        if fehlt:
+            offen.add(schluessel)
+        return neu
+
+    out: dict = {}
+    for n, dn in wb.defined_names.items():
+        out[(None, n)] = text((None, n), dn.attr_text, None)
+    for i, ws in enumerate(wb.worksheets):
+        for n, dn in ws.defined_names.items():
+            out[(i, n)] = text((i, n), dn.attr_text, ws.title)
+    return out, offen
+
+
 def _struktur_befund(vorher: Path, ergebnis: Path, diffs: list[Diff]) -> dict[str, Any]:
     """Vergleicht Nicht-Zell-Eigenschaften vorher <-> Ergebnis: Blaetter (Name, Reihenfolge, Sichtbarkeit), ausgeblendete Zeilen
-    und Spalten, verbundene Zellen, Datenvalidierung, Zahlenformat und Schrift/Fuellung. Zeilen werden ueber die Ausrichtung
-    abgebildet (Einfuegen/Loeschen verschiebt legitim); nur UNERWARTETE Abweichungen zaehlen. Nie Text, nur Zaehler."""
+    und Spalten, verbundene Zellen, Datenvalidierung, bedingte Formatierung, Hyperlinks, Kommentare, benannte Bereiche, Autofilter,
+    Excel-Tabellen, fixierte Zeilen/Spalten, Spaltenbreiten, Zeilenhoehen unveraenderter Zeilen, Zahlenformat, Schrift/Fuellung
+    und Datentyp unveraenderter Zellen. Zeilen werden ueber die Ausrichtung abgebildet (Einfuegen/Loeschen verschiebt legitim);
+    nur UNERWARTETE Abweichungen zaehlen. Nie Text, nur Zaehler. `datentyp_orte` (Blatt-Index, Zeile, Spalte) nennt die Zellen mit
+    Datentyp-Wechsel, damit `messe_paar` die in verwalteten Spalten als stillen Fehler zaehlen kann."""
     n = Counter()
+    orte: list[tuple[int, int, int]] = []
     wv = load_workbook(str(vorher))
     we = load_workbook(str(ergebnis))
     try:
@@ -1296,12 +1587,22 @@ def _struktur_befund(vorher: Path, ergebnis: Path, diffs: list[Diff]) -> dict[st
                 n["blatt"] += 1
             elif sv[i].sheet_state != se[i].sheet_state:
                 n["sichtbarkeit"] += 1
-        for i in range(min(len(sv), len(se))):
+        gemeinsam = min(len(sv), len(se))
+        vmaxs = [max(sv[i].max_row, 1) for i in range(gemeinsam)]
+        abbs = [_zeilenabbildung(diffs[i] if i < len(diffs) else Diff(), vmaxs[i]) for i in range(gemeinsam)]
+        # benannte Bereiche (Arbeitsmappe und Blatt)
+        nv, nv_offen = _namen(wv, abbs, vmaxs)
+        ne, _ = _namen(we, None, [])
+        n["benannter_bereich"] += sum(1 for k, t in nv.items() if k not in nv_offen and ne.get(k) != t) \
+            + (0 if nv_offen else sum(1 for k in ne if k not in nv))
+        for i in range(gemeinsam):
             v, e = sv[i], se[i]
             d = diffs[i] if i < len(diffs) else Diff()
-            abb = _zeilenabbildung(d, max(v.max_row, 1))
+            abb, vmax = abbs[i], vmaxs[i]
             geaendert = set(d.zellen)
+            geaenderte_zeilen = {r for r, _c in geaendert}
             bilder_e = {nr for nr in d.neue_nr}
+            rueck = {x: r for r, x in abb.items() if x is not None}            # Zeile im Ergebnis -> Zeile vorher
             # ausgeblendete Zeilen: gleiche Zeile -> gleicher Zustand; neue Zeilen nie ausgeblendet
             for r, x in abb.items():
                 if x is None:
@@ -1313,6 +1614,23 @@ def _struktur_befund(vorher: Path, ergebnis: Path, diffs: list[Diff]) -> dict[st
                 n["zeile_versteckt"] += bool(e.row_dimensions[r].hidden) if r in e.row_dimensions else False
             grenze = max(v.max_column, e.max_column)
             n["spalte_versteckt"] += len(_spalten_versteckt(v, grenze) ^ _spalten_versteckt(e, grenze))
+            # Spaltenbreiten
+            bv, be = _spaltenbreiten(v, grenze), _spaltenbreiten(e, grenze)
+            n["spaltenbreite"] += sum(1 for c in set(bv) | set(be) if bv.get(c) != be.get(c))
+            # Zeilenhoehen unveraenderter Zeilen (veraenderte Zeilen und neue Zeilen: keine Aussage)
+            hoehen_v = {r for r in v.row_dimensions if v.row_dimensions[r].height is not None}
+            hoehen_e = {rueck[x] for x in e.row_dimensions if e.row_dimensions[x].height is not None and x in rueck}
+            for r in hoehen_v | hoehen_e:
+                x = abb.get(r)
+                if x is None or r in geaenderte_zeilen:
+                    continue
+                hv = v.row_dimensions[r].height if r in v.row_dimensions else None
+                he = e.row_dimensions[x].height if x in e.row_dimensions else None
+                n["zeilenhoehe"] += hv != he
+            # fixierte Zeilen/Spalten
+            fv, fv_offen = _fixierung(v, abb, vmax)
+            fe, _ = _fixierung(e, None, vmax)
+            n["fixierung"] += (not fv_offen) and fv != fe
             # verbundene Zellen
             erwartet, offen_m = set(), 0
             for rng in v.merged_cells.ranges:
@@ -1327,13 +1645,41 @@ def _struktur_befund(vorher: Path, ergebnis: Path, diffs: list[Diff]) -> dict[st
             dv_erw, dv_offen = _validierungen(v, abb)
             dv_da, _ = _validierungen(e, None)
             n["validierung"] += max(len(dv_erw - dv_da), 0 if dv_offen else len(dv_da - dv_erw))
-            # Zahlenformat und Schrift der Zellen
+            # bedingte Formatierung, Hyperlinks, Excel-Tabellen
+            cv, cv_offen = _bedingte_formatierung(v, abb, vmax)
+            n["bedingte_formatierung"] += _menge_diff(cv, _bedingte_formatierung(e, None, vmax)[0], cv_offen)
+            lv, lv_offen = _hyperlinks(v, abb, vmax)
+            n["hyperlink"] += _menge_diff(lv, _hyperlinks(e, None, vmax)[0], lv_offen)
+            tv, tv_offen = _tabellen(v, abb, vmax)
+            n["tabelle"] += _menge_diff(tv, _tabellen(e, None, vmax)[0], tv_offen)
+            # Autofilter
+            av, av_offen = _autofilter(v, abb, vmax)
+            ae_, _ = _autofilter(e, None, vmax)
+            n["autofilter"] += (not av_offen) and av != ae_
+            # Kommentare (an veraenderten Zellen und in neuen Zeilen darf das Tool welche anlegen oder ergaenzen)
+            ev_kommentare = {(r, c): _kommentar_text(z) for (r, c), z in v._cells.items() if _kommentar_text(z) is not None}
+            ee_kommentare = {(r, c): _kommentar_text(z) for (r, c), z in e._cells.items() if _kommentar_text(z) is not None}
+            for (r, c), inhalt in ev_kommentare.items():
+                x = abb.get(r)
+                if x is None:
+                    continue
+                gefunden = ee_kommentare.get((x, c))
+                n["kommentar"] += gefunden is None or ((r, c) not in geaendert and gefunden != inhalt)
+            for (x, c) in ee_kommentare:
+                r = rueck.get(x)
+                if r is not None and (r, c) not in ev_kommentare and (r, c) not in geaendert:
+                    n["kommentar"] += 1
+            # Zahlenformat, Schrift und Datentyp der Zellen
             e_zellen = e._cells
             for (r, c), zv in list(v._cells.items()):
                 x = abb.get(r)
                 if x is None:
                     continue
                 ze = e_zellen.get((x, c))
+                tv_ = _typ_von(zv)
+                if tv_ != "leer" and (r, c) not in geaendert and tv_ != (_typ_von(ze) if ze is not None else "leer"):
+                    n["datentyp"] += 1                              # Zahl <-> Text <-> Formel <-> Datum an unveraendertem Text
+                    orte.append((i, r, c))
                 if not zv.has_style and (ze is None or not ze.has_style):
                     continue                                        # beide ohne eigenes Format: nichts zu vergleichen
                 if ze is None:
@@ -1345,7 +1691,8 @@ def _struktur_befund(vorher: Path, ergebnis: Path, diffs: list[Diff]) -> dict[st
     finally:
         wv.close()
         we.close()
-    return {"struktur_geaendert": sum(n.values()), "struktur_nach_art": {a: n.get(a, 0) for a in STRUKTUR_ARTEN}}
+    return {"struktur_geaendert": sum(n.values()), "struktur_nach_art": {a: int(n.get(a, 0)) for a in STRUKTUR_ARTEN},
+            "datentyp_orte": orte}
 
 
 def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Path | None = None) -> dict[str, Any]:
@@ -1396,17 +1743,49 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
 
         if ergebnis_kopie is not None:
             shutil.copy2(e_auto, ergebnis_kopie)
-        v_bl, n_bl, e_bl = _lese_excel(vorher), _lese_excel(nachher), _lese_excel(e_auto)
+        v_bl, (n_bl, n_typ), (e_bl, e_typ) = _lese_excel(vorher), _lese_excel_mit_typen(nachher), _lese_excel_mit_typen(e_auto)
         e_alle_bl = _lese_excel(e_alle) if e_alle else None
         plausi, pdf_zeichen = _pdf_pruefung(pdf)
         auswertung = _Auswertung(v_bl, n_bl, e_bl, e_alle_bl, _blattnamen(vorher), aend_auto, plan, pa, bil_auto,
-                                 bil_plan, idempotent, (erwartet or {}).get("luecken"), vor_status, pdf_zeichen)
-        res = auswertung.auswerten()
+                                 bil_plan, idempotent, (erwartet or {}).get("luecken"), vor_status, pdf_zeichen,
+                                 (n_typ, e_typ))
+        # Struktur zuerst (liefert die Zellen mit Datentyp-Wechsel), dann die Auswertung
+        struktur: dict[str, Any] | None
         try:
-            res.update(_struktur_befund(vorher, e_auto, auswertung.I))
+            struktur = _struktur_befund(vorher, e_auto, auswertung.I)
         except Exception as exc:
-            res.update({"struktur_geaendert": None, "struktur_nach_art": {a: 0 for a in STRUKTUR_ARTEN}})
+            struktur = None
             ausfaelle.append(("struktur", type(exc).__name__))
+        orte = struktur.pop("datentyp_orte") if struktur else []
+        auswertung.typ_stille = typ_stille = auswertung.datentyp_orte_verwaltet(orte)
+        res = auswertung.auswerten()
+        if struktur is None:
+            res.update({"struktur_geaendert": None, "struktur_nach_art": {a: 0 for a in STRUKTUR_ARTEN}})
+        else:
+            # Datentyp-Wechsel in verwalteten Spalten sind schon stille Fehler (nicht doppelt zaehlen); Wechsel an richtig befuellten
+            # Zellen ausserhalb der Haupt-Spalten (Fuellung, Formeln, sonstige) kommen als Strukturbefund dazu
+            mehr = res["datentyp_soll_unverwaltet"] - len(typ_stille)
+            struktur["struktur_nach_art"]["datentyp"] += mehr
+            struktur["struktur_geaendert"] += mehr
+            res.update(struktur)
+        res["struktur_vorschlaege_geaendert"] = res["struktur_vorschlaege_angekuendigt"] = None
+        res["struktur_vorschlaege_nach_art"] = res["struktur_vorschlaege_angekuendigt_nach_art"] = {a: 0 for a in STRUKTUR_ARTEN}
+        if e_alle is not None and auswertung.e_alle_diffs is not None:
+            # Auch die Excel der Variante "alle Vorschlaege freigegeben" wird auf Struktur geprueft. Weicht sie ab, ist das erlaubt,
+            # wenn der Plan das Risiko vorab gemeldet hat (Hinweis in einer Aenderung); sonst ist es ein Befund.
+            try:
+                sv = _struktur_befund(vorher, e_alle, auswertung.e_alle_diffs)
+                sv.pop("datentyp_orte", None)
+                gewarnt = " ".join(t.lower() for a in plan.aenderungen for t in (*a.hinweise, a.grund))
+                ang = {art: n for art, n in sv["struktur_nach_art"].items()
+                       if n and STRUKTUR_RISIKO_STICHWORT.get(art) and STRUKTUR_RISIKO_STICHWORT[art] in gewarnt}
+                unerwartet = {art: (0 if art in ang else n) for art, n in sv["struktur_nach_art"].items()}
+                res["struktur_vorschlaege_geaendert"] = sum(unerwartet.values())
+                res["struktur_vorschlaege_nach_art"] = unerwartet
+                res["struktur_vorschlaege_angekuendigt"] = sum(ang.values())
+                res["struktur_vorschlaege_angekuendigt_nach_art"] = {a: ang.get(a, 0) for a in STRUKTUR_ARTEN}
+            except Exception as exc:
+                ausfaelle.append(("struktur_vorschlaege", type(exc).__name__))
 
     # Plausibilitaet direkt aus dem PDF (unabhaengig vom Tool); nur ein Hinweis
     seiten_mit_luecke = {l.get("seite") for l in plan.luecken}
@@ -1420,9 +1799,11 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
 
     res["original_unveraendert"] = all(_sha(p) == hashes_vorher[p.name] for p in (pdf, vorher, nachher))
     res["dauer_sekunden"] = round(time.monotonic() - t0, 2)
+    res["profil_angenommen"] = True                      # ohne erwartet.json/Profil: Standard-Aufbau angenommen (siehe fasse_zusammen)
     if erwartet:
         res["stoerer"] = [s for s in erwartet.get("stoerer", []) if isinstance(s, str)]
         res["profil"] = erwartet.get("profil", "") if isinstance(erwartet.get("profil", ""), str) else ""
+        res["profil_angenommen"] = not res["profil"]
         wm = erwartet.get("woerter_markiert")
         if isinstance(wm, int):
             res["lese_luecke_erwartet"] = max(0, wm - bil_plan["woerter_im_pdf"])
@@ -1450,6 +1831,10 @@ def _fehlgeschlagen(name: str, exc: BaseException) -> dict[str, Any]:
             "lese_luecke_zaehlung": 0, "luecken_nicht_gemeldet": 0, "luecken_gemeldet": 0, "aenderungen": 0,
             "aenderungen_uebernommen_korrekt": 0, "aenderungen_uebernommen_falsch": 0, "aenderungen_zu_pruefen": 0,
             "aenderungen_nicht_uebernommen": 0, "struktur_geaendert": None,
+            "soll_zellen_alle": 0, "erreicht_alle": 0, "erreicht_formel": 0, "soll_zellen_unverwaltet_erreicht": 0,
+            "soll_zellen_unverwaltet_sonstige_erreicht": 0, "datentyp_soll_verwaltet": 0, "datentyp_soll_unverwaltet": 0,
+            "datentyp_stille_unveraendert": 0, "struktur_vorschlaege_geaendert": None,
+            "struktur_vorschlaege_angekuendigt": None, "profil_angenommen": True,
             "struktur_nach_art": {a: 0 for a in STRUKTUR_ARTEN}, "plausibilitaet_hinweise": None,
             "plausibilitaet_ungemeldet": None, "luecken_pruefbar": False,
             "aenderungen_nach_status": {}, "hinweise": [], "original_unveraendert": None,
@@ -1491,6 +1876,8 @@ ZAEHLEINHEITEN = {
     "struktur_geaendert": "Befunde (Blätter, Zeilen, Spalten, Bereiche, Zellen)",
     "plausibilitaet_ungemeldet": "Seiten",
     "soll_zellen_formel": "Zellen",
+    "abdeckung_alle": "Zellen",
+    "struktur_vorschlaege_geaendert": "Befunde",
 }
 
 
@@ -1517,6 +1904,9 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
     plausi_paare = [p for p in paare if p.get("plausibilitaet_hinweise") is not None]
     ae_korrekt, ae_falsch = s("aenderungen_uebernommen_korrekt"), s("aenderungen_uebernommen_falsch")
     unverw = s("soll_zellen_unverwaltet")
+    # Fehlt "erreicht_alle" (altes Format), gilt die Abdeckung der Haupt-Spalten
+    erreicht_alle = sum(p["erreicht_alle"] if p.get("erreicht_alle") is not None else (p.get("erreicht_auto") or 0) for p in paare)
+    vorschlag_paare = [p for p in paare if p.get("struktur_vorschlaege_geaendert") is not None]
     gesamt = {
         "paare": len(paare), "paare_gemessen": len(gemessen), "paare_abgestuerzt": len(paare) - len(gemessen),
         "paare_teilweise_gemessen": len(teilweise),
@@ -1557,6 +1947,15 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
         "soll_zellen_unverwaltet_sonstige": s("soll_zellen_unverwaltet_sonstige"),
         "soll_zellen_unverwaltet_sonstige_verfehlt": s("soll_zellen_unverwaltet_sonstige_verfehlt"),
         "soll_zellen_alle": soll + unverw + s("soll_zellen_formel") + s("soll_zellen_unverwaltet_sonstige"),
+        "erreicht_alle": erreicht_alle,
+        "abdeckung_alle": _anteil(erreicht_alle, soll + unverw + s("soll_zellen_formel") + s("soll_zellen_unverwaltet_sonstige")),
+        "erreicht_formel": s("erreicht_formel"),
+        "abdeckung_alle_ohne_formeln": _anteil(
+            erreicht_alle - s("erreicht_formel"),
+            soll + unverw + s("soll_zellen_unverwaltet_sonstige")),
+        "soll_zellen_unverwaltet_erreicht": s("soll_zellen_unverwaltet_erreicht"),
+        "soll_zellen_unverwaltet_sonstige_erreicht": s("soll_zellen_unverwaltet_sonstige_erreicht"),
+        "datentyp_stille_fehler": s("datentyp_stille_unveraendert") + s("datentyp_soll_verwaltet"),
         "soll_zellen_pdf_blind": s("soll_zellen_pdf_blind"),
         "soll_zellen_pdf_blind_erreicht": s("soll_zellen_pdf_blind_erreicht"),
         "nicht_uebernommen_ohne_grund": s("nicht_uebernommen_ohne_grund"),
@@ -1573,6 +1972,13 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
         "struktur_geaendert": sum(p["struktur_geaendert"] for p in struktur_paare),
         "struktur_nach_art": s_dict("struktur_nach_art", STRUKTUR_ARTEN),
         "struktur_paare_geprueft": len(struktur_paare),
+        "struktur_geprueft": STRUKTUR_GEPRUEFT,
+        "struktur_nicht_geprueft": STRUKTUR_NICHT_GEPRUEFT,
+        # Struktur der Excel aus der Variante "alle Vorschlaege freigegeben" (nur mit --mit-vorschlaegen)
+        "struktur_vorschlaege_paare_geprueft": len(vorschlag_paare),
+        "struktur_vorschlaege_geaendert": sum(p["struktur_vorschlaege_geaendert"] for p in vorschlag_paare),
+        "struktur_vorschlaege_angekuendigt": sum(p.get("struktur_vorschlaege_angekuendigt") or 0 for p in vorschlag_paare),
+        "struktur_vorschlaege_nach_art": s_dict("struktur_vorschlaege_nach_art", STRUKTUR_ARTEN),
         # Plausibilitaet direkt aus dem PDF (RT-141), nur Hinweis
         "plausibilitaet_seiten": sum(len(p["plausibilitaet_hinweise"]) for p in plausi_paare),
         "plausibilitaet_ungemeldet": sum(p["plausibilitaet_ungemeldet"] or 0 for p in plausi_paare),
@@ -1593,8 +1999,14 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
     m = len(gemessen)                    # davon voll messbar
     voll = n > 0 and not gesamt["paare_abgestuerzt"]
     lue = not voll                       # es gab Paare, die nicht (vollstaendig) gemessen werden konnten
-    standard = [p for p in gemessen if p.get("profil") == "standard"]
+    # Die 90-%-Regel gilt fuer Standard-Aufbauten. Paare OHNE Profil (alle echten Paare, keine erwartet.json) werden wie Standard-Paare
+    # behandelt ("Standard-Aufbau angenommen"); sonst waere die Messung bei echten Paaren milder als bei erfundenen.
+    standard = [p for p in gemessen if p.get("profil") == "standard" or not p.get("profil")]
+    standard_angenommen = [p for p in standard if not p.get("profil")]
     standard_abdeckung = _anteil(sum(p["erreicht_auto"] for p in standard), sum(p["soll_zellen"] for p in standard))
+    gesamt["standard_paare"] = len(standard)
+    gesamt["standard_paare_angenommen"] = len(standard_angenommen)
+    gesamt["standard_abdeckung"] = standard_abdeckung
     nicht_verfehlt = gesamt["soll_zellen_formel_verfehlt"] + gesamt["soll_zellen_unverwaltet_sonstige_verfehlt"]
 
     bilanz_fehl = any(p.get("bilanz_stimmt") is False for p in paare) or gesamt["luecken_nicht_gemeldet"] > 0
@@ -1632,11 +2044,24 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
          "ziel": "mindestens 95 %", "einheit": "Zellen",
          "ampel": _ampel(None if gesamt["vorschlags_genauigkeit"] is None else gesamt["vorschlags_genauigkeit"] >= 0.95,
                          "keine Vorschläge" if vorschlaege else "nicht gemessen", luecke=lue)},
-        {"nr": 4, "name": "Abdeckung ohne Nachfrage", "wert": _prozent(gesamt["abdeckung_ohne_nachfrage"]),
+        {"nr": 4, "name": "Abdeckung ohne Nachfrage (nur Haupt-Spalten)", "wert": _prozent(gesamt["abdeckung_ohne_nachfrage"]),
          "ziel": "mindestens 70 % (Standard-Aufbauten 90 %)", "einheit": "Zellen",
          "ampel": _ampel(None if gesamt["abdeckung_ohne_nachfrage"] is None else
                          gesamt["abdeckung_ohne_nachfrage"] >= 0.7 and (standard_abdeckung is None or standard_abdeckung >= 0.9),
-                         luecke=lue)},
+                         luecke=lue),
+         "detail": f"Zählt nur die {soll} Soll-Zellen der Haupt-Spalten (Nummer, Titel, Inhalt; ohne Formeln und Füllspalten), "
+                   f"nicht alle {gesamt['soll_zellen_alle']}. Standard-Aufbauten: {len(standard)} Paare, davon "
+                   f"{len(standard_angenommen)} ohne Profil (Standard-Aufbau angenommen), Abdeckung dort {_prozent(standard_abdeckung)} "
+                   f"(Ziel 90 %). Die Zeile darunter zählt ALLE Soll-Zellen"},
+        {"nr": 4, "name": "Abdeckung über ALLE Soll-Zellen (inkl. Füllspalten, Formeln)",
+         "wert": f"{_prozent(gesamt['abdeckung_alle'])} ({erreicht_alle} von {gesamt['soll_zellen_alle']})",
+         "ziel": "mindestens 70 %", "einheit": "Zellen",
+         "ampel": _ampel(None if gesamt["abdeckung_alle"] is None else gesamt["abdeckung_alle"] >= 0.7, luecke=lue),
+         "detail": f"Haupt-Spalten {s('erreicht_auto')} von {soll}; harmlose Füllung {gesamt['soll_zellen_unverwaltet_erreicht']} von "
+                   f"{unverw}; sonstige nicht verwaltete {gesamt['soll_zellen_unverwaltet_sonstige_erreicht']} von "
+                   f"{gesamt['soll_zellen_unverwaltet_sonstige']}; Formelzellen (getrennt ausgewiesen, v1 passt sie bewusst nicht an) "
+                   f"{gesamt['erreicht_formel']} von {gesamt['soll_zellen_formel']}. Ohne Formelzellen: "
+                   f"{_prozent(gesamt['abdeckung_alle_ohne_formeln'])}. „Erreicht“ heißt: Text UND Datentyp stimmen mit nachher überein"},
         {"nr": 4, "name": "Nicht-Übernahmen mit Grund", "wert": f"{gesamt['nicht_uebernommen_ohne_grund']} ohne Grund",
          "ziel": "0 ohne Grund", "einheit": "Änderungen",
          "ampel": _ampel(gesamt["nicht_uebernommen_ohne_grund"] == 0, luecke=lue)},
@@ -1654,12 +2079,24 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
          "ampel": _ampel(None if not m else gesamt["idempotent"] == m, luecke=lue)},
         {"nr": 6, "name": "Kollateralschaden", "wert": str(gesamt["kollateral"]), "ziel": "0", "einheit": "Zellen",
          "ampel": _ampel(gesamt["kollateral"] == 0, luecke=lue)},
-        {"nr": 6, "name": "Struktur unverändert", "wert": str(gesamt["struktur_geaendert"]), "ziel": "0", "einheit": "Befunde",
+        {"nr": 6, "name": "Struktur unverändert (nur die genannten Eigenschaften)", "wert": str(gesamt["struktur_geaendert"]),
+         "ziel": "0", "einheit": "Befunde",
          "ampel": _ampel(None if not struktur_paare else gesamt["struktur_geaendert"] == 0, luecke=lue),
-         "detail": "Blätter, versteckte Zeilen/Spalten, verbundene Zellen, Datenvalidierung, Zahlenformat, Schrift unveränderter Zellen"},
+         "detail": f"geprüft: {STRUKTUR_GEPRUEFT}; nicht geprüft: {STRUKTUR_NICHT_GEPRUEFT}. „Ok“ heißt NICHT, dass die Excel "
+                   f"sonst unverändert ist"},
+        {"nr": 6, "name": "Vorschlags-Excel (alle freigegeben): Struktur unverändert",
+         "wert": str(gesamt["struktur_vorschlaege_geaendert"]) if vorschlag_paare else "-", "ziel": "0 unerwartete",
+         "einheit": "Befunde",
+         "ampel": _ampel(None if not vorschlag_paare else gesamt["struktur_vorschlaege_geaendert"] == 0,
+                         "keine Vorschläge" if vorschlaege else "nicht gemessen", luecke=lue),
+         "detail": f"Dieselben Eigenschaften wie oben, an der Excel nach Freigabe aller Vorschläge. Eine Abweichung ist dann zulässig, wenn der "
+                   f"Plan das Risiko vorab gemeldet hat (angekündigt: {gesamt['struktur_vorschlaege_angekuendigt']}); sonst ist sie ein Befund"},
         {"nr": 6, "name": "Originale unverändert", "wert": f"{gesamt['original_unveraendert']} von {m}", "ziel": "alle Paare",
          "einheit": "Paare", "ampel": _ampel(None if not m else gesamt["original_unveraendert"] == m, luecke=lue)},
     ]
+
+    gesamt["kriterien_nicht_ok"] = sum(1 for k in kriterien if k["ampel"] == "NICHT ok")
+    gesamt["ziel_verfehlt"] = gesamt["kriterien_nicht_ok"] > 0
 
     return {"format": BERICHT_FORMAT, "korpus": korpus, "generator_version": generator_version,
             "schema_version": SCHEMA_VERSION, "gesamt": gesamt, "fehlerarten": fehlerarten, "je_stoerer": je_stoerer,
@@ -1683,6 +2120,15 @@ def _md(b: dict[str, Any]) -> str:
     for k in b["kriterien"]:
         z.append(f"| {k['nr']} | {k['name']} | {k['wert']} | {k.get('einheit', '')} | {k['ziel']} | {k['ampel']} |")
     z += ["", "Erläuterungen:", ""] + [f"- {k['name']}: {k['detail']}" for k in b["kriterien"] if k.get("detail")]
+    z += ["", f"**Struktur ok heißt nur:** Es wurde keine unerwartete Abweichung bei diesen Eigenschaften gefunden: "
+              f"{g['struktur_geprueft']}. Nicht geprüft wurde: {g['struktur_nicht_geprueft']}. Eine Ampel „ok“ bei Struktur sagt also "
+              f"nicht, dass die Excel sonst unverändert ist.", ""]
+    z += [f"Abdeckung: Die Zeile „ohne Nachfrage (nur Haupt-Spalten)“ zählt {g['soll_zellen']} von {g['soll_zellen_alle']} Soll-Zellen; "
+          f"die Zeile „ALLE Soll-Zellen“ zählt alle ({_prozent(g['abdeckung_alle'])}). Standard-Aufbau: {g['standard_paare']} Paare, davon "
+          f"{g['standard_paare_angenommen']} ohne Profil (Standard-Aufbau angenommen, damit echte Paare nicht milder gemessen werden "
+          f"als erfundene).", ""]
+    z += [f"Ergebnis für den Exit-Code: {g['kriterien_nicht_ok']} Kriterium/Kriterien auf „NICHT ok“ "
+          f"({'Code 1: Ziel verfehlt' if g['kriterien_nicht_ok'] else 'Code 0: kein Kriterium verfehlt'}); Code 2 bedeutet kaputte Eingabe.", ""]
     ae_ges = g["aenderungen_uebernommen_korrekt"] + g["aenderungen_uebernommen_falsch"]
     z += ["", "## Zahlen (mit Zähleinheit)", "",
           f"- Automatisch richtig: {g['auto_richtig']} von {g['auto_gesamt']} (Einheit: Zellen)",
@@ -1786,6 +2232,17 @@ def _konsole(b: dict[str, Any], ziel: Path, vorschlaege: bool) -> None:
     if g["struktur_geaendert"]:
         print(f"ACHTUNG Struktur: {g['struktur_geaendert']} unerwartet veränderte Eigenschaft(en) "
               + ", ".join(f"{a} {n}" for a, n in g["struktur_nach_art"].items() if n))
+    if g["struktur_vorschlaege_geaendert"]:
+        print(f"ACHTUNG Struktur (Excel mit allen freigegebenen Vorschlägen): {g['struktur_vorschlaege_geaendert']} unerwartete "
+              f"Abweichung(en) ohne Vorab-Warnung des Plans: "
+              + ", ".join(f"{a} {n}" for a, n in g["struktur_vorschlaege_nach_art"].items() if n))
+    print("")
+    print("Struktur „ok“ heißt nur: keine unerwartete Abweichung bei den geprüften Eigenschaften (Blätter, versteckte Zeilen/Spalten, "
+          "Verbünde, Validierung, bedingte Formatierung, Hyperlink-Adressen, Kommentare, benannte Bereiche, Filter, Tabellen, Fixierung, Breiten, "
+          "Höhen, Zahlenformat, Schrift, Datentyp). Nicht geprüft: Rahmen, Ausrichtung, Schutz, Druckeinstellungen, Bilder, Diagramme u. a.")
+    if g["standard_paare_angenommen"]:
+        print(f"Hinweis: Bei {g['standard_paare_angenommen']} Paar(en) ohne Profil wurde der Standard-Aufbau angenommen "
+              f"(90-%-Regel der Abdeckung gilt auch dort).")
     if g["stille_fehler"]:
         print("")
         print(f"ACHTUNG: {g['stille_fehler']} stille(r) Fehler ({g['stille_fehler_zellen']} Zellen, "
@@ -1799,6 +2256,10 @@ def _konsole(b: dict[str, Any], ziel: Path, vorschlaege: bool) -> None:
         print("Hinweis (Regel 11): Den Test-Korpus nie zum Einstellen des Tools benutzen.")
     print("")
     print(f"Bericht: {ziel / 'bericht.md'}")
+    if g["kriterien_nicht_ok"]:
+        print(f"Ergebnis: Ziel verfehlt, {g['kriterien_nicht_ok']} Kriterium/Kriterien stehen auf „NICHT ok“ (Exit-Code 1).")
+    else:
+        print("Ergebnis: kein Kriterium verfehlt (Exit-Code 0).")
 
 # ======================================================================================
 # 6. Einstieg
@@ -1847,7 +2308,7 @@ def main(argv: list[str] | None = None) -> int:
     bericht = fasse_zusammen(paare, a.korpus, _lade_korpus_info(eltern), a.mit_vorschlaegen)
     ziel = schreibe_bericht(bericht, a.korpus)
     _konsole(bericht, ziel, a.mit_vorschlaegen)
-    return 0
+    return 1 if bericht["gesamt"]["kriterien_nicht_ok"] else 0       # 0 = kein Kriterium "NICHT ok", 1 = Ziel verfehlt, 2 = kaputte Eingabe
 
 
 if __name__ == "__main__":
