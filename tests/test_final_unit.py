@@ -114,3 +114,64 @@ def test_umnummerierung_bleibt_automatisch(tmp_path):
     l = lauf(tmp_path, elem)
     a = [x for x in l.aen if "Ueberspannung" in x.neu]
     assert a and a[0].status == UEBERNOMMEN and a[0].konfidenz == HOCH, [(x.typ, x.status, x.grund) for x in l.aen]
+
+
+# ===========================================================================================================
+# 2. Applier: Gruppen-Mitfreigabe nur durch einen Menschen; keine Ueberschreibung; kein Ersetzen von plan.json
+# ===========================================================================================================
+_ELEM_GRUPPE = [
+    ("h", "1 Einleitung"),
+    ("p", "Dieses Dokument beschreibt die Anforderungen an das Speichersystem fuer alle Standorte."),
+    ("h", "{+2 Dokumentation+}"),
+    ("p", "{+Alle Unterlagen werden in deutscher Sprache geliefert.+}"),
+    ("p", "{+Pruefberichte liegen dem Angebot bei.+}"),
+    ("h", "3 Lieferung"),
+    ("p", "Die Lieferung erfolgt frei Haus und wird vom Kunden abgenommen."),
+]
+
+
+def _gruppe(tmp_path):
+    alt = baue_alt(tmp_path, _ELEM_GRUPPE, "L1")
+    l = analysiere(tmp_path, _ELEM_GRUPPE, alt)
+    kopf = next(a for a in l.aen if a.typ == "section_neu")
+    folgen = [a for a in l.aen if a.typ == "absatz_neu"]
+    assert len(folgen) == 2
+    return l, kopf, folgen
+
+
+def _texte(pfad):
+    return [str(c.value) for row in blatt(pfad).iter_rows() for c in row if c.value is not None]
+
+
+def test_gemischte_gruppe_ohne_freigabe_wird_nicht_mitgenommen(tmp_path):
+    """Handgebauter Plan: neue Section 'uebernommen', ein Folgeabsatz 'pruefen', keine Freigabe -> nichts wird geschrieben."""
+    l, kopf, folgen = _gruppe(tmp_path)
+    for a in [kopf] + folgen:
+        a.status = UEBERNOMMEN
+    folgen[1].status = PRUEFEN
+    uebernimm(l)                                              # keine Freigaben
+    assert not any("Pruefberichte" in t or "Dokumentation" in t for t in _texte(l.out))
+    assert [a.status for a in [kopf] + folgen] == [PRUEFEN, PRUEFEN, PRUEFEN]
+    assert all(a.hinweise for a in [kopf] + folgen if a is not folgen[1]), "Hinweis fehlt"
+
+
+def test_gemischte_gruppe_mit_menschlicher_freigabe_kommt_zusammen(tmp_path):
+    l, kopf, folgen = _gruppe(tmp_path)
+    for a in [kopf] + folgen:
+        a.status = UEBERNOMMEN
+    folgen[1].status = PRUEFEN
+    uebernimm(l, freigaben={folgen[1].id})
+    texte = " ".join(_texte(l.out))
+    assert "Pruefberichte" in texte and "Dokumentation" in texte and "Unterlagen" in texte
+    assert all(a.status == UEBERNOMMEN for a in [kopf] + folgen)
+
+
+def test_uebernehmen_ueberschreibt_nie_eine_vorhandene_zieldatei(tmp_path):
+    import pytest
+    from src.applier import uebernehmen
+    l, kopf, folgen = _gruppe(tmp_path)
+    ziel = tmp_path / "ergebnis.xlsx"
+    ziel.write_bytes(b"alter Inhalt")
+    with pytest.raises(FileExistsError, match="nicht überschrieben"):
+        uebernehmen(l.aen, l.alt, ziel)
+    assert ziel.read_bytes() == b"alter Inhalt"

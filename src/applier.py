@@ -29,6 +29,7 @@ from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 
 from . import config
+from .fehler import DateiVorhanden
 from .excel_model import ExcelModell, zahl_als_text
 from .models import (MITTEL, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN, WIRKUNG_ABWEICHUNG, WIRKUNG_KEINE, WIRKUNG_OK,
                      Aenderung, Operation)
@@ -247,12 +248,16 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     freigegebene Vorschlaege -> uebernommen/bestaetigt, Nachkontrolle und Wirkung; Aenderungen ohne
     nachweisbare Wirkung werden zurueckgestuft).
 
-    `xl`: schon gebautes Modell derselben Quell-Excel (spart das erneute Einlesen); ohne Angabe wird es gebaut."""
+    `xl`: schon gebautes Modell derselben Quell-Excel (spart das erneute Einlesen); ohne Angabe wird es gebaut.
+    Eine vorhandene Zieldatei wird nie ueberschrieben (Regel 29): dann gibt es einen DateiVorhanden-Fehler (auch FileExistsError)."""
     cfg = cfg or config.lade("zuordnung")
     anw = cfg.get("anwenden") or config.lade("zuordnung")["anwenden"]
     farbe, autor = anw["markierung_farbe"], anw["kommentar_autor"]
     freigaben = freigaben or set()
     quelle, ziel = Path(quelle), Path(ziel)
+    if ziel.exists():                                           # Regel 29: Ergebnisse werden nie ueberschrieben
+        raise DateiVorhanden("Die Ergebnis-Datei gibt es schon und wird nicht überschrieben. "
+                             "Bitte einen neuen Dateinamen oder einen neuen Lauf nehmen.")
     ergebnis = UebernahmeErgebnis(ausgabe=str(ziel))
     if xl is None:
         xl = ExcelModell(quelle)                                # nur zum Lesen (Layout, Sections)
@@ -270,7 +275,17 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     for kopf_id, folgen in gruppen.items():
         kopf = alle_nach_id[kopf_id]
         mitglieder = [kopf] + folgen
-        if kopf.status in (UEBERNOMMEN, PRUEFEN) and (kopf.status == UEBERNOMMEN or any(freigegeben(m) for m in mitglieder)):
+        mensch = any(freigegeben(m) for m in mitglieder)          # nur ein Mensch (Freigabe-ID) darf die Gruppe mitnehmen
+        if (not mensch and kopf.status in (UEBERNOMMEN, PRUEFEN)
+                and {m.status for m in mitglieder} >= {UEBERNOMMEN, PRUEFEN}):
+            # Gemischte Gruppe ohne Freigabe: der "uebernommene" Teil darf den "pruefen"-Teil nicht ohne Mensch mitziehen
+            # (und umgekehrt). Der Applier sichert das selbst ab, auch wenn ein Plan von Hand gebaut wurde.
+            for m in mitglieder:
+                if m.status == UEBERNOMMEN:
+                    _vorschlag(m, "Gehört zu einer neuen Section mit Absätzen, von denen mindestens einer noch geprüft werden muss.",
+                               "Section und Absätze stehen in einer Excel-Zeile und werden nur gemeinsam eingetragen; "
+                               "ein Mensch muss mindestens einen davon freigeben.")
+        elif kopf.status in (UEBERNOMMEN, PRUEFEN) and (kopf.status == UEBERNOMMEN or mensch):
             for m in mitglieder:
                 if m.status == PRUEFEN:
                     m.status, m.bestaetigt = UEBERNOMMEN, True
