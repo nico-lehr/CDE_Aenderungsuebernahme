@@ -11,9 +11,12 @@ der Excel; die Reihenfolge beim Eintragen regelt der Applier.
 """
 from __future__ import annotations
 
+import re
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Iterator
+from typing import Any, Iterable, Iterator
 
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.utils import get_column_letter
 
 from . import config
@@ -25,6 +28,50 @@ from .pdf_reader import PdfAnalyse
 from .textutil import kopf_zerlegen, norm, section_nummer
 
 STATUS_VON_STUFE = {HOCH: UEBERNOMMEN, MITTEL: PRUEFEN}
+
+
+def _planer_cfg(cfg: dict | None) -> dict:
+    """Abschnitt `planer:` der Konfiguration (Schwellen und Zeichenlisten, Regel 28)."""
+    if cfg and "planer" in cfg:
+        return cfg["planer"]
+    return config.lade("zuordnung").get("planer", {})
+
+
+def neutext_probleme(texte: Iterable[str], cfg: dict | None = None) -> dict[str, Any]:
+    """Prueft Neutext auf Dinge, die in der Excel Schaden anrichten oder auf kaputtes PDF-Lesen hindeuten.
+
+    Rueckgabe: steuerzeichen (nicht schreibbar), verdaechtig (Liste einfacher Hinweise -> nie automatisch),
+    formel (Text beginnt mit '=' und wuerde von Excel als Formel gelesen)."""
+    pl = _planer_cfg(cfg)
+    zeichen = "".join(pl.get("verdaechtige_zeichen", []))
+    muster = [re.compile(m) for m in pl.get("verdaechtige_muster", [])]
+    out: dict[str, Any] = {"steuerzeichen": False, "verdaechtig": [], "formel": False}
+    for t in texte:
+        if not isinstance(t, str) or not t:
+            continue
+        if ILLEGAL_CHARACTERS_RE.search(t):
+            out["steuerzeichen"] = True
+        if zeichen and any(z in t for z in zeichen):
+            h = "Der neue Text enthält Zeichen (z. B. Ligaturen), die beim Lesen des PDF verfälscht sein können. Bitte mit dem PDF vergleichen."
+            if h not in out["verdaechtig"]:
+                out["verdaechtig"].append(h)
+        if any(m.search(t) for m in muster):
+            h = "Der neue Text enthält Zeichencode-Reste aus dem PDF (z. B. „(cid:12)“). Die PDF-Schrift wurde nicht sauber gelesen."
+            if h not in out["verdaechtig"]:
+                out["verdaechtig"].append(h)
+        if t.startswith("="):
+            out["formel"] = True
+    return out
+
+
+def _wort_gleich(a: str, b: str) -> bool:
+    """Zwei Woerter gelten als gleich: gleiche Normform; Woerter ohne Normform ('•') muessen buchstabengleich sein."""
+    na, nb = norm(a), norm(b)
+    return na == nb if (na or nb) else a == b
+
+
+def _woerter_gleich(excel: list[str], pdf: list[str]) -> bool:
+    return len(excel) == len(pdf) and bool(pdf) and all(_wort_gleich(x, y) for x, y in zip(excel, pdf))
 
 
 @dataclass
@@ -49,6 +96,7 @@ class _Planer:
         self.out: list[Aenderung] = []
         self._tr: dict[int, Treffer | None] = {}
         self.verbraucht: set[int] = set()   # Bloecke, die schon als Teil einer neuen Section behandelt wurden
+        self._nach_norms: dict[tuple[str, ...], list[Kandidat]] | None = None   # Normform -> Kandidaten (Idempotenz)
 
     # ------------------------------------------------------------ Helfer
     def treffer(self, b: PdfBlock) -> Treffer | None:
@@ -66,10 +114,29 @@ class _Planer:
         return ae
 
     def _setze(self, ae: Aenderung, stufe: str, grund: str = "") -> None:
+        # Neutext pruefen: Steuerzeichen koennen nicht geschrieben werden, Ligaturen/(cid:N) sind nie "sicher"
+        texte = [ae.neu] + [o.text for o in ae.ops] + [t for o in ae.ops for t in o.zellen.values()]
+        p = neutext_probleme(texte, self.cfg)
+        if p["steuerzeichen"]:
+            self._nicht(ae, "Der neue Text enthält Steuerzeichen und kann nicht in die Excel geschrieben werden.")
+            return
+        if p["verdaechtig"]:
+            if stufe == HOCH:
+                stufe = MITTEL
+            for h in p["verdaechtig"]:
+                self._hinweis(ae, h)
+            grund = (grund + "; " if grund else "") + "Der neue Text könnte aus dem PDF verfälscht gelesen worden sein."
+        if p["formel"] and any(o.art in ("ersetzen", "einfuegen", "zeile_einfuegen") for o in ae.ops):
+            self._hinweis(ae, "Der neue Text beginnt mit „=“. Er wird als Text eingetragen, nicht als Formel.")
         ae.konfidenz = stufe
         ae.status = STATUS_VON_STUFE.get(stufe, NICHT)
         if grund:
             ae.grund = (ae.grund + "; " if ae.grund else "") + grund
+
+    @staticmethod
+    def _hinweis(ae: Aenderung, text: str) -> None:
+        if text not in ae.hinweise:
+            ae.hinweise.append(text)
 
     def _nicht(self, ae: Aenderung, grund: str, ziel: str = "") -> None:
         ae.status, ae.konfidenz, ae.ops = NICHT, NIEDRIG, []
@@ -133,14 +200,23 @@ class _Planer:
         ae.excel_text = cand.text[:300]
         stufe = tr.stufe
         gruende = list(tr.gruende)
-        d_idx = [i for i in range(i0, i1) if b.tokens[i].old and norm(b.tokens[i].old)]
+        alt_idx = [i for i in range(i0, i1) if b.tokens[i].old]
+        d_idx = [i for i in alt_idx if norm(b.tokens[i].old)]
+        leer_idx = [i for i in alt_idx if not norm(b.tokens[i].old)]     # alte Woerter ohne Normform ("•", ".")
         seq = b.idx * 1000 + i0
+        neu_w = [t.new for t in toks if t.new]
 
         if d_idx:
             fehlt = [i for i in d_idx if i not in tr.zuordnung]
             if fehlt:
-                self._nicht(ae, "Der alte Text steht in der Excel anders (abweichende Formulierung). "
-                                "Bitte von Hand prüfen.", cand.ziel)
+                if self._schon_da(b, i0, i1, tr, neu_w):
+                    self._nicht(ae, "Der neue Text steht schon in der Excel (die Änderung ist offenbar schon eingetragen).", cand.ziel)
+                elif not neu_w and len(fehlt) == len(d_idx):
+                    self._nicht(ae, "Der gestrichene Text steht nicht mehr in der Excel (vielleicht schon entfernt, vielleicht "
+                                    "anders formuliert). Bitte von Hand prüfen.", cand.ziel)
+                else:
+                    self._nicht(ae, "Der alte Text steht in der Excel anders (abweichende Formulierung). "
+                                    "Bitte von Hand prüfen.", cand.ziel)
                 return
             js = sorted(tr.zuordnung[i] for i in d_idx)
             xt = [cand.tokens[j] for j in js]
@@ -155,6 +231,15 @@ class _Planer:
             blatt, zeile, spalte = xt[0].blatt, xt[0].zeile, xt[0].spalte
             zt = self.xl.text(blatt, zeile, spalte)
             start, ende = xt[0].start, xt[-1].end
+            vorn = [b.tokens[i].old for i in leer_idx if i < d_idx[0]]
+            hinten = [b.tokens[i].old for i in leer_idx if i > d_idx[-1]]
+            if vorn or hinten:       # gestrichene Aufzaehlungszeichen/Satzzeichen am Rand gehoeren zum Bereich
+                rand = self._rand_leer(zt, start, ende, vorn, hinten, cand)
+                if rand is None:
+                    self._nicht(ae, "Ein gestrichenes Zeichen ohne Buchstaben (z. B. Aufzählungszeichen) wurde in der Excel "
+                                    "nicht sicher gefunden. Bitte von Hand prüfen.", cand.ziel)
+                    return
+                start, ende = rand
             if neu:
                 op = Operation("ersetzen", blatt, zeile, spalte, start, ende, neu, seq, aenderung=ae.id)
             else:
@@ -162,6 +247,22 @@ class _Planer:
                 op = Operation("ersetzen", blatt, zeile, spalte, s, e, "", seq, aenderung=ae.id)
             ae.ops = [op]
             ae.ziel = self._ziel(xt[0])
+        elif leer_idx:
+            # Nur Woerter ohne Normform ("•", "."): ihre Stelle aus dem Rohtext zwischen zwei sicheren Nachbarwoertern bestimmen
+            span = self._leer_span(b, i0, i1, tr, cand)
+            if span is None:
+                self._nicht(ae, "Ein gestrichenes Zeichen ohne Buchstaben (z. B. Aufzählungszeichen) wurde in der Excel "
+                                "nicht sicher gefunden. Bitte von Hand prüfen.", cand.ziel)
+                return
+            blatt, zeile, spalte, start, ende = span
+            zt = self.xl.text(blatt, zeile, spalte)
+            if neu:
+                op = Operation("ersetzen", blatt, zeile, spalte, start, ende, neu, seq, aenderung=ae.id)
+            else:
+                s, e = self._luecke(zt, start, ende)
+                op = Operation("ersetzen", blatt, zeile, spalte, s, e, "", seq, aenderung=ae.id)
+            ae.ops = [op]
+            ae.ziel = f"{blatt}!{get_column_letter(spalte)}{zeile}"
         else:
             # reine Einfuegung: nach dem naechsten vorangehenden, zugeordneten Wort
             vor = next((i for i in range(i0 - 1, -1, -1) if i in tr.zuordnung), None)
@@ -178,9 +279,76 @@ class _Planer:
                     return
                 xt = cand.tokens[tr.zuordnung[nach]]
                 op = Operation("einfuegen", xt.blatt, xt.zeile, xt.spalte, xt.start, xt.start, neu + " ", seq, aenderung=ae.id)
+            if self._schon_da(b, i0, i1, tr, neu_w):
+                self._nicht(ae, "Der neue Text steht schon in der Excel (die Änderung ist offenbar schon eingetragen).",
+                            self._ziel(xt))
+                return
             ae.ops = [op]
             ae.ziel = self._ziel(xt)
         self._setze(ae, stufe, "; ".join(gruende))
+
+    # ------------------------------------------------------------ Hilfen fuer Woerter ohne Normform und Idempotenz
+    def _schon_da(self, b: PdfBlock, i0: int, i1: int, tr: Treffer, neu_w: list[str]) -> bool:
+        """Steht der neue Text schon direkt an der Einfuegestelle? (zweiter Lauf auf dem eigenen Ergebnis)"""
+        if not neu_w:
+            return False
+        cand = tr.kandidat
+        zuo = tr.zuordnung
+        vor = next((i for i in range(i0 - 1, -1, -1) if i in zuo), None)
+        if vor is not None and cand.art != "kopf":
+            xt = cand.tokens[zuo[vor]]
+            rest = re.findall(r"\S+", self.xl.text(xt.blatt, xt.zeile, xt.spalte)[xt.end:cand.end])
+            if _woerter_gleich(rest[:len(neu_w)], neu_w):
+                return True
+        nach = next((i for i in range(i1, len(b.tokens)) if i in zuo), None)
+        if nach is not None and cand.art != "kopf":
+            xt = cand.tokens[zuo[nach]]
+            davor = re.findall(r"\S+", self.xl.text(xt.blatt, xt.zeile, xt.spalte)[cand.start:xt.start])
+            if _woerter_gleich(davor[-len(neu_w):], neu_w):
+                return True
+        return False
+
+    def _rand_leer(self, zt: str, s: int, e: int, vorn: list[str], hinten: list[str], cand: Kandidat) -> tuple[int, int] | None:
+        """Erweitert den Bereich [s, e) um direkt angrenzende Woerter ohne Normform, falls sie wirklich dort stehen."""
+        lo = cand.start if cand.art != "kopf" else 0
+        hi = cand.end if cand.art != "kopf" else len(zt)
+        for w in reversed(vorn):
+            m = re.search(r"(\S+)\s*$", zt[:s])
+            if not m or m.group(1) != w or m.start(1) < lo:
+                return None
+            s = m.start(1)
+        for w in hinten:
+            m = re.match(r"\s*(\S+)", zt[e:])
+            if not m or m.group(1) != w or e + m.end() > hi:
+                return None
+            e += m.end()
+        return s, e
+
+    def _leer_span(self, b: PdfBlock, i0: int, i1: int, tr: Treffer, cand: Kandidat) -> tuple[str, int, int, int, int] | None:
+        """Stelle (Blatt, Zeile, Spalte, Start, Ende) der alten Woerter ohne Normform einer Gruppe.
+
+        Der Rohtext zwischen den beiden naechsten sicher zugeordneten Nachbarwoertern muss genau die alten Woerter des
+        PDF enthalten -- sonst gibt es keine Stelle (None)."""
+        if cand.art == "kopf":
+            return None
+        zuo = tr.zuordnung
+        vor = next((i for i in range(i0 - 1, -1, -1) if i in zuo), None)
+        nach = next((i for i in range(i1, len(b.tokens)) if i in zuo), None)
+        zt = cand.zelle_text
+        s = cand.tokens[zuo[vor]].end if vor is not None else cand.start
+        e = cand.tokens[zuo[nach]].start if nach is not None else cand.end
+        if e < s:
+            return None
+        von = vor + 1 if vor is not None else 0
+        bis = nach if nach is not None else len(b.tokens)
+        idx = [i for i in range(von, bis) if b.tokens[i].old]
+        excel = [(m.group(), s + m.start(), s + m.end()) for m in re.finditer(r"\S+", zt[s:e])]
+        if [w for w, _, _ in excel] != [b.tokens[i].old for i in idx]:
+            return None
+        ks = [k for k, i in enumerate(idx) if i0 <= i < i1]
+        if not ks:
+            return None
+        return cand.blatt, cand.zeile, cand.spalte, excel[ks[0]][1], excel[ks[-1]][2]
 
     @staticmethod
     def _luecke(text: str, s: int, e: int) -> tuple[int, int]:
@@ -235,7 +403,8 @@ class _Planer:
             stufe = MITTEL
             ae.grund = "Der Text in der Excel stimmt nur teilweise mit dem gestrichenen Text überein."
         seq = b.idx * 1000
-        if cand.art == "kopf":
+        alle = self._alle_gestrichen(cand, js, toks)
+        if cand.art == "kopf" and alle:
             zellen = []
             for t in cand.tokens:
                 z = (t.blatt, t.zeile, t.spalte)
@@ -243,25 +412,60 @@ class _Planer:
                     zellen.append(z)
             ae.ops = [Operation("zelle_leeren", bl, ze, sp, seq=seq, aenderung=ae.id) for bl, ze, sp in zellen]
         else:
-            ae.ops = [self._loesch_op(ae, cand, js, seq)]
+            ae.ops = self._loesch_ops(ae, cand, js, seq, alle)
+            # Nicht alles gestrichen: nur wenn genau ein Stueck aus ganzen Zeilen entfernt wird, ist es sicher
+            if not alle and not (len(ae.ops) == 1 and ae.ops[0].absatz_weg):
+                stufe = MITTEL
+                self._hinweis(ae, "In der Excel steht in derselben Zelle mehr Text, der im PDF nicht gestrichen ist. "
+                                  "Nur die gestrichenen Wörter werden entfernt, der Rest bleibt stehen.")
+                ae.grund = (ae.grund + "; " if ae.grund else "") + "Nur ein Teil des Excel-Textes ist im PDF gestrichen."
         self._setze(ae, stufe)
 
-    def _loesch_op(self, ae: Aenderung, cand: Kandidat, js: list[int], seq: int) -> Operation:
+    def _alle_gestrichen(self, cand: Kandidat, js: list[int], toks: list[PdfToken]) -> bool:
+        """Sind ALLE Woerter der Excel-Stelle im PDF gestrichen? (nur dann darf eine Zelle/ein Absatz ganz entfernt werden)"""
+        if len(set(js)) != len(cand.tokens):
+            return False
+        # Woerter ohne Normform ("•") stehen nicht in cand.tokens, muessen aber auch mitgestrichen sein
+        if cand.art == "kopf":
+            texte = [self.xl.text(*z) for z in dict.fromkeys((t.blatt, t.zeile, t.spalte) for t in cand.tokens)]
+        else:
+            texte = [cand.zelle_text[cand.start:cand.end]]
+        leer = Counter(w for t in texte for w in t.split() if not norm(w))
+        gestrichen = Counter(t.old for t in toks if t.old and not norm(t.old))
+        return not (leer - gestrichen)
+
+    def _loesch_ops(self, ae: Aenderung, cand: Kandidat, js: list[int], seq: int, alle: bool) -> list[Operation]:
         zt = cand.zelle_text
-        voll = bool(js) and js[0] == 0 and js[-1] == len(cand.tokens) - 1
-        if voll and cand.art in ("absatz", "zelle"):
+        if alle and cand.art in ("absatz", "zelle"):
             rest = (zt[:cand.start] + zt[cand.end:]).strip()
             if not rest:
-                return Operation("zelle_leeren", cand.blatt, cand.zeile, cand.spalte, seq=seq, aenderung=ae.id)
-            return Operation("ersetzen", cand.blatt, cand.zeile, cand.spalte, cand.start, cand.end, "", seq,
-                             aenderung=ae.id, absatz_weg=True)
-        s0, e0 = cand.tokens[js[0]].start, cand.tokens[js[-1]].end
-        davor, danach = zt[:s0].rstrip(" "), zt[e0:].lstrip(" ")
-        ganze_zeilen = (davor == "" or davor.endswith("\n")) and (danach == "" or danach.startswith("\n"))
-        if ganze_zeilen:
-            return Operation("ersetzen", cand.blatt, cand.zeile, cand.spalte, s0, e0, "", seq, aenderung=ae.id, absatz_weg=True)
-        s, e = self._luecke(zt, s0, e0)
-        return Operation("ersetzen", cand.blatt, cand.zeile, cand.spalte, s, e, "", seq, aenderung=ae.id)
+                return [Operation("zelle_leeren", cand.blatt, cand.zeile, cand.spalte, seq=seq, aenderung=ae.id)]
+            return [Operation("ersetzen", cand.blatt, cand.zeile, cand.spalte, cand.start, cand.end, "", seq,
+                              aenderung=ae.id, absatz_weg=True)]
+        # gezielt nur die gestrichenen Woerter entfernen: je zusammenhaengendem Stueck (gleiche Zelle, nur Leerraum dazwischen)
+        stuecke: list[list[int]] = []
+        for j in sorted(set(js)):
+            if stuecke:
+                p, t = cand.tokens[stuecke[-1][-1]], cand.tokens[j]
+                text = self.xl.text(t.blatt, t.zeile, t.spalte)
+                if (p.blatt, p.zeile, p.spalte) == (t.blatt, t.zeile, t.spalte) and j == stuecke[-1][-1] + 1 \
+                        and not text[p.end:t.start].strip():
+                    stuecke[-1].append(j)
+                    continue
+            stuecke.append([j])
+        ops: list[Operation] = []
+        for k, st in enumerate(stuecke):
+            t0, t1 = cand.tokens[st[0]], cand.tokens[st[-1]]
+            text = self.xl.text(t0.blatt, t0.zeile, t0.spalte)
+            s0, e0 = t0.start, t1.end
+            davor, danach = text[:s0].rstrip(" "), text[e0:].lstrip(" ")
+            ganze_zeilen = (davor == "" or davor.endswith("\n")) and (danach == "" or danach.startswith("\n"))
+            if ganze_zeilen:
+                ops.append(Operation("ersetzen", t0.blatt, t0.zeile, t0.spalte, s0, e0, "", seq + k, aenderung=ae.id, absatz_weg=True))
+            else:
+                s, e = self._luecke(text, s0, e0)
+                ops.append(Operation("ersetzen", t0.blatt, t0.zeile, t0.spalte, s, e, "", seq + k, aenderung=ae.id))
+        return ops
 
     # ------------------------------------------------------------ Neue Bloecke
     def _anker(self, b: PdfBlock) -> tuple[Treffer, bool, bool] | None:
@@ -312,6 +516,23 @@ class _Planer:
             return
         z = self.cfg["einfuegen"]
         seq = b.idx * 1000
+        schon = self._vorhanden(b, ist_kopf, cand)
+        if schon is not None:
+            if ist_kopf:
+                grund = f"Die Section steht schon in der Excel ({schon.ziel}); die Änderung ist offenbar schon eingetragen."
+                self._nicht(ae, grund, schon.ziel)
+                for kb in koerper:
+                    self.verbraucht.add(kb.idx)
+                    self._nicht(self._basis(kb, "absatz_neu", kb.tokens, "", kb.neu_text),
+                                "Gehört zu einer neuen Section, die schon in der Excel steht.", schon.ziel)
+                return
+            if len([w for w in b.neu_text.split() if norm(w)]) >= _planer_cfg(self.cfg).get("doppelt_min_woerter", 3):
+                self._nicht(ae, f"Der Absatz steht schon in der Excel ({schon.ziel}); die Änderung ist offenbar schon eingetragen.",
+                            schon.ziel)
+                ae.excel_text = schon.text[:300]
+                return
+            self._hinweis(ae, f"Ein sehr kurzer Absatz mit gleichem Text steht schon in der Excel ({schon.ziel}). Bitte prüfen, ob er doppelt wäre.")
+            stufe = MITTEL
         if ist_kopf:
             self._neue_section(ae, b, koerper, cand, lay, stufe, davor, seq)
         else:
@@ -322,6 +543,37 @@ class _Planer:
                 self._absatz_in_zelle(ae, b, cand, lay, stufe, seq, tr)
             else:
                 self._absatz_als_zeile(ae, b, cand, lay, stufe, davor, seq)
+
+    def _vorhanden(self, b: PdfBlock, ist_kopf: bool, cand: Kandidat) -> Kandidat | None:
+        """Steht ein Absatz/eine Ueberschrift mit genau diesem neuen Text schon in der Excel? (Idempotenz)"""
+        norms = tuple(n for n in (norm(w) for w in b.neu_text.split()) if n)
+        if not norms:
+            return None
+        if self._nach_norms is None:
+            self._nach_norms = {}
+            for k in self.xl.kandidaten:
+                if k.art in ("kopf", "absatz"):
+                    self._nach_norms.setdefault(tuple(k.norms), []).append(k)
+        sections = {x for x in (cand.section, b.section_neu, b.section_alt) if x}
+        for k in self._nach_norms.get(norms, []):
+            if k.blatt != cand.blatt:
+                continue
+            if ist_kopf or (k.art == "absatz" and (not sections or k.section in sections)):
+                return k
+        return None
+
+    def _absatz_stil(self, cand: Kandidat, lay) -> int:
+        """Zeile, deren Format eine neue Absatz-Zeile bekommt: eine Absatzzeile, nie die Ueberschriftszeile."""
+        kopf = set(lay.kopf_zeilen)
+        if cand.zeile not in kopf or not lay.inhalt_spalte:
+            return cand.zeile
+        for r in self.xl.section_zeilen(cand.blatt, cand.zeile):
+            if r not in kopf and self.xl.text(cand.blatt, r, lay.inhalt_spalte).strip():
+                return r
+        for r in range(cand.zeile + 1, lay.max_zeile + 1):
+            if r not in kopf and self.xl.text(cand.blatt, r, lay.inhalt_spalte).strip():
+                return r
+        return cand.zeile
 
     def _neue_section(self, ae, b, koerper, cand, lay, stufe, davor, seq) -> None:
         text = b.neu_text
@@ -353,15 +605,21 @@ class _Planer:
             kae = self._basis(kb, "absatz_neu", kb.tokens, "", kb.neu_text)
             kae.score = ae.score
             kae.excel_text = ""
-            if modus_zeile:
-                kae.ops = []
+            if ae.status == NICHT:            # die Section selbst ging nicht (z. B. Steuerzeichen) -> Folgeabsatz auch nicht
+                self._nicht(kae, "Gehört zu einer neuen Section, die nicht eingetragen werden kann.")
+            elif modus_zeile:
+                # Der Folgeabsatz steht in der Zelle der neuen Section-Zeile. Eine "abgedeckte" Markierungs-Operation
+                # (ohne Zellen) bindet ihn an die Section: Status und Freigabe gelten fuer beide gemeinsam (applier).
+                kae.ops = [Operation("zeile_einfuegen", cand.blatt, cand.zeile, lay.inhalt_spalte or 0, seq=seq,
+                                     abgedeckt=True, vor=not davor, aenderung=kae.id)]
                 kae.ziel = ae.ziel
                 self._setze(kae, stufe, "als Teil der neuen Section eingetragen")
-                kae.status = ae.status
+                kae.konfidenz, kae.status = ae.konfidenz, ae.status
+                self._hinweis(kae, "Dieser Absatz gehört zur neuen Section und wird nur zusammen mit ihr eingetragen.")
             else:
                 folge += 1
                 kop = Operation("zeile_einfuegen", cand.blatt, cand.zeile, 0, text="", seq=folge,
-                                zellen={lay.inhalt_spalte: kb.neu_text}, stil_von=cand.zeile,   # type: ignore[dict-item]
+                                zellen={lay.inhalt_spalte: kb.neu_text}, stil_von=self._absatz_stil(cand, lay),   # type: ignore[dict-item]
                                 vor=not davor, aenderung=kae.id)
                 kae.ops = [kop]
                 kae.ziel = ae.ziel
@@ -388,7 +646,8 @@ class _Planer:
             self._nicht(ae, "Die Inhaltsspalte der Excel konnte nicht erkannt werden.", cand.ziel)
             return
         op = Operation("zeile_einfuegen", cand.blatt, cand.zeile, 0, text="", seq=seq,
-                       zellen={lay.inhalt_spalte: b.neu_text}, stil_von=cand.zeile, vor=not davor, aenderung=ae.id)
+                       zellen={lay.inhalt_spalte: b.neu_text}, stil_von=self._absatz_stil(cand, lay), vor=not davor,
+                       aenderung=ae.id)
         ae.ops = [op]
         ae.ziel = f"{cand.blatt}!Zeile {cand.zeile + (1 if davor else 0)} (neu)"
         self._setze(ae, stufe)
@@ -402,6 +661,8 @@ def plane(pdf: PdfAnalyse, xl: ExcelModell, cfg: dict | None = None) -> Plan:
         for op in ae.ops:
             if op.art == "ersetzen":
                 op.erwartet = xl.text(op.blatt, op.zeile, op.spalte)[op.start:op.ende]
+            elif op.art == "zelle_leeren":       # der Applier leert nur, wenn die Zelle noch genau so aussieht
+                op.erwartet = xl.text(op.blatt, op.zeile, op.spalte)
     warn = list(pdf.warnungen) + list(xl.warnungen)
     plan = Plan(aenderungen=p.out, layout=xl.beschreibung(), warnungen=warn,
                 ignoriert=pdf.ignoriert, markierte_woerter=pdf.markierte_woerter,
