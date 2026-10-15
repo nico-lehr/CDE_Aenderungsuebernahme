@@ -3,13 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
 <title>CDE-Änderungsübernahme</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<header class="app-header">
+<a class="skip-link" href="#main">Zum Inhalt springen</a>
+
+<header class="app-header" id="kopf">
   <div class="brand">
     <img class="brand-mark" src="favicon.svg" alt="" width="34" height="34">
     <div class="brand-text">
@@ -18,37 +21,42 @@
     </div>
   </div>
   <div class="header-actions">
-    <span class="status-pill" title="Alle Daten bleiben auf diesem Rechner"><span class="status-dot"></span><span id="pill-text">Lokal</span></span>
-    <button class="icon-button" id="theme-toggle" type="button" title="Hell / Dunkel" aria-label="Hell / Dunkel wechseln">🌓</button>
+    <span class="status-pill" id="status-pill" title="Alle Daten bleiben auf diesem Rechner"><span class="status-dot" aria-hidden="true"></span><span id="pill-text">Lokal</span></span>
+    <button class="icon-button" id="theme-toggle" type="button" aria-pressed="false" aria-label="Dunkles Design" title="Hell / Dunkel">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
   </div>
 </header>
 
-<nav class="page-tabs" id="page-tabs">
-  <button class="page-tab active" data-tab="lauf">1 · Neuer Lauf</button>
-  <button class="page-tab" data-tab="pruefen">2 · Prüfen &amp; Übernehmen</button>
-  <button class="page-tab" data-tab="verlauf">Verlauf</button>
-  <button class="page-tab" data-tab="farben">Farben im PDF</button>
+<nav class="page-tabs" id="seiten-tabs" aria-label="Hauptbereiche">
+  <div role="tablist" aria-label="Bereiche" id="page-tabs" class="tablist">
+    <button class="page-tab" role="tab" type="button" id="tabbtn-lauf" data-tab="lauf" aria-controls="tab-lauf" aria-selected="true" tabindex="0">1 · Neuer Lauf</button>
+    <button class="page-tab" role="tab" type="button" id="tabbtn-pruefen" data-tab="pruefen" aria-controls="tab-pruefen" aria-selected="false" tabindex="-1">2 · Prüfen &amp; Übernehmen</button>
+    <button class="page-tab" role="tab" type="button" id="tabbtn-verlauf" data-tab="verlauf" aria-controls="tab-verlauf" aria-selected="false" tabindex="-1">Verlauf</button>
+    <button class="page-tab" role="tab" type="button" id="tabbtn-farben" data-tab="farben" aria-controls="tab-farben" aria-selected="false" tabindex="-1">Farben im PDF</button>
+  </div>
 </nav>
 
-<main class="app-main">
+<main class="app-main" id="main" tabindex="-1">
+  <noscript><p class="empty">Dieses Dashboard braucht JavaScript. Bitte JavaScript im Browser einschalten.</p></noscript>
 
   <!-- ============ TAB: NEUER LAUF ============ -->
-  <section class="tab" id="tab-lauf">
+  <section class="tab tab-schmal" id="tab-lauf" role="tabpanel" aria-labelledby="tabbtn-lauf">
     <div class="intro">
       <h1>Änderungen aus dem PDF in die Excel übernehmen</h1>
       <p>Lade das Änderungs-PDF und die bestehende CDE-Excel hoch. <strong>Blau</strong> = neu, <strong>rot oder durchgestrichen</strong> = entfällt.
          Die Original-Dateien bleiben unverändert, du bekommst eine neue Excel und ein Protokoll.</p>
     </div>
     <div class="drop-grid">
-      <label class="dropzone" id="dz-pdf" tabindex="0">
+      <label class="dropzone" id="dz-pdf" tabindex="0" role="button" aria-describedby="dz-pdf-sub">
         <input type="file" id="file-pdf" accept=".pdf,application/pdf" hidden>
-        <div class="dropzone-icon">📄</div>
+        <div class="dropzone-icon" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg></div>
         <p class="dropzone-title">Änderungs-PDF</p>
         <p class="dropzone-sub" id="dz-pdf-sub">PDF hierher ziehen oder klicken</p>
       </label>
-      <label class="dropzone" id="dz-xlsx" tabindex="0">
+      <label class="dropzone" id="dz-xlsx" tabindex="0" role="button" aria-describedby="dz-xlsx-sub">
         <input type="file" id="file-xlsx" accept=".xlsx,.xlsm" hidden>
-        <div class="dropzone-icon">📊</div>
+        <div class="dropzone-icon" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M4 15h16M10 4v16"/></svg></div>
         <p class="dropzone-title">Bestehende CDE-Excel</p>
         <p class="dropzone-sub" id="dz-xlsx-sub">.xlsx hierher ziehen oder klicken</p>
       </label>
@@ -57,12 +65,15 @@
       <button class="btn btn-primary" id="btn-analyse" type="button" disabled>Analysieren</button>
       <span class="hint">Es wird noch nichts in die Excel geschrieben. Erst im nächsten Schritt entscheidest du.</span>
     </div>
-    <p class="privacy-note">🔒 Alles läuft lokal auf diesem Rechner (Port <span id="port-text">5100</span>). Keine Cloud, keine KI-Schnittstelle.</p>
+    <p class="privacy-note">Alles läuft lokal auf diesem Rechner (Port <span id="port-text">5100</span>). Keine Cloud, keine KI-Schnittstelle.</p>
   </section>
 
-  <!-- ============ TAB: PRUEFEN ============ -->
-  <section class="tab" id="tab-pruefen" hidden>
-    <div id="leer-pruefen" class="empty">Noch kein Lauf geöffnet. Starte einen neuen Lauf oder öffne einen aus dem Verlauf.</div>
+  <!-- ============ TAB: PRÜFEN ============ -->
+  <section class="tab" id="tab-pruefen" role="tabpanel" aria-labelledby="tabbtn-pruefen" hidden>
+    <div id="leer-pruefen" class="empty">
+      <p>Noch kein Lauf geöffnet. Starte einen neuen Lauf oder öffne einen aus dem Verlauf.</p>
+      <button class="btn btn-secondary" type="button" data-gehe="verlauf">Zum Verlauf</button>
+    </div>
     <div id="pruefen-inhalt" hidden>
       <div class="run-head">
         <div>
@@ -70,57 +81,151 @@
           <p class="hint" id="run-sub"></p>
         </div>
         <div class="run-actions">
-          <button class="btn btn-secondary" id="btn-alle-vorschlaege" type="button">Alle Vorschläge auswählen</button>
+          <button class="btn btn-secondary" id="btn-zurueck-auswahl" type="button" hidden>Zurück zur Auswahl</button>
           <button class="btn btn-primary" id="btn-uebernehmen" type="button">Excel erzeugen</button>
         </div>
       </div>
 
-      <div class="stats-grid" id="stats"></div>
-      <div id="bilanz-box" class="bilanz"></div>
-      <div id="warnungen" class="warn-box" hidden></div>
-      <div id="ergebnis-box" class="result-box" hidden></div>
+      <div class="archiv-hinweis" id="archiv-hinweis" hidden>
+        <span>Dieser Lauf ist archiviert. Er bleibt auf diesem Rechner erhalten.</span>
+        <button class="btn btn-secondary btn-small" id="btn-lauf-wiederherstellen" type="button">Wiederherstellen</button>
+      </div>
 
-      <details class="layout-box" id="layout-box">
+      <div id="banner-box"></div>
+      <div class="stats-grid" id="stats" role="group" aria-label="Zusammenfassung"></div>
+
+      <details class="box" id="bilanz-detail">
+        <summary>Bilanz im Detail (Wörter)</summary>
+        <dl class="dl-grid" id="bilanz-dl"></dl>
+      </details>
+
+      <div id="warnungen" class="warn-box" hidden></div>
+      <div id="ergebnis-box" class="box ergebnis-neu" tabindex="-1" hidden></div>
+      <div id="fruehere-box" class="box" hidden></div>
+
+      <details class="box" id="layout-box">
         <summary>Erkannter Aufbau der Excel</summary>
         <div id="layout-inhalt"></div>
       </details>
 
-      <div class="filter-row" id="filter-row"></div>
+      <section class="filter-box" aria-label="Suchen, filtern und sortieren">
+        <div class="filter-zeile" id="filter-row" role="group" aria-label="Nach Status filtern"></div>
+        <div class="filter-zeile">
+          <div class="banner blau banner-flach" id="pruef-hinweis" hidden>
+            <span class="banner-symbol" aria-hidden="true">?</span>
+            <div class="banner-inhalt">
+              <div class="banner-titel" id="pruef-hinweis-titel">Vorschläge warten auf deine Prüfung</div>
+              <p class="banner-text">Das Tool hat hier eine mögliche Stelle gefunden, ist aber nicht sicher. Ohne dein Häkchen ändert es nichts.</p>
+              <button class="btn btn-secondary btn-small" id="btn-nur-vorschlaege" type="button">Nur diese zeigen</button>
+            </div>
+          </div>
+        </div>
+        <div class="filter-zeile filter-felder">
+          <div class="feld feld-suche">
+            <label for="f-suche">Suchen</label>
+            <input class="eingabe" type="search" id="f-suche" placeholder="Text in alt, neu oder Section" autocomplete="off">
+          </div>
+          <div class="feld"><label for="f-typ">Art</label><select class="eingabe" id="f-typ"></select></div>
+          <div class="feld"><label for="f-seite">Seite</label><select class="eingabe" id="f-seite"></select></div>
+          <div class="feld"><label for="f-section">Section</label><select class="eingabe" id="f-section"></select></div>
+          <div class="feld"><label for="f-konfidenz">Sicherheit</label><select class="eingabe" id="f-konfidenz"></select></div>
+          <div class="feld"><label for="f-sort">Sortieren nach</label>
+            <select class="eingabe" id="f-sort">
+              <option value="nr">Reihenfolge im PDF</option>
+              <option value="seite">Seite</option>
+              <option value="section">Section</option>
+              <option value="status">Zu prüfen zuerst</option>
+              <option value="konfidenz">Unsicherste zuerst</option>
+              <option value="auffaellig">Auffälliges zuerst</option>
+            </select>
+          </div>
+        </div>
+        <div class="filter-zeile">
+          <button class="btn btn-secondary btn-small" id="btn-filter-reset" type="button">Filter zurücksetzen</button>
+          <span class="hint" id="treffer-info" role="status" aria-live="polite"></span>
+        </div>
+        <div class="filter-zeile auswahl-zeile" id="auswahl-zeile">
+          <div class="titel-zeile">
+            <span class="auswahl-info" id="auswahl-info" role="status" aria-live="polite"></span>
+            <button class="info-icon" type="button" data-info="auswahl" aria-haspopup="dialog" aria-expanded="false" aria-label="Erklärung: Vorschläge freigeben">i</button>
+          </div>
+          <div class="filter-zeile">
+            <button class="btn btn-secondary btn-small" id="btn-alle-vorschlaege" type="button">Alle Vorschläge auswählen</button>
+            <button class="btn btn-secondary btn-small" id="btn-sichtbare" type="button">Nur angezeigte auswählen</button>
+            <button class="btn btn-secondary btn-small" id="btn-keine" type="button">Auswahl aufheben</button>
+          </div>
+        </div>
+      </section>
+
       <div class="table-wrap">
-        <table class="changes">
+        <table class="changes" aria-label="Erkannte Änderungen">
           <thead><tr>
-            <th class="col-chk"></th><th>Nr.</th><th>Seite</th><th>Art</th><th>Section</th>
-            <th>Alt → Neu</th><th>Stelle in Excel</th><th>Status</th>
+            <th class="col-chk"><label class="chk-ziel"><input type="checkbox" id="chk-alle" aria-label="Alle angezeigten Vorschläge auswählen"></label></th>
+            <th scope="col">Nr.</th><th scope="col">Seite</th><th scope="col">Art</th><th scope="col">Section</th>
+            <th scope="col">Alt → Neu</th><th scope="col" class="col-opt">Stelle in Excel</th>
+            <th scope="col" class="col-opt">Sicherheit <button class="info-icon" type="button" data-info="sicherheit" aria-haspopup="dialog" aria-expanded="false" aria-label="Erklärung: Sicherheit">i</button></th>
+            <th scope="col">Status</th>
           </tr></thead>
           <tbody id="tabelle"></tbody>
         </table>
       </div>
+      <p class="mehr-zeile" id="mehr-zeile" hidden><button class="btn btn-secondary" id="btn-mehr" type="button">Weitere anzeigen</button></p>
     </div>
   </section>
 
   <!-- ============ TAB: VERLAUF ============ -->
-  <section class="tab" id="tab-verlauf" hidden>
-    <h2>Bisherige Läufe</h2>
-    <p class="hint">Jeder Lauf bleibt gespeichert (Eingabe, Analyse, Ergebnisse). Löschen entfernt den ganzen Lauf von diesem Rechner.</p>
-    <div id="verlauf-liste"></div>
+  <section class="tab" id="tab-verlauf" role="tabpanel" aria-labelledby="tabbtn-verlauf" hidden>
+    <div class="titel-zeile">
+      <h2 id="verlauf-titel" tabindex="-1">Bisherige Läufe</h2>
+      <button class="info-icon" type="button" data-info="archiv" aria-haspopup="dialog" aria-expanded="false" aria-label="Erklärung: Archivieren">i</button>
+    </div>
+    <p class="hint">Jeder Lauf bleibt gespeichert (Eingabe, Analyse, Ergebnisse). Archivieren blendet einen Lauf nur aus der Liste aus. Es geht nichts verloren.</p>
+    <div class="verlauf-kopf">
+      <label class="schalter"><input type="checkbox" id="chk-archiv"> Archivierte anzeigen</label>
+      <button class="btn btn-secondary btn-small" id="btn-verlauf-neu" type="button">Liste aktualisieren</button>
+    </div>
+    <div id="verlauf-liste" aria-live="polite"></div>
   </section>
 
   <!-- ============ TAB: FARBEN ============ -->
-  <section class="tab" id="tab-farben" hidden>
-    <h2>Farben im PDF</h2>
-    <p class="hint">Zeigt, welche Farben im geöffneten PDF vorkommen und wie sie gedeutet werden. Passt etwas nicht,
-      lassen sich die Schwellen in <code>config/farben.yaml</code> anpassen (Legende, Farbtöne, Durchstreichung).</p>
-    <div class="table-wrap"><table class="changes"><thead><tr><th>Farbe</th><th>Anzahl</th><th>Art</th><th>Klasse</th><th>Bedeutung</th></tr></thead>
-      <tbody id="farben-tabelle"></tbody></table></div>
+  <section class="tab" id="tab-farben" role="tabpanel" aria-labelledby="tabbtn-farben" hidden>
+    <div class="titel-zeile">
+      <h2>Farben im PDF</h2>
+      <button class="info-icon" type="button" data-info="farben" aria-haspopup="dialog" aria-expanded="false" aria-label="Erklärung: Farben im PDF">i</button>
+    </div>
+    <div id="farben-leer" class="empty">
+      <p>Noch kein Lauf geöffnet. Die Farben werden erst angezeigt, wenn ein PDF analysiert wurde.</p>
+      <button class="btn btn-primary" type="button" data-gehe="lauf">Neuen Lauf starten</button>
+      <button class="btn btn-secondary" type="button" data-gehe="verlauf">Zum Verlauf</button>
+    </div>
+    <div id="farben-inhalt" hidden>
+      <p class="hint" id="farben-sub"></p>
+      <div class="table-wrap"><table class="changes" aria-label="Farben im PDF"><thead><tr>
+        <th scope="col">Farbe</th><th scope="col">Zeichen</th><th scope="col">Art</th><th scope="col">Klasse</th><th scope="col">Bedeutung</th>
+      </tr></thead><tbody id="farben-tabelle"></tbody></table></div>
+    </div>
   </section>
 </main>
 
-<footer class="app-footer">
+<footer class="app-footer" id="fuss">
   <p class="footer-credit">CDE-Änderungsübernahme · © Nico Lehr · regelbasiert, lokal, ohne Cloud</p>
 </footer>
 
-<div class="busy" id="busy" hidden><div class="busy-card"><div class="spinner"></div><p id="busy-text">Bitte warten …</p></div></div>
-<div class="toast" id="toast" role="status" hidden></div>
+<div class="busy" id="busy" hidden>
+  <div class="busy-card" id="busy-card" role="alertdialog" aria-modal="true" aria-labelledby="busy-titel" aria-describedby="busy-text" tabindex="-1">
+    <div class="spinner" aria-hidden="true"></div>
+    <h2 id="busy-titel">Einen Moment bitte</h2>
+    <p id="busy-text">Bitte warten …</p>
+  </div>
+</div>
+
+<div class="toast-zone">
+  <div class="toast" id="toast" role="status"></div>
+  <div class="toast toast-error" id="toast-fehler-box" hidden>
+    <span id="toast-fehler" role="alert"></span>
+    <button class="btn" id="toast-schliessen" type="button" aria-label="Fehlermeldung schließen">Schließen</button>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>
