@@ -30,7 +30,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openpyxl import load_workbook
 from openpyxl.cell.rich_text import CellRichText
@@ -127,32 +127,63 @@ class Diff:
     zellen: dict[tuple[int, int], str] = field(default_factory=dict)   # (Zeile, Spalte) -> neuer Rohtext ("" = leer)
     weg: set[int] = field(default_factory=set)                          # vorher-Zeilen ohne Gegenstueck
     neue: list[tuple[int, tuple[str, ...], tuple[str, ...]]] = field(default_factory=list)   # (Anker, Rohtexte, Keys)
-    # Anker = Nummer der letzten behaltenen vorher-Zeile VOR der neuen Zeile (0 = ganz oben)
+    # Anker = Nummer der letzten behaltenen vorher-Zeile VOR der neuen Zeile (0 = ganz oben).
+    # "Behalten" heisst: nicht weg UND nicht ausgeleert (eine Zeile, in der nur noch unverwaltete Spalten wie
+    # Bemerkung stehen, zaehlt wie eine geloeschte Zeile -- im Soll genauso wie im Ergebnis).
+    zuordnung: dict[int, int] = field(default_factory=dict)             # vorher-Zeile -> Zeile in X (alle gepaarten)
+    geleert: set[int] = field(default_factory=set)                      # gepaarte vorher-Zeilen, die in X ausgeleert sind
+
+
+def _woerter_zaehler(text: str) -> Counter:
+    return Counter(text.split())
+
+
+def _enthalten(klein: str, gross: str) -> bool:
+    """Steht der kuerzere Text (mindestens drei Woerter) im Wesentlichen im laengeren? (Teilstring oder Woerter-Teilmenge)"""
+    if len(klein.split()) < 3 or len(klein) >= len(gross):
+        return False
+    if klein in gross:
+        return True
+    return not (_woerter_zaehler(klein) - _woerter_zaehler(gross))
+
+
+def _zell_aehnlich(x: str, y: str) -> float:
+    """Aehnlichkeit zweier Zelltexte (0..1). Ein gekuerzter oder verlaengerter Text (der eine steckt im anderen) zaehlt
+    als dieselbe Zelle, veraendert -- so bleibt eine Zeile erkennbar, wenn ein Absatz hinzukommt oder wegfaellt."""
+    if x == y:
+        return 1.0
+    if not x or not y:
+        return 0.0
+    kurz, lang = (x, y) if len(x) <= len(y) else (y, x)
+    best = 0.8 if _enthalten(kurz, lang) else 0.0
+    sm = SequenceMatcher(None, x, y, autojunk=False)
+    if sm.real_quick_ratio() >= 0.5 and sm.quick_ratio() >= 0.5:
+        r = sm.ratio()
+        if r >= 0.5:
+            best = max(best, r)
+    return best
 
 
 def _aehnlich(a: tuple[str, ...], b: tuple[str, ...]) -> float:
-    """Aehnlichkeit zweier Zeilen (0..1): Anteil gleicher bzw. aehnlicher Zellen. Eine Zeile, die nur "ausgeleert" wurde, zaehlt als gleich."""
+    """Aehnlichkeit zweier Zeilen (0..1): Anteil gleicher bzw. aehnlicher Zellen. Eine Zeile, die nur "ausgeleert" wurde
+    (die belegten Zellen der einen Zeile stehen -- gleich oder gekuerzt -- in der anderen), zaehlt als dieselbe Zeile."""
     a_ne = {c: v for c, v in enumerate(a) if v}
     b_ne = {c: v for c, v in enumerate(b) if v}
-    if a_ne and b_ne and (all(b_ne.get(c) == v for c, v in a_ne.items()) or all(a_ne.get(c) == v for c, v in b_ne.items())):
-        return 1.0
+    teil = 0.0
+    for klein, gross in ((a_ne, b_ne), (b_ne, a_ne)):
+        if klein and klein.keys() <= gross.keys():
+            werte = [_zell_aehnlich(v, gross[c]) for c, v in klein.items()]
+            if all(w >= 0.5 for w in werte):
+                teil = max(teil, sum(werte) / len(werte))
     gewicht = summe = 0.0
     for c in range(max(len(a), len(b))):
         x = a[c] if c < len(a) else ""
         y = b[c] if c < len(b) else ""
         if not x and not y:
             continue
-        w = 1.0                                  # jede belegte Zelle zaehlt gleich (lange Texte erdruecken Nummer/Titel nicht)
-        gewicht += w
-        if x == y:
-            summe += w
-        elif x and y:
-            sm = SequenceMatcher(None, x, y, autojunk=False)
-            if sm.real_quick_ratio() >= 0.5 and sm.quick_ratio() >= 0.5:
-                r = sm.ratio()
-                if r >= 0.5:
-                    summe += w * r
-    return summe / gewicht if gewicht else 0.0
+        gewicht += 1.0                               # jede belegte Zelle zaehlt gleich (lange Texte erdruecken Nummer/Titel nicht)
+        summe += _zell_aehnlich(x, y)
+    return max(teil, summe / gewicht if gewicht else 0.0)
 
 
 def _paare(va: list[Zeile], xb: list[Zeile]) -> list[tuple[int, int]]:
@@ -183,10 +214,13 @@ def _paare(va: list[Zeile], xb: list[Zeile]) -> list[tuple[int, int]]:
     return out[::-1]
 
 
-def _diff(v: list[Zeile], x: list[Zeile]) -> Diff:
+def _diff(v: list[Zeile], x: list[Zeile], leer: Callable[[Zeile], bool] | None = None) -> Diff:
+    """Zellen-, Zeilen-Unterschiede vorher -> X. `leer(zeile)` sagt, ob eine Zeile in den verwalteten Spalten nichts mehr
+    enthaelt (dann ist sie als Anker so gut wie geloescht)."""
     d = Diff()
     sm = SequenceMatcher(None, [z.keys for z in v], [z.keys for z in x], autojunk=False)
     weg_idx: set[int] = set()
+    leer_idx: set[int] = set()
     roh_neu: list[tuple[int, Zeile]] = []
 
     def weg(i: int) -> None:
@@ -199,6 +233,8 @@ def _diff(v: list[Zeile], x: list[Zeile]) -> Diff:
 
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
+            for k in range(i2 - i1):
+                d.zuordnung[v[i1 + k].nr] = x[j1 + k].nr
             continue
         paare = _paare(v[i1:i2], x[j1:j2]) if tag == "replace" else []
         zu_x = {j1 + b: i1 + a for a, b in paare}
@@ -210,6 +246,10 @@ def _diff(v: list[Zeile], x: list[Zeile]) -> Diff:
                     weg(zeiger)
                     zeiger += 1
                 a, b = v[i], x[j]
+                d.zuordnung[a.nr] = b.nr
+                if leer is not None and leer(b):
+                    leer_idx.add(i)
+                    d.geleert.add(a.nr)
                 for c in range(max(len(a.keys), len(b.keys))):
                     ka = a.keys[c] if c < len(a.keys) else ""
                     kb = b.keys[c] if c < len(b.keys) else ""
@@ -222,7 +262,7 @@ def _diff(v: list[Zeile], x: list[Zeile]) -> Diff:
             weg(zeiger)
             zeiger += 1
     for vi, z in roh_neu:
-        while vi >= 0 and vi in weg_idx:
+        while vi >= 0 and (vi in weg_idx or vi in leer_idx):
             vi -= 1
         d.neue.append((v[vi].nr if vi >= 0 else 0, z.zellen, z.keys))
     return d
@@ -315,10 +355,12 @@ class _Auswertung:
         self.N = [_zeilen(b) for b in n_blaetter] + [[] for _ in range(max(0, len(self.V) - len(n_blaetter)))]
         self.E = [_zeilen(b) for b in e_blaetter] + [[] for _ in range(max(0, len(self.V) - len(e_blaetter)))]
         self.vtext = [{z.nr: z.zellen for z in blatt} for blatt in self.V]
-        self.S = [_diff(self.V[i], self.N[i]) for i in range(len(self.V))]
-        self.I = [_diff(self.V[i], self.E[i]) for i in range(len(self.V))]
         self.aend = aenderungen
         self.plan = plan
+        self._inhaltsspalte: dict[int, int | None] = {}
+        self.S = [_diff(self.V[i], self.N[i]) for i in range(len(self.V))]     # 1. Lauf: nur fuer die Inhaltsspalte
+        self.S = [_diff(self.V[i], self.N[i], self._leer_fn(i)) for i in range(len(self.V))]
+        self.I = [_diff(self.V[i], self.E[i], self._leer_fn(i)) for i in range(len(self.V))]
         self.bil_auto, self.bil_plan = bil_auto, bil_plan
         self.idempotent = idempotent
         self.fehler: dict[Any, Fehler] = {}
@@ -500,7 +542,18 @@ class _Auswertung:
                 best, best_w = e, wert
         return (best["bi"], best["zeile"], best["spalte"]) if best else None
 
+    def _leer_fn(self, bi: int) -> Callable[[Zeile], bool]:
+        """Eine Zeile ist "leer", wenn in den verwalteten Spalten nichts steht (nur Bemerkung/Prio o. ae. uebrig)."""
+        def leer(z: Zeile) -> bool:
+            return not any(k for c, k in enumerate(z.keys, 1) if k and self._verwaltet(bi, c))
+        return leer
+
     def _soll_inhaltsspalte(self, bi: int) -> int | None:
+        if bi not in self._inhaltsspalte:
+            self._inhaltsspalte[bi] = self._soll_inhaltsspalte_berechnen(bi)
+        return self._inhaltsspalte[bi]
+
+    def _soll_inhaltsspalte_berechnen(self, bi: int) -> int | None:
         """Spalte mit den meisten veraenderten Zeichen laut Soll (Inhaltsspalte im Soll)."""
         gewicht: Counter[int] = Counter()
         s = self.S[bi]
