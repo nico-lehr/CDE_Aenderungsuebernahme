@@ -261,6 +261,7 @@ def _lese_plan(d: Path) -> dict[str, Any]:
 
 def lade_plan(run_id: str) -> dict[str, Any]:
     d = lauf_dir(run_id)
+    _info(d)                                         # kaputte lauf.json -> "beschaedigt", wie in der Liste
     daten = _lese_plan(d)                            # fehlt plan.json, gibt es KEINE Neuanalyse mehr
     daten["ergebnisse"] = _ergebnisse_in(d)
     daten["archiviert"] = (d / "archiviert.json").exists()
