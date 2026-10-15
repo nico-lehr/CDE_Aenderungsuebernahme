@@ -171,14 +171,15 @@ class _Planer:
             ae.grund = (ae.grund + "; " if ae.grund else "") + grund
 
     def _zeilen_risiken(self, ae: Aenderung) -> list[str]:
-        """Risiken (einfache Saetze) aller Zeilen-Einfuegungen einer Aenderung. Leer = unbedenklich."""
+        """Hindernisse (einfache Saetze) aller Zeilen-Einfuegungen einer Aenderung. Leer = unbedenklich.
+        Was der Applier selbst mitzieht (verbundene Zellen unterhalb, ausgeblendete Zeilen darunter), zaehlt nicht."""
         out: list[str] = []
         for op in ae.ops:
             if op.art != "zeile_einfuegen" or op.abgedeckt:
                 continue
             pos = op.zeile if op.vor else op.zeile + 1
             if (op.blatt, pos) not in self._risiko_cache:
-                self._risiko_cache[(op.blatt, pos)] = self.xl.einfuege_risiken(op.blatt, pos)
+                self._risiko_cache[(op.blatt, pos)] = self.xl.einfuege_hindernisse(op.blatt, pos)
             out += [r for r in self._risiko_cache[(op.blatt, pos)] if r not in out]
         return out
 

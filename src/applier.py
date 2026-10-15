@@ -363,7 +363,7 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             if op.art == "zeile_einfuegen" and not op.abgedeckt:
                 pos = op.zeile if op.vor else op.zeile + 1
                 if (op.blatt, pos) not in risiko_cache:
-                    risiko_cache[(op.blatt, pos)] = xl.einfuege_risiken(op.blatt, pos)
+                    risiko_cache[(op.blatt, pos)] = xl.einfuege_hindernisse(op.blatt, pos)
                 out += [r for r in risiko_cache[(op.blatt, pos)] if r not in out]
         return out
 

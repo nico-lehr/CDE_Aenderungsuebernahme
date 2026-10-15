@@ -705,17 +705,42 @@ class ExcelModell:
     def einfuege_risiken(self, blatt: str, zeile: int) -> list[str]:
         """Einfache deutsche Saetze: was koennte brechen, wenn an `zeile` eine Zeile eingefuegt oder geloescht wird?
 
-        Leere Liste = unbedenklich. Aendert nichts an der Excel und am Verhalten des Tools."""
+        Leere Liste = unbedenklich. Aendert nichts an der Excel und am Verhalten des Tools.
+        Das ist die vollstaendige (strenge) Liste, auch mit Dingen, die der Applier beim Einfuegen selbst mitzieht;
+        was beim automatischen Einfuegen wirklich im Weg steht, sagt `einfuege_hindernisse`."""
+        return self._einfuege_risiken(blatt, zeile, entschaerft=False)
+
+    def einfuege_hindernisse(self, blatt: str, zeile: int) -> list[str]:
+        """Wie `einfuege_risiken`, aber leer, wenn beim EINFUEGEN einer Zeile an `zeile` nichts wirklich brechen kann.
+
+        Kein Hindernis, weil der Applier es beim Einfuegen selbst mitzieht (applier._verschiebe_verbunden / _verschiebe_hoehen):
+          * verbundene Zellen, die ganz unterhalb der Einfuegestelle beginnen (sie wandern mit);
+          * ausgeblendete oder gruppierte Zeilen darunter (Ausblenden, Gliederungsebene und Hoehe wandern mit).
+        Weiter ein Hindernis: verbundene Zellen DURCH die Einfuegestelle, ausgeblendete/gruppierte Zeilen, wenn die neue
+        Zeile MITTEN in einer solchen Zeilenfolge landen wuerde (die Zeile davor und die Zeile dahinter gehoeren dazu), und alles,
+        was `einfuege_risiken` sonst nennt (Formeln, bedingte Formatierung, Datenpruefung, Filter, Tabellen, benannte Bereiche,
+        Hyperlinks, Bilder). Gibt es ein Hindernis, stehen die beiden Hinweise auf Unbedenkliches mit in der Liste
+        (der Mensch soll alles sehen). Fuer das Loeschen von Zeilen gilt weiter `einfuege_risiken`."""
+        return self._einfuege_risiken(blatt, zeile, entschaerft=True)
+
+    def _einfuege_risiken(self, blatt: str, zeile: int, entschaerft: bool) -> list[str]:
         eig = self._eig.get(blatt)
         if eig is None:
             return [f"Das Tabellenblatt '{blatt}' gibt es in der Excel nicht."]
         z = zeile
         risiken: list[str] = []
-        durch = [b for b in eig.verbunden if b[0] <= z <= b[1] and b[0] < b[1]]
+        harmlos: set[str] = set()         # nur im entschaerften Modus: Hinweise, die allein kein Hindernis sind
+        if entschaerft:       # eine Verbindung, die erst ab der Einfuegezeile beginnt, wandert mit; nur durch die Stelle ist ein Hindernis
+            durch = [b for b in eig.verbunden if b[0] < z <= b[1]]
+        else:
+            durch = [b for b in eig.verbunden if b[0] <= z <= b[1] and b[0] < b[1]]
         if durch:
             risiken.append("Hier laufen verbundene Zellen durch die Zeile; sie würden zerrissen oder verrutschen.")
-        if any(b[0] > z for b in eig.verbunden):
+        darunter = [b for b in eig.verbunden if (b[0] >= z if entschaerft else b[0] > z)]
+        if darunter:
             risiken.append("Unterhalb sind verbundene Zellen; sie verschieben sich beim Einfügen oder Löschen nicht zuverlässig mit.")
+            if entschaerft:
+                harmlos.add(risiken[-1])
         eigen = blatt.casefold()
         unten = [f for f in eig.formeln if f[0] >= z]
         bezug = any(n == eigen and r >= z for anderes in self._eig for n, r in self._bezuege(anderes))
@@ -736,8 +761,16 @@ class ExcelModell:
                 risiken.append(f"Der benannte Bereich '{name}' zeigt auf Zeilen ab dieser Stelle; er wird nicht angepasst.")
         if any(r >= z for r in eig.links):
             risiken.append("Unterhalb gibt es Hyperlinks; sie werden nicht mitverschoben.")
-        if any(r >= z - 1 for r in eig.gruppiert):
+        gruppiert = set(eig.gruppiert)
+        if entschaerft and z - 1 in gruppiert and z in gruppiert:
+            risiken.append("Die neue Zeile käme mitten in eine Folge ausgeblendeter oder gruppierter Zeilen; "
+                           "die Folge würde unterbrochen.")
+        elif any(r >= z - 1 for r in gruppiert):
             risiken.append("In der Nähe oder darunter gibt es ausgeblendete oder gruppierte Zeilen; diese Einstellung wird nicht mitverschoben.")
+            if entschaerft:
+                harmlos.add(risiken[-1])
         if any(r >= z for r in eig.anker):
             risiken.append("Unterhalb sind Bilder oder Diagramme verankert; sie bleiben beim Einfügen oder Löschen an ihrer Stelle.")
+        if entschaerft and all(r in harmlos for r in risiken):
+            return []
         return risiken
