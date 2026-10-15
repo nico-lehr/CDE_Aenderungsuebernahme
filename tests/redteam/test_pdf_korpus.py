@@ -125,9 +125,6 @@ def test_rt108_korpus_getrennte_blaue_woerter_seed57(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-109 Korpus synth_0012_schwer (Stoerer 'scan_seite'): erwartet ist die Luecke 'scan_seite' "
-                          "auf Seite 2 (14 Soll-Woerter); der Leser meldet sie nicht (wie RT-98, hier im Korpus); Besitzer K-PDF")
 def test_rt109_korpus_scan_seite_wird_als_luecke_gemeldet_seed12(tmp_path):
     aufbau(g.GENERATOR_VERSION == "1", "Generator-Version geaendert")
     ordner = g.erzeuge_paar(12, "schwer", tmp_path / "paare", "entwicklung")

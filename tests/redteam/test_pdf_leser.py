@@ -229,9 +229,6 @@ def test_rt70_gedankenstrich_am_zeilenanfang_teilt_keinen_absatz(tmp_path):
 # j) Kopf-/Fusszeile ohne 'Seite #'-Muster
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-71 Einseitiges Dokument, Kopf-/Fusszeile ohne 'Seite #'-Muster: beide werden normale "
-                          "Bloecke statt ignoriert (die Erkennung braucht mindestens 2 Seiten); Besitzer K-PDF")
 def test_rt71_kopf_fusszeile_einseitig_ohne_seite_muster(tmp_path):
     d = PdfDokument(kopf_text="Anlage 3 - Technische Spezifikation", fuss_vorlage="Dokument CDE-0815 Blatt {nr}")
     d.block("Normaler Text der Seite.")
@@ -245,9 +242,6 @@ def test_rt71_kopf_fusszeile_einseitig_ohne_seite_muster(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-72 BLAUE Kopfzeile (Firmenfarbe) ohne 'Seite #'-Muster (einseitig oder nur auf Seite 1): "
-                          "alle Kopf-Woerter zaehlen als NEU, kein Hinweis; Besitzer K-PDF")
 @pytest.mark.parametrize("fall", ["eine_seite", "zwei_seiten_kopf_nur_auf_seite_1"])
 def test_rt72_blaue_kopfzeile_zaehlt_als_neu(tmp_path, fall):
     kw = dict(kopf_text="Anlage 3 - Technische Spezifikation", kopf_farbe=(0.0, 0.0, 1.0),

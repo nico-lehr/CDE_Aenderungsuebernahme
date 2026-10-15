@@ -37,5 +37,39 @@ layout:
   absatz_faktor: 1.3         # Zeilenabstand > Faktor * typischer Zeilenabstand => neuer Absatz
   ueberschrift_faktor: 1.08  # Schrift groesser als Fliesstext => Ueberschrift
   kopf_fuss_anteil: 0.07     # oberer/unterer Seitenrand fuer Kopf-/Fusszeilen
+  kopf_fuss_abstand_em: 1.5  # Randzeile (ganz im Seitenrand) ohne Wiederholungsmuster ist Kopf-/Fusszeile, wenn sie so weit (Schriftgroessen) vom Text abgesetzt steht
+  kopf_fuss_max_schrift: 1.15  # ... und nicht groesser als Fliesstext * Faktor ist
   silbentrennung_zusammenfuegen: true
   keine_silbentrennung_vor: [und, oder, bzw, sowie, bis, to, and, or]
+
+unbekannt:                   # kraeftig gefaerbter Text, der keiner Legende zugeordnet ist -> Luecke "unbekannte_farbe"
+  aktiv: true
+  min_saettigung: 0.35       # bunte Farben (Gruen, Orange, Cyan, Violett, Dunkelblau ...)
+  min_helligkeit: 0.10       # darunter gilt eine Farbe als Schwarz
+  pastell_min_saettigung: 0.15   # blasse Farben (Pastellrot ...)
+  pastell_min_helligkeit: 0.55
+  grau_min_helligkeit: 0.25  # mittleres Grau neben schwarzem Fliesstext
+  grau_max_helligkeit: 0.75
+  grundfarbe_anteil: 0.5     # Farbe mit mehr als diesem Zeichenanteil ist die Grundfarbe des Dokuments (keine Markierung)
+
+seiten:                      # Scan-Seiten, Bilder, Zeichnungen
+  bild_seite_anteil: 0.5     # Bilder bedecken mindestens so viel der Seite -> Bildseite (Scan)
+  bild_seite_max_woerter: 20 # sichtbarer Text auf einer Bildseite (ohne Kopf-/Fusszeile) hoechstens so viele Woerter
+  bild_min_flaeche_anteil: 0.02   # kleinere Bilder (Logos, Symbole) sind keine Luecke
+  grafik_min_objekte: 20     # Seite ohne Text, aber mit so vielen Linien/Flaechen: Zeichnung statt leere Seite
+  max_linien: 400            # mehr Linien auf einer Seite: Zeichnung statt Tabelle
+
+spalten:                     # mehrere Textspalten nebeneinander
+  min_luecke_em: 1.5         # Luecke zwischen zwei Woertern (in Schriftgroessen), die als Spaltenzwischenraum zaehlt
+  min_zeilen_luecke: 2       # so viele Zeilen mit derselben Luecke an derselben Stelle -> Spalten/Tabelle
+  min_zeilen: 3              # so viele Abschnitte links und rechts einer zweiten Spalte (Spalten auf verschiedener Hoehe)
+  min_spaltenabstand_em: 1.0 # Mindestabstand zwischen linker Spalte und Beginn der rechten (in Schriftgroessen)
+  min_anteil: 0.4            # Verhaeltnis der Zeilenzahlen links/rechts (kleinere / groessere Spalte)
+  min_ueberlappung: 0.5      # so viel der Spaltenhoehe muss in beiden Spalten gleichzeitig vorkommen
+
+tabellen:                    # Tabellen mit Rahmenlinien
+  linie_min_laenge: 20       # waagerechte Linien ab dieser Laenge (pt)
+  linie_min_hoehe: 8         # senkrechte Linien ab dieser Hoehe (pt)
+  min_zellen: 2              # so viele Zellen (Zeilen x Spalten) ergeben eine Tabelle
+  toleranz: 2.0              # Abstand (pt), bis zu dem sich Linien beruehren
+

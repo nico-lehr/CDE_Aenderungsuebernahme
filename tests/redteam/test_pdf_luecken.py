@@ -30,9 +30,6 @@ def _bilanz_meldet_luecke(a, art: str, was: str) -> None:
 # d) Zwei Spalten / Tabelle
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-95 Zwei Textspalten: die Zeilen beider Spalten werden zu EINEM Block vermischt, keine "
-                          "Luecke 'mehrspaltig', Bilanz 'vollstaendig'; Besitzer K-PDF")
 def test_rt95_zwei_spalten_werden_als_luecke_gemeldet(tmp_path):
     d = dok()
     d.zwei_spalten([LINKS], [RECHTS])
@@ -44,9 +41,6 @@ def test_rt95_zwei_spalten_werden_als_luecke_gemeldet(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-96 Tabelle mit Rahmen und Zellen (auch mit einer geaenderten Zelle): wird zeilenweise als "
-                          "normaler Text gelesen, keine Luecke 'tabelle'; Besitzer K-PDF")
 def test_rt96_tabelle_wird_als_luecke_gemeldet(tmp_path):
     d = dok()
     d.block("Vorspann ohne Aenderung.")
@@ -58,9 +52,6 @@ def test_rt96_tabelle_wird_als_luecke_gemeldet(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-97 Bild im Fliesstext (Diagramm mit blauen Flaechen): kein Wort davon wird gelesen, "
-                          "keine Luecke 'bild'; Besitzer K-PDF")
 def test_rt97_bild_im_fliesstext_wird_als_luecke_gemeldet(tmp_path):
     d = dok()
     d.block("Text vor dem Bild mit {+einer Aenderung+} darin.")
@@ -83,9 +74,6 @@ def _scan_dok(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-98 Scan-Seite (nur Bild, keine Textebene): es gibt nur eine Warnung im Text, keine Luecke "
-                          "'scan_seite'; die Bilanz bleibt 'vollstaendig'; Besitzer K-PDF")
 def test_rt98_scan_seite_wird_als_luecke_gemeldet(tmp_path):
     a = _scan_dok(tmp_path)
     aufbau(any("Seite 2" in w and "kein" in w for w in a.warnungen), "Die vorhandene Warnung fehlt (Aufbau)")
@@ -101,9 +89,6 @@ BILD = "q 595 0 0 842 0 0 cm /Im1 Do Q\n"
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-99 Scan-Seite mit aufgedruckter Seitenzahl ('Seite 2 von 2' als Text): die Seitenzahl wird "
-                          "als Fusszeile entfernt, die Seite gilt als gelesen -- nicht einmal eine Warnung; Besitzer K-PDF")
 def test_rt99_scan_seite_mit_seitenzahl_wird_als_luecke_gemeldet(tmp_path):
     pdf = roh_pdf([RohSeite(inhalt=_seite_text("Seite 1 von 2")),
                    RohSeite(inhalt=BILD + zeile(250, 800, "Seite 2 von 2", 9.0, "0.4 0.4 0.4 rg"), bild=True)])
@@ -113,10 +98,6 @@ def test_rt99_scan_seite_mit_seitenzahl_wird_als_luecke_gemeldet(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-100 Scan-Seite mit UNSICHTBARER Textebene (OCR-Schicht, Render-Modus 3) ueber dem Bild: "
-                          "der unsichtbare Text wird als echter Text gelesen, die Markierungen im Bild gehen verloren, "
-                          "keine Luecke; Besitzer K-PDF")
 def test_rt100_unsichtbare_textebene_ueber_bild(tmp_path):
     pdf = roh_pdf([RohSeite(inhalt=_seite_text("Seite 1 von 2")),
                    RohSeite(inhalt=BILD + zeile(56, 64, "Unsichtbare Textebene einer gescannten Seite hier.", modus=3)
@@ -127,9 +108,6 @@ def test_rt100_unsichtbare_textebene_ueber_bild(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-101 Scan-Seite mit WEISSER Textebene ueber dem Bild: der weisse (unsichtbare) Text wird als "
-                          "echter Text gelesen, keine Luecke; Besitzer K-PDF")
 def test_rt101_weisse_textebene_ueber_bild(tmp_path):
     pdf = roh_pdf([RohSeite(inhalt=_seite_text("Seite 1 von 2")),
                    RohSeite(inhalt=BILD + zeile(56, 64, "Weisse Textebene einer gescannten Seite hier.", farbe="1 1 1 rg")
@@ -162,9 +140,6 @@ def _zeichen_ok(a, anfang: str) -> bool:
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-102 Zeichen ohne Unicode-Zuordnung: das Token '(cid:129)' wird roh uebernommen, "
-                          "keine Luecke 'nicht_lesbarer_text', kein Hinweis; Besitzer K-PDF")
 def test_rt102_cid_zeichen_werden_gemeldet(tmp_path):
     a = lese(tmp_path, _zeichen_pdf("Die Daten \x81 sind hier."))
     aufbau(token(a, "neues") is not None and token(a, "Daten") is not None, "Satz nicht gelesen")
@@ -174,9 +149,6 @@ def test_rt102_cid_zeichen_werden_gemeldet(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-103 Ligatur 'fi' (U+FB01) im Text: wird roh uebernommen ('fixiert' wird zu 'ﬁxiert'), "
-                          "weder normalisiert noch gemeldet; Besitzer K-PDF")
 def test_rt103_ligatur_wird_normalisiert_oder_gemeldet(tmp_path):
     a = lese(tmp_path, _zeichen_pdf("Die Anlage ist \x80xiert und stabil."))
     aufbau(token(a, "neues") is not None and token(a, "Anlage") is not None, "Satz nicht gelesen")
@@ -186,9 +158,6 @@ def test_rt103_ligatur_wird_normalisiert_oder_gemeldet(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-104 Private-Use-Zeichen (U+F0B7, Wingdings-Aufzaehlungspunkt) mitten im Text: wird als "
-                          "eigenes Wort uebernommen, kein Hinweis, keine Luecke; Besitzer K-PDF")
 def test_rt104_private_use_zeichen_werden_gemeldet(tmp_path):
     a = lese(tmp_path, _zeichen_pdf("Die Daten \x82 sind hier."))
     aufbau(token(a, "neues") is not None and token(a, "Daten") is not None, "Satz nicht gelesen")

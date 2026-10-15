@@ -40,9 +40,6 @@ def _erkannt_oder_luecke(a, was: str) -> None:
 # f) Blau, das KEINE Aenderung ist (Design-Farben)
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-76 Tabellenkopf mit blauem Hintergrund (4472C4): alle Kopfzellen zaehlen als NEU, kein "
-                          "Hinweis, keine Luecke 'tabelle'; Besitzer K-PDF")
 def test_rt76_blauer_tabellenkopf_ist_keine_aenderung(tmp_path):
     d = dok()
     d.block("Vorspann ohne Aenderung.")
@@ -56,9 +53,6 @@ def test_rt76_blauer_tabellenkopf_ist_keine_aenderung(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-77 Tabelle mit Zeilenbaenderung (B4C6E7, hellblau): jede zweite Datenzeile zaehlt als NEU, "
-                          "kein Hinweis; Besitzer K-PDF")
 def test_rt77_blaue_baenderung_ist_keine_aenderung(tmp_path):
     d = dok()
     d.block("Vorspann ohne Aenderung.")
@@ -116,25 +110,16 @@ def _neu_in_farbe(tmp_path, hexfarbe: str):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-80 Reines Cyan (00FFFF, 180 Grad) als 'neu'-Farbe: liegt knapp unter der Blau-Grenze (185), "
-                          "nicht erkannt, nur eine Warnung, keine Luecke; Besitzer K-PDF")
 def test_rt80_cyan(tmp_path):
     _erkannt_oder_luecke(_neu_in_farbe(tmp_path, "00FFFF"), "Cyan")
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-81 Violett (7F00FF, 270 Grad) als 'neu'-Farbe: ueber der Blau-Grenze (265), nicht erkannt, "
-                          "keine Luecke; Besitzer K-PDF")
 def test_rt81_violett(tmp_path):
     _erkannt_oder_luecke(_neu_in_farbe(tmp_path, "7F00FF"), "Violett")
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-82 Orange (FF8000, 30 Grad) als 'entfaellt'-Farbe: ab 18 Grad kein Rot mehr, nicht erkannt, "
-                          "keine Luecke; Besitzer K-PDF")
 def test_rt82_orange(tmp_path):
     d = dok(farbe_weg="FF8000")
     d.block("Das ist {@r:alter Text hier@} im Satz.")
@@ -146,9 +131,6 @@ def test_rt82_orange(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-83 Pink (E6007E, 328 Grad) als 'entfaellt'-Farbe: unter der Rot-Grenze (335), "
-                          "nicht erkannt, keine Luecke; Besitzer K-PDF")
 def test_rt83_pink(tmp_path):
     d = dok(farbe_weg="E6007E")
     d.block("Das ist {@r:alter Text hier@} im Satz.")
@@ -160,18 +142,12 @@ def test_rt83_pink(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-84 Dunkelblau mit Helligkeit unter 0,25 (00003C): wird als fast Schwarz verworfen, "
-                          "ohne Warnung und ohne Luecke (still unveraendert); Besitzer K-PDF")
 def test_rt84_dunkelblau_helligkeit_unter_025(tmp_path):
     a = _neu_in_farbe(tmp_path, "00003C")
     _erkannt_oder_luecke(a, "Dunkelblau (Helligkeit 0,24)")
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-85 Pastellrot mit Saettigung unter 0,35 (F5B5B5) als 'entfaellt'-Farbe: nicht erkannt, "
-                          "ohne Warnung und ohne Luecke; Besitzer K-PDF")
 def test_rt85_pastellrot_saettigung_unter_035(tmp_path):
     d = dok(farbe_weg="F5B5B5")
     d.block("Das ist {@r:alter Text hier@} im Satz.")
@@ -191,18 +167,12 @@ def _gelb_pdf(variante: str) -> bytes:
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-86 Gelbes Textmarker-Highlight (PDF-Kommentar oder gelbe Flaeche hinter dem Text): "
-                          "wird still uebergangen, keine Luecke 'unbekannte_farbe'; Besitzer K-PDF")
 @pytest.mark.parametrize("variante", ["annotation", "flaeche"])
 def test_rt86_gelbes_highlight(tmp_path, variante):
     _erkannt_oder_luecke(lese(tmp_path, _gelb_pdf(variante)), f"Gelbes Highlight ({variante})")
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-87 Gruener Text (009900): nur eine Warnung 'nicht in der Legende', die Woerter gelten als "
-                          "unveraendert, keine Luecke 'unbekannte_farbe' (Bilanz bleibt gruen); Besitzer K-PDF")
 def test_rt87_gruener_text(tmp_path):
     d = dok()
     d.block("Das ist {@gn:neuer Text hier@} im Satz.")
@@ -225,9 +195,6 @@ def test_rt88_spotfarbe_separation_tint_1(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-89 Graustufen: neuer Text in mittlerem Grau (808080) neben schwarzem Text wird "
-                          "still als unveraendert gelesen, keine Warnung, keine Luecke (Rueckfrage-Niveau); Besitzer K-PDF")
 def test_rt89_graustufen_markierung(tmp_path):
     a = _neu_in_farbe(tmp_path, "808080")
     _erkannt_oder_luecke(a, "Mittelgrauer Text")
