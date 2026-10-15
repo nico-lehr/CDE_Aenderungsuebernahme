@@ -80,17 +80,19 @@ class Kandidat:
     `tokens` (Woerter mit Zeichenposition) werden erst beim ersten Zugriff als XTok-Objekte gebaut; bis dahin
     liegen nur die Normformen und die Positionen kompakt im Speicher (grosse Blaetter bleiben schlank)."""
     __slots__ = ("id", "art", "blatt", "zeile", "spalte", "text", "section", "start", "end", "zelle_text",
-                 "zelle_ist_zahl", "versteckt", "section_unsicher", "_tokens", "_norms", "_pos", "_zellen")
+                 "zelle_ist_zahl", "versteckt", "section_unsicher", "kopf_spalte", "_tokens", "_norms", "_pos", "_zellen")
 
     def __init__(self, id: int, art: str, blatt: str, zeile: int, spalte: int, tokens: list[XTok] | None = None,
                  text: str = "", section: str | None = None, start: int = 0, end: int = 0, zelle_text: str = "",
-                 zelle_ist_zahl: bool = False, versteckt: str = "", section_unsicher: bool = False, *,
+                 zelle_ist_zahl: bool = False, versteckt: str = "", section_unsicher: bool = False,
+                 kopf_spalte: bool = False, *,
                  norms: list[str] | None = None, pos: array | None = None, zellen: dict | None = None) -> None:
         self.id, self.art, self.blatt, self.zeile, self.spalte = id, art, blatt, zeile, spalte
         self.text, self.section, self.start, self.end, self.zelle_text = text, section, start, end, zelle_text
         self.zelle_ist_zahl = zelle_ist_zahl      # die Excel-Zelle ist eine Zahl (kein Text); beim Ersetzen Zahlenformat beachten
         self.versteckt = versteckt                # "" | "blatt" | "zeile" | "spalte": Stelle ist ausgeblendet
         self.section_unsicher = section_unsicher  # Section-Nummer stammt aus mehrdeutigen Zahlen (z. B. 2.1 und 2.10)
+        self.kopf_spalte = kopf_spalte            # Stelle liegt in der Nummern- oder Titelspalte (Ueberschrift), nicht im Fliesstext
         self._tokens = tokens
         self._norms = [x.norm for x in tokens] if tokens is not None else (norms or [])
         self._pos, self._zellen = pos, zellen
@@ -630,12 +632,14 @@ class ExcelModell:
             if not norms:
                 return
             sec = self.zeilen_section.get((blatt, zeile))
+            lay = self.layouts[blatt]
             k = Kandidat(id=len(self.kandidaten), art=art, blatt=blatt, zeile=zeile, spalte=spalte,
                          norms=norms, pos=pos, zellen=self.zellen,
                          text=text, section=sec, start=start, end=ende, zelle_text=zt,
                          zelle_ist_zahl=(blatt, zeile, spalte) in self.zahl_zellen,
                          versteckt=self._versteckt_art(blatt, zeile, spalte),
-                         section_unsicher=bool(sec and sec in self.layouts[blatt].unsichere_sections))
+                         section_unsicher=bool(sec and sec in lay.unsichere_sections),
+                         kopf_spalte=(spalte in (lay.section_spalte, lay.titel_spalte) and spalte != lay.inhalt_spalte))
             self.kandidaten.append(k)
             if k.section:
                 self.nach_section.setdefault(k.section, []).append(k.id)

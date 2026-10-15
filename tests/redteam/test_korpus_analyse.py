@@ -261,10 +261,6 @@ _LISTE_EXCEL = [e for e in _LISTE_PDF if "Sicherung" not in e[1]]
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-120 Neuer Listenpunkt '4. {+Sicherung tauschen+}': der Text wird in die NUMMERNSPALTE der "
-                          "Section 4 geschrieben ('4 Sicherung tauschen'), uebernommen/hoch/ok (die Suche nutzt nur das "
-                          "alte Wort '4.'); Besitzer K-XL (matcher: Nummern-Zelle als Absatz-Kandidat)")
 def test_rt120_listenpunkt_text_landet_in_der_nummernspalte(tmp_path):
     alt = baue_alt(tmp_path, _LISTE_EXCEL, "L1")
     l = lauf(tmp_path, _LISTE_PDF, "L1", alt=alt)
@@ -278,9 +274,6 @@ def test_rt120_listenpunkt_text_landet_in_der_nummernspalte(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-121 Korpus Seed 30 (Stoerer 'nummerierte_liste'): '4 Sicherung tauschen' steht in der "
-                          "Nummernspalte (Blatt 2, Zeile 18, Spalte 1); 1 stiller Fehler; Besitzer K-XL")
 def test_rt121_korpus_listenpunkt_in_nummernspalte_seed30():
     lf = auto_lauf(30, "schwer")
     vorher, soll, ist = zelle_vorher_soll_ist(lf.ordner, lf.ergebnis, 1, 18, 1)

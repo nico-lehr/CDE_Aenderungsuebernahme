@@ -162,6 +162,12 @@ class Matcher:
             gruende.append({"blatt": f"das Blatt '{k.blatt}' ist ausgeblendet",
                             "zeile": "die Zeile ist ausgeblendet",
                             "spalte": "die Spalte ist ausgeblendet"}[k.versteckt])
+        if not ist_kopf and k.kopf_spalte:
+            # Fliesstext (oder eine Listennummer wie "4.") trifft die Nummern-/Titelspalte einer Ueberschrift: dort darf nie
+            # automatisch geaendert werden (sonst steht der Text in der Nummernspalte); ein Mensch entscheidet.
+            stufe = MITTEL
+            gruende.append("die Zuordnung läuft nur über die Section-Nummer oder den Titel, die Stelle liegt in der "
+                           "Nummern- oder Titelspalte und nicht im Fließtext")
         t.stufe = stufe
         # Anfangs-Treffer: der PDF-Text deckt nur einen Teil des Excel-Absatzes ab (Seitenumbruch). Ein Wort in diesem
         # Teil zu aendern ist sicher (stufe bleibt), aber einen NEUEN Absatz hier anzusetzen nicht (anker_stufe).
