@@ -55,3 +55,12 @@ def test_neue_ordner_folgen_dem_daten_wurzelordner():
     runs = config.pfad("runs_dir")
     assert config.pfad("paare_dir") == runs.parent / "paare"
     assert config.pfad("messung_dir") == runs.parent / "messung"
+
+
+def test_bilanz_satz_bei_unbekannter_vollstaendigkeit_ist_nie_gruen():
+    """Aeltere Laeufe (Schema 1) haben nie auf Luecken geprueft: das Protokoll darf nicht 'nichts ging verloren' sagen."""
+    from src.protokoll import bilanz_satz
+    _, wert = bilanz_satz({"stimmt": True, "vollstaendig": None, "luecken": None})
+    assert "nicht geprüft" in wert and "nichts ging still verloren" not in wert
+    _, wert = bilanz_satz({"stimmt": True, "vollstaendig": True})
+    assert "nichts ging still verloren" in wert

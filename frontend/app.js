@@ -358,7 +358,7 @@
           zahl(l.woerter) ? h('span', { class: 'woerter' }, ` (${pl(zahl(l.woerter), 'Wort', 'Wörter')})`) : ''))));
       }
       box.push(banner('gelb', '!', 'Unvollständig gelesen', kinder, 'alert'));
-    } else if (b.vollstaendig === undefined) {
+    } else if (b.vollstaendig === undefined || b.vollstaendig === null) {
       box.push(banner('gelb', '?', 'Vollständigkeit nicht bekannt', h('p', { class: 'banner-text' },
         'Dieser Lauf stammt aus einer älteren Programmversion. Ob das PDF vollständig gelesen wurde, ist dort nicht festgehalten.')));
     }

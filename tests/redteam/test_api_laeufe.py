@@ -89,34 +89,44 @@ def test_rt40_abgebrochene_uebernahme_hinterlaesst_keinen_halben_ordner(fx, monk
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
 def test_rt41_plan_json_nicht_atomar(fx, monkeypatch):
-    rid = _lauf_anlegen(fx)                              # plan.json existiert schon (vollstaendig)
-    halb, weiter = threading.Event(), threading.Event()
-    echt = Path.write_text
+    """plan.json wird ueber eine Temp-Datei und `os.replace` geschrieben. Wir halten den Schreiber genau dort an, wo die
+    Temp-Datei fertig ist, aber noch nicht umbenannt wurde; ein Leser darf dann nie eine halbe plan.json sehen.
+    (Schreibt jemand wieder direkt in plan.json, wird `os.replace` nie erreicht -> der Test schlaegt fehl.)"""
+    rid = runs.neuer_lauf(fx["pdf"], fx["alt"])          # frischer Lauf: plan.json gibt es noch nicht
+    erreicht, weiter = threading.Event(), threading.Event()
+    echt = runs.os.replace
 
-    def write_text(self, daten, *a, **k):
-        if self.name == "plan.json":                     # Schreiber haengt mitten in der Datei
-            with open(self, "w", encoding="utf-8") as f:
-                f.write(daten[: len(daten) // 2])
-                f.flush()
-                halb.set()
-                weiter.wait(10)
-                f.write(daten[len(daten) // 2:])
-            return len(daten)
-        return echt(self, daten, *a, **k)
-    monkeypatch.setattr(Path, "write_text", write_text)
+    def replace(quelle, ziel, *a, **k):
+        if Path(ziel).name == "plan.json":               # Temp-Datei ist fertig geschrieben, Umbenennen steht noch aus
+            erreicht.set()
+            weiter.wait(15)
+        return echt(quelle, ziel, *a, **k)
+    monkeypatch.setattr(runs.os, "replace", replace)
     schreiber = threading.Thread(target=runs.analysiere, args=(rid,))
     schreiber.start()
     problem = None
     try:
-        if halb.wait(5):                                 # nur lesen, wenn der Schreiber wirklich mitten drin ist
-            try:
-                runs.lade_plan(rid)
-            except Exception as e:                       # noqa: BLE001
-                problem = f"{type(e).__name__}: {e}"
+        if not erreicht.wait(30):
+            problem = "plan.json wird nicht ueber Temp-Datei + os.replace geschrieben (kein atomares Schreiben)"
+        else:
+            pj = runs.lauf_dir(rid) / "plan.json"
+            if pj.exists():                              # darf es nur geben, wenn sie vollstaendig und lesbar ist
+                try:
+                    json.loads(pj.read_text(encoding="utf-8"))
+                except ValueError as e:
+                    problem = f"halb geschriebene plan.json sichtbar: {type(e).__name__}"
+            else:
+                try:
+                    runs.lade_plan(rid)
+                    problem = "lade_plan lieferte einen Plan, obwohl plan.json noch nicht fertig ist"
+                except runs.LaufFehler as e:
+                    if e.art != "angelegt":              # richtig: 'noch keine Analyse', nicht 'beschaedigt'
+                        problem = f"Leser bekommt '{e.art}' statt 'angelegt'"
     finally:
         weiter.set()
-        schreiber.join(30)
-    assert problem is None, f"Leser sieht halb geschriebene plan.json -> {problem}"
+        schreiber.join(60)
+    assert problem is None, problem
+    assert runs.lade_plan(rid)["run_id"] == rid         # nach dem Umbenennen ist der Plan vollstaendig da
 
 
 # ---------------------------------------------------------------------------------------------

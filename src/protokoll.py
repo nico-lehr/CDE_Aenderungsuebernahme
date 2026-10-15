@@ -55,6 +55,9 @@ def bilanz_satz(bil: dict[str, Any]) -> tuple[str, str]:
     """(Beschriftung, Wert) fuer die Gesamtaussage der Bilanz.
 
     "nichts ging still verloren" steht NUR, wenn die Wortsumme stimmt UND das PDF vollstaendig gelesen wurde."""
+    if bil.get("stimmt") and "vollstaendig" in bil and bil["vollstaendig"] is None:
+        return "Bilanz stimmt", ("JA für die Wörter – ob das PDF vollständig gelesen wurde, ist bei diesem älteren Lauf "
+                                 "nicht geprüft worden")
     if bil.get("stimmt") and bil.get("vollstaendig", True):
         return "Bilanz stimmt", "JA – nichts ging still verloren"
     if bil.get("stimmt"):
@@ -132,14 +135,15 @@ def schreibe_xlsx(pfad: Path, info: dict[str, Any], aenderungen: list[Aenderung]
         ("… davon nicht übernommen", bil["woerter_nicht_uebernommen"]),
         ("… davon ignoriert (Kopf-/Fußzeile)", bil["woerter_ignoriert"]),
         bilanz_satz(bil),
-        ("Nicht gelesene Stellen im PDF (Lücken)", bil.get("luecken", 0)),
+        ("Nicht gelesene Stellen im PDF (Lücken)", "nicht geprüft (älterer Lauf)" if bil.get("luecken", 0) is None
+         else bil.get("luecken", 0)),
         ("Nachkontrolle-Abweichungen", bil["nachkontrolle_abweichungen"]),
     ]
     for i, (a, b) in enumerate(zeilen, 4):
         ws.cell(i, 1, _wert(a))
         ws.cell(i, 2, _wert(b))
     r = 4 + len(zeilen) + 1
-    if not bil.get("vollstaendig", True):
+    if bil.get("vollstaendig", True) is False:
         ws.cell(r, 1, "Lücken (unvollständig gelesen)").font = Font(bold=True)
         if luecken:
             for l in luecken:
