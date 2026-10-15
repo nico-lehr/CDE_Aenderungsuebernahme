@@ -20,6 +20,7 @@ import re
 import shutil
 import time
 import uuid
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from typing import Any
 from . import config
 from .applier import uebernehmen
 from . import layouts
+from .fehler import NichtGefunden, NutzerFehler
 from .excel_model import ExcelModell, profil_kontext
 from .models import GELESENE_SCHEMAS
 from .pdf_reader import analysiere_pdf
@@ -45,14 +47,12 @@ MELDUNG_NEUERE_VERSION = ("Dieser Lauf stammt aus einer neueren Programmversion 
                           "Bitte das Programm aktualisieren.")
 
 
-class LaufFehler(Exception):
-    """Ein Lauf kann nicht verwendet werden. `meldung` ist ein einfacher deutscher Satz fuer den Nutzer."""
+class LaufFehler(NutzerFehler):
+    """Ein Lauf kann nicht verwendet werden. `meldung` ist ein einfacher deutscher Satz fuer den Nutzer.
+    Nur NutzerFehler (und damit LaufFehler) duerfen ihren Text an den Client weitergeben (src/fehler.py)."""
 
     def __init__(self, meldung: str, status: int = 409, art: str = "fehler"):
-        super().__init__(meldung)
-        self.meldung = meldung
-        self.status = status
-        self.art = art
+        super().__init__(meldung, status, art)
 
 
 def _beschaedigt() -> LaufFehler:
@@ -67,10 +67,10 @@ def runs_dir() -> Path:
 
 def lauf_dir(run_id: str) -> Path:
     if not _ID.match(run_id):
-        raise ValueError("Ungültige Lauf-ID.")
+        raise NutzerFehler("Ungültige Lauf-ID.", 404)
     d = runs_dir() / run_id
     if not d.is_dir():
-        raise FileNotFoundError("Lauf nicht gefunden.")
+        raise NichtGefunden("Lauf nicht gefunden.")
     return d
 
 
@@ -150,7 +150,7 @@ def pruefe_dateiname(name: str) -> None:
     """Zu lange Namen (Zeichen oder Bytes) werden abgelehnt, bevor irgendetwas angelegt wird."""
     grenze = int(config.lade("server").get("dateiname_max_laenge", 255))
     if len(name) > grenze or len(name.encode("utf-8", "replace")) > grenze:
-        raise ValueError(f"Der Dateiname ist zu lang (höchstens {grenze} Zeichen). Bitte die Datei kürzer benennen.")
+        raise NutzerFehler(f"Der Dateiname ist zu lang (höchstens {grenze} Zeichen). Bitte die Datei kürzer benennen.", 400)
 
 
 def _sicherer_name(name: str, fallback: str) -> str:
@@ -209,6 +209,9 @@ def analysiere(run_id: str, profil: str | None = None) -> dict[str, Any]:
     """Analysiert einen Lauf. `profil` = Name eines Layout-Profils (src/layouts.py): wird nur angenommen, wenn es
     aktiv ist und zu seinem aktuellen Inhalt eine bestaetigte Vorschau gibt (neue Profile gehen nie direkt live)."""
     d = lauf_dir(run_id)
+    if (d / "plan.json").exists():                   # Regel 29: eine vorhandene Analyse wird nie ersetzt
+        raise LaufFehler("Dieser Lauf wurde schon analysiert. Eine Analyse wird nicht überschrieben. "
+                         "Bitte einen neuen Lauf starten.", 409, "schon_analysiert")
     info = _info(d)
     prof = None
     if profil:
@@ -218,9 +221,21 @@ def analysiere(run_id: str, profil: str | None = None) -> dict[str, Any]:
             raise LaufFehler(e.meldung, 409, "profil") from None
     pdf, excel = d / "eingabe" / info["pdf"], d / "eingabe" / info["excel"]
     pa = analysiere_pdf(pdf)
-    xl = ExcelModell(excel, prof)
+    try:
+        xl = ExcelModell(excel, prof)
+    except layouts.ProfilFehler as e:                # das Profil passt nicht zur Excel: schon einfaches Deutsch
+        raise LaufFehler(e.meldung, 409, "profil") from None
+    except ValueError as e:
+        # Nur zwei bekannte Faelle haben einen Text in einfachem Deutsch (falsche Endung, beschaedigte Datei);
+        # jede andere ValueError bleibt unerwartet (Rohtext nur ins Server-Log).
+        if excel.suffix.lower() not in (".xlsx", ".xlsm") or isinstance(e.__cause__, zipfile.BadZipFile):
+            raise NutzerFehler(str(e), 400) from e
+        raise
     plan = plane(pa, xl)
     bil = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
+    if (d / "plan.json").exists():                   # gleichzeitige Analyse desselben Laufs: die erste gewinnt
+        raise LaufFehler("Dieser Lauf wurde schon analysiert. Eine Analyse wird nicht überschrieben. "
+                         "Bitte einen neuen Lauf starten.", 409, "schon_analysiert")
     daten = {
         "run_id": run_id, "pdf_name": info["pdf"], "excel_name": info["excel"],
         "pdf_sha256": _sha(pdf), "excel_sha256": _sha(excel), "seiten": pa.seiten,
@@ -345,7 +360,7 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[st
     freig = set(freigaben or [])
     unbekannt = freig - {a.id for a in aenderungen}
     if unbekannt:
-        raise ValueError(f"Unbekannte Änderungs-IDs: {sorted(unbekannt)}")
+        raise NutzerFehler(f"Unbekannte Änderungs-IDs: {sorted(unbekannt)}", 400)
     ordner = _neuer_ergebnis_ordner(d)
     try:
         stamm = Path(info["excel"]).stem
@@ -353,7 +368,12 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[st
         with profil_kontext(_profil_des_plans(plan)):          # der Applier liest die Excel selbst: gleicher Aufbau wie bei der Analyse
             res = uebernehmen(aenderungen, quelle, ziel, freig)
         markierte = plan["bilanz"]["woerter_im_pdf"]
-        bil = bilanz(aenderungen, markierte, plan.get("ignoriert", []), plan.get("luecken", []))
+        luecken = plan.get("luecken")
+        bil = bilanz(aenderungen, markierte, plan.get("ignoriert", []), luecken if isinstance(luecken, list) else [])
+        if not isinstance(luecken, list):
+            # Schema-1-Plan: damals wurden Luecken nicht erfasst. "Vollstaendig" ist UNBEKANNT und darf nie behauptet
+            # werden (nie gruen); luecken_geprueft=False sagt das ausdruecklich.
+            bil.update(vollstaendig=None, luecken=None, luecken_geprueft=False)
         warn = list(plan.get("warnungen", [])) + res.warnungen
         xinfo = {"pdf_name": info["pdf"], "excel_name": info["excel"], "ergebnis_name": ziel.name}
         schreibe_xlsx(ordner / "aenderungsprotokoll.xlsx", xinfo, aenderungen, bil, plan.get("layout", []), warn,
@@ -437,8 +457,8 @@ def stelle_wieder_her(run_id: str) -> None:
 def datei(run_id: str, ordner: str, name: str) -> Path:
     d = lauf_dir(run_id)
     if not re.fullmatch(r"ergebnis_\d{3}|eingabe", ordner):
-        raise ValueError("Ungültiger Ordner.")
+        raise NutzerFehler("Ungültiger Ordner.", 404)
     p = (d / ordner / Path(name).name).resolve()
     if d.resolve() not in p.parents or not p.is_file():
-        raise FileNotFoundError("Datei nicht gefunden.")
+        raise NichtGefunden("Datei nicht gefunden.")
     return p

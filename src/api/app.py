@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from .. import runs
+from ..fehler import NutzerFehler
 from .einstellungen import srv
 from .routes import api_bp
 from .static_routes import static_bp
@@ -105,8 +105,9 @@ def http_fehler(e: HTTPException):
     return antwort
 
 
-@app.errorhandler(runs.LaufFehler)
-def lauf_fehler(e: runs.LaufFehler):
+@app.errorhandler(NutzerFehler)
+def nutzer_fehler(e: NutzerFehler):
+    """Gewollte Fehler (auch runs.LaufFehler): ihre Meldung ist schon einfaches Deutsch."""
     return _json_fehler(e.meldung, e.status, status=e.art)
 
 

@@ -175,3 +175,116 @@ def test_uebernehmen_ueberschreibt_nie_eine_vorhandene_zieldatei(tmp_path):
     with pytest.raises(FileExistsError, match="nicht überschrieben"):
         uebernehmen(l.aen, l.alt, ziel)
     assert ziel.read_bytes() == b"alter Inhalt"
+
+
+# ===========================================================================================================
+# 2c / 3. Runs und API: Meldungen, Rohtext, Schema-1-Bilanz, Server-Einstellungen
+# ===========================================================================================================
+import io
+import json
+
+import pytest
+
+from src import runs
+from src.api.app import app
+from src.fehler import NutzerFehler
+from tests.fixtures.szenario import erzeuge
+
+
+@pytest.fixture
+def client():
+    app.config["TESTING"] = True
+    return app.test_client()
+
+
+def _hochladen(client, d, excel_bytes=None):
+    excel = io.BytesIO(excel_bytes) if excel_bytes is not None else open(d["alt"], "rb")
+    return client.post("/api/lauf", data={"pdf": (open(d["pdf"], "rb"), "a.pdf"), "excel": (excel, "cde.xlsx")},
+                       content_type="multipart/form-data")
+
+
+def _fehler_dateien():
+    return [p.read_text(encoding="utf-8") for p in runs.runs_dir().rglob("analyse_fehler.json")]
+
+
+def test_analyse_mit_rohtext_valueerror_zeigt_dem_client_nie_den_rohtext(client, tmp_path, monkeypatch):
+    def kaputt(*a, **k):
+        raise ValueError("GEHEIMER_ROHTEXT C:\\intern\\x.py")
+    monkeypatch.setattr(runs, "analysiere", kaputt)
+    r = _hochladen(client, erzeuge(tmp_path / "fx"))
+    assert r.status_code == 500 and r.is_json
+    assert "GEHEIMER_ROHTEXT" not in r.get_data(as_text=True)
+    assert all("GEHEIMER_ROHTEXT" not in t for t in _fehler_dateien()) and _fehler_dateien()
+
+
+def test_analyse_mit_gewollter_meldung_kommt_beim_client_an(client, tmp_path, monkeypatch):
+    def gewollt(*a, **k):
+        raise NutzerFehler("Das ist eine einfache Meldung.", 400)
+    monkeypatch.setattr(runs, "analysiere", gewollt)
+    r = _hochladen(client, erzeuge(tmp_path / "fx"))
+    assert r.status_code == 400 and r.get_json()["fehler"] == "Das ist eine einfache Meldung."
+
+
+def test_beschaedigte_excel_gibt_einfache_meldung_400(client, tmp_path):
+    r = _hochladen(client, erzeuge(tmp_path / "fx"), excel_bytes=b"PK\x03\x04 kein echtes zip")
+    assert r.status_code == 400 and "beschädigt" in r.get_json()["fehler"]
+    assert "Traceback" not in r.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("pfad", ["/api/lauf/{rid}", "/api/lauf/{rid}/download/eingabe/a.pdf"])
+def test_valueerror_in_anderen_routen_ist_500_ohne_rohtext(client, tmp_path, monkeypatch, pfad):
+    rid = _hochladen(client, erzeuge(tmp_path / "fx")).get_json()["run_id"]
+
+    def kaputt(*a, **k):
+        raise ValueError("GEHEIMER_ROHTEXT")
+    monkeypatch.setattr(runs, "lade_plan", kaputt)
+    monkeypatch.setattr(runs, "datei", kaputt)
+    r = client.get(pfad.format(rid=rid))
+    assert r.status_code == 500 and "GEHEIMER_ROHTEXT" not in r.get_data(as_text=True)
+
+
+def test_unbekannter_lauf_bleibt_404(client):
+    r = client.get("/api/lauf/20260101-000000-abcdef")
+    assert r.status_code == 404 and r.get_json()["fehler"] == "Lauf nicht gefunden."
+
+
+def test_analysiere_ersetzt_nie_ein_vorhandenes_plan_json(tmp_path):
+    d = erzeuge(tmp_path / "fx")
+    rid = runs.neuer_lauf(d["pdf"], d["alt"])
+    runs.analysiere(rid)
+    plan = runs.lauf_dir(rid) / "plan.json"
+    vorher = plan.read_bytes()
+    with pytest.raises(runs.LaufFehler, match="schon analysiert"):
+        runs.analysiere(rid)
+    assert plan.read_bytes() == vorher
+
+
+def test_schema1_plan_behauptet_nie_vollstaendig(tmp_path):
+    d = erzeuge(tmp_path / "fx")
+    rid = runs.neuer_lauf(d["pdf"], d["alt"])
+    runs.analysiere(rid)
+    p = runs.lauf_dir(rid) / "plan.json"
+    plan = json.loads(p.read_text(encoding="utf-8"))
+    for k in ("luecken", "schema_version"):                     # so sah ein Schema-1-Plan aus
+        plan.pop(k)
+    for k in ("luecken", "vollstaendig"):
+        plan["bilanz"].pop(k)
+    p.write_text(json.dumps(plan), encoding="utf-8")
+    res = runs.uebernehmen_lauf(rid, [])
+    assert res["bilanz"]["vollstaendig"] is None and res["bilanz"]["luecken_geprueft"] is False
+    from openpyxl import load_workbook
+    ws = load_workbook(runs.lauf_dir(rid) / res["ordner"] / "aenderungsprotokoll.xlsx").active
+    zellen = " ".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
+    assert "JA – nichts ging still verloren" not in zellen
+
+
+def test_server_ohne_host_oder_port_bricht_mit_klarer_meldung_ab(monkeypatch):
+    from src.api import einstellungen
+    monkeypatch.setattr(einstellungen.config, "lade", lambda name: {"port": 5100})
+    with pytest.raises(SystemExit, match="'host'"):
+        einstellungen.srv()
+    monkeypatch.setattr(einstellungen.config, "lade", lambda name: {"host": "127.0.0.1"})
+    with pytest.raises(SystemExit, match="'port'"):
+        einstellungen.srv()
+    monkeypatch.setattr(einstellungen.config, "lade", lambda name: {"host": "127.0.0.1", "port": 5100})
+    assert einstellungen.srv()["upload_max_mb"] == 200               # Upload-Grenzen behalten Standardwerte

@@ -1,6 +1,8 @@
 """HTTP-Schnittstelle des Dashboards (nur Weiterleitung; die Logik steckt in src/runs.py).
 
-Fehler: immer JSON {"fehler": "<einfacher deutscher Satz>"}; der Rohtext einer Ausnahme geht nur ins Server-Log.
+Fehler: immer JSON {"fehler": "<einfacher deutscher Satz>"}. Nur NutzerFehler (src/fehler.py, auch LaufFehler) geben ihren
+Text weiter; jede andere Ausnahme (auch ein ValueError) wird zur allgemeinen Meldung mit Status 500, der Rohtext geht nur
+ins Server-Log. Die zentrale Behandlung steht in app.py.
 """
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ from pathlib import Path
 from flask import Blueprint, Response, jsonify, request, send_file
 
 from .. import runs
+from ..fehler import NutzerFehler
 from ..vorschau import ausschnitt
 from .einstellungen import srv
 
@@ -59,8 +62,8 @@ def neu():
     for f in (pdf, xls):
         try:
             runs.pruefe_dateiname(f.filename or "")
-        except ValueError as e:
-            return _fehler(str(e))
+        except NutzerFehler as e:
+            return _fehler(e.meldung, e.status)
     grenze_mb = int(srv()["upload_max_mb_datei"])
     for f in (pdf, xls):
         f.stream.seek(0, 2)
@@ -82,11 +85,9 @@ def neu():
     try:
         plan = runs.analysiere(run_id, profil)
     except Exception as e:                       # noqa: BLE001 -- der Lauf bleibt stehen (Regel 29), Meldung einfach halten
-        if isinstance(e, runs.LaufFehler):       # z. B. Profil nicht bestaetigt: schon einfaches Deutsch
+        if isinstance(e, NutzerFehler):          # gewollte Meldung (z. B. Profil nicht bestaetigt, Excel beschaedigt): schon einfaches Deutsch
             meldung, code = e.meldung, e.status
-        elif isinstance(e, ValueError):          # unsere eigenen Meldungen (z. B. "Excel beschaedigt") sind schon einfaches Deutsch
-            meldung, code = str(e), 400
-        else:
+        else:                                    # alles andere ist unerwartet: nie der Rohtext, nur ins Server-Log
             log.exception("Analyse von Lauf %s fehlgeschlagen", run_id)
             meldung, code = _MELDUNG_ANALYSE, 500
         try:
@@ -99,28 +100,19 @@ def neu():
 
 @api_bp.get("/lauf/<run_id>")
 def lauf(run_id: str):
-    try:
-        return jsonify(_leicht(runs.lade_plan(run_id)))
-    except (ValueError, FileNotFoundError) as e:
-        return _fehler(str(e), 404)
+    return jsonify(_leicht(runs.lade_plan(run_id)))
 
 
 @api_bp.delete("/lauf/<run_id>")
 def lauf_archivieren(run_id: str):
     """Regel 29: loescht NICHTS, sondern archiviert (Marker im Lauf-Ordner)."""
-    try:
-        runs.archiviere(run_id)
-    except (ValueError, FileNotFoundError) as e:
-        return _fehler(str(e), 404)
+    runs.archiviere(run_id)
     return jsonify({"ok": True, "archiviert": True})
 
 
 @api_bp.post("/lauf/<run_id>/wiederherstellen")
 def lauf_wiederherstellen(run_id: str):
-    try:
-        runs.stelle_wieder_her(run_id)
-    except (ValueError, FileNotFoundError) as e:
-        return _fehler(str(e), 404)
+    runs.stelle_wieder_her(run_id)
     return jsonify({"ok": True, "archiviert": False})
 
 
@@ -132,10 +124,8 @@ def uebernehmen(run_id: str):
         return _fehler("freigaben muss eine Liste von IDs sein.")
     try:
         res = runs.uebernehmen_lauf(run_id, freig)
-    except (ValueError, FileNotFoundError) as e:
-        return _fehler(str(e), 404)
-    except runs.LaufFehler:
-        raise                                     # zentrale Behandlung: klare Meldung + Status
+    except NutzerFehler:
+        raise                                     # zentrale Behandlung (app.py): klare Meldung + Status
     except Exception:                             # noqa: BLE001
         log.exception("Uebernahme fuer Lauf %s fehlgeschlagen", run_id)
         return _fehler("Das Übernehmen ist fehlgeschlagen. Es wurde nichts verändert und kein Ergebnis angelegt. "
@@ -146,23 +136,17 @@ def uebernehmen(run_id: str):
 
 @api_bp.get("/lauf/<run_id>/vorschau/<aid>.png")
 def vorschau(run_id: str, aid: str):
-    try:
-        plan = runs.lade_plan(run_id)
-        a = next((x for x in plan["aenderungen"] if x["id"] == aid), None)
-        if a is None:
-            return _fehler("Änderung nicht gefunden.", 404)
-        pdf = runs.lauf_dir(run_id) / "eingabe" / plan["pdf_name"]
-        farbe = "#D93025" if "geloescht" in a["typ"] else _FARBE.get(a["typ"], "#0071E3")
-        png = ausschnitt(pdf, a["seite"], tuple(a["bbox"]), farbe)
-    except (ValueError, FileNotFoundError) as e:
-        return _fehler(str(e), 404)
+    plan = runs.lade_plan(run_id)
+    a = next((x for x in plan["aenderungen"] if x["id"] == aid), None)
+    if a is None:
+        return _fehler("Änderung nicht gefunden.", 404)
+    pdf = runs.lauf_dir(run_id) / "eingabe" / plan["pdf_name"]
+    farbe = "#D93025" if "geloescht" in a["typ"] else _FARBE.get(a["typ"], "#0071E3")
+    png = ausschnitt(pdf, a["seite"], tuple(a["bbox"]), farbe)
     return Response(png, mimetype="image/png", headers={"Cache-Control": "private, max-age=600"})
 
 
 @api_bp.get("/lauf/<run_id>/download/<ordner>/<name>")
 def download(run_id: str, ordner: str, name: str):
-    try:
-        p = runs.datei(run_id, ordner, name)
-    except (ValueError, FileNotFoundError) as e:
-        return _fehler(str(e), 404)
+    p = runs.datei(run_id, ordner, name)
     return send_file(p, as_attachment=True, download_name=p.name)
