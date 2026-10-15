@@ -9,3 +9,6 @@ frontend_dir: ./frontend
 # messung_dir: append-only Berichte (NNN_<korpus>/bericht.json + bericht.md), enthalten KEINE Textinhalte
 paare_dir: ./data/paare
 messung_dir: ./data/messung
+# Layout-Profile (python -m src.cli profil ...): Vorschau-Datensaetze und Bestaetigungen, append-only (Regel 29),
+# liegt unter data/ und ist von Git ignoriert. Siehe docs/adr/0003-layout-profile.md
+profile_dir: ./data/profile

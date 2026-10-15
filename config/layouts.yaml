@@ -1,0 +1,55 @@
+# config/layouts.yaml -- VORLAGE fuer Layout-Profile (eingecheckt, nur erfundene Beispiele, Regel 16).
+#
+# Wozu: Die Erkennung des Excel-Aufbaus (Section-/Titel-/Inhaltsspalte, Modell) ist eine Heuristik. Ist sie unsicher
+# oder falsch, legst du den Aufbau hier je Blatt von Hand fest.
+#
+# ECHTE Profile (echte Blatt- und Spaltennamen) gehoeren NICHT in diese Datei, sondern in
+#   config/layouts.local.yaml     (gleiches Format; wird von Git ignoriert)
+#
+# Ein Profil geht nie direkt live. Ablauf (Details: docs/adr/0003-layout-profile.md):
+#   1. Profil in die Datei schreiben und  aktiv: true  setzen.
+#   2. python -m src.cli profil vorschau --excel MEINE.xlsx --profil NAME     (zeigt den Aufbau, keine Zellinhalte)
+#   3. Stimmt die Vorschau:  python -m src.cli profil bestaetigen --vorschau <ID aus Schritt 2>
+#   4. Erst jetzt nimmt der Analyse-Lauf das Profil an. Aendert sich der Inhalt des Profils (ausser aktiv/beschreibung),
+#      ist die Bestaetigung ungueltig: neue Vorschau und neue Bestaetigung noetig.
+#   Zurueck nehmen: aktiv: false  (nichts wird geloescht).
+#
+# Aufbau:
+#   profile:
+#     - name: eindeutiger Name (ueber beide Dateien)
+#       aktiv: false                    # true = darf nach der Bestaetigung benutzt werden (Standard: false)
+#       beschreibung: freier Text       # optional, aendert den Hash nicht
+#       erkennung:                      # optional; nur ein VORSCHLAG in "profil vorschau" ohne --profil, nie stilles Anwenden
+#         blattnamen: ["Name1"]         #   diese Blaetter muessen vorkommen (Gross-/Kleinschreibung egal)
+#         kopfzeilen_begriffe: ["nr"]   #   diese Woerter stehen in der ersten Zeile (der genannten Blaetter)
+#       blaetter:                       # eine Liste; jedes Blatt hoechstens einmal
+#         - blatt: "Blattname"
+#           ignorieren: true            # dieses Blatt wird nie abgeglichen (dann keine weiteren Angaben)
+#         - blatt: "Blattname 2"
+#           section_spalte: "A"         # Spalte mit den Gliederungsnummern (1, 2.1, ...); optional
+#           titel_spalte: "B"           # Spalte mit der Ueberschrift neben der Nummer; optional
+#           inhalt_spalte: "C"          # Spalte mit dem Anforderungstext; Pflicht
+#           modell: zeile_pro_section   # zeile_pro_section | zeile_pro_absatz; Pflicht
+#           kopfzeile: 1                # Zeilennummer der Spaltenueberschriften (0 oder weglassen = keine)
+#
+# Spaltenbuchstaben immer in Anfuehrungszeichen ("C"): sonst liest YAML z. B. NO oder ON als "nein"/"an".
+# Blattnamen muessen genau so geschrieben sein wie in Excel.
+
+profile:
+  - name: beispiel_anforderungsliste     # ERFUNDEN: so sieht ein Profil aus
+    aktiv: false                         # Vorlage: wird nie benutzt, solange hier false steht
+    beschreibung: >
+      Erfundenes Beispiel: Ein Blatt "Anforderungen" mit Nummer in A, Titel in B und Text in C
+      (eine Zeile je Section) und ein Deckblatt, das nie angefasst wird.
+    erkennung:
+      blattnamen: ["Anforderungen", "Deckblatt"]
+      kopfzeilen_begriffe: ["nr", "titel", "inhalt"]
+    blaetter:
+      - blatt: "Deckblatt"
+        ignorieren: true
+      - blatt: "Anforderungen"
+        section_spalte: "A"
+        titel_spalte: "B"
+        inhalt_spalte: "C"
+        modell: zeile_pro_section
+        kopfzeile: 1

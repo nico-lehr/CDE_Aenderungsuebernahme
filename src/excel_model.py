@@ -23,10 +23,12 @@ import weakref
 import zipfile
 from collections import Counter
 from array import array
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Iterator
 
 from openpyxl import load_workbook
 from openpyxl.cell.rich_text import CellRichText
@@ -35,6 +37,9 @@ from openpyxl.worksheet.formula import ArrayFormula
 
 from . import config
 from .textutil import kopf_zerlegen, norm, section_nummer, woerter
+
+if TYPE_CHECKING:                      # nur fuer Typangaben; layouts.py importiert dieses Modul, nicht umgekehrt
+    from .layouts import BlattProfil, Profil
 
 HOCH_S, MITTEL_S, NIEDRIG_S = "hoch", "mittel", "niedrig"   # Sicherheit des Aufbaus
 _FESTE_STELLEN = re.compile(r"^0\.(0+)$")                    # Zahlenformat "0.0", "0.00", ...
@@ -123,14 +128,20 @@ class BlattLayout:
     sicherheit_gruende: list[str] = field(default_factory=list)   # Zweifel in einfachem Deutsch
     versteckt: bool = False        # Blatt ist ausgeblendet
     unsichere_sections: set[str] = field(default_factory=set)     # Section-Nummern aus mehrdeutigen Zahlen
+    profil: str = ""               # Name des Layout-Profils, das diesen Aufbau festlegt ("" = automatisch erkannt)
+    ignoriert: bool = False        # Das Profil sagt: dieses Blatt wird nie abgeglichen
 
     def beschreibung(self) -> dict[str, Any]:
         b = lambda c: get_column_letter(c) if c else None  # noqa: E731
-        return {"blatt": self.name, "section_spalte": b(self.section_spalte), "titel_spalte": b(self.titel_spalte),
-                "inhalt_spalte": b(self.inhalt_spalte), "modell": self.modell,
-                "sections": len(self.kopf_zeilen), "zeilen": self.max_zeile,
-                "sicherheit": self.sicherheit, "sicherheit_gruende": list(self.sicherheit_gruende),
-                "versteckt": self.versteckt}
+        d = {"blatt": self.name, "section_spalte": b(self.section_spalte), "titel_spalte": b(self.titel_spalte),
+             "inhalt_spalte": b(self.inhalt_spalte), "modell": self.modell,
+             "sections": len(self.kopf_zeilen), "zeilen": self.max_zeile,
+             "sicherheit": self.sicherheit, "sicherheit_gruende": list(self.sicherheit_gruende),
+             "versteckt": self.versteckt}
+        if self.profil:                # ohne Profil bleibt die Beschreibung genau wie frueher
+            d["profil"] = f"Profil: {self.profil}"
+            d["ignoriert"] = self.ignoriert
+        return d
 
 
 @dataclass
@@ -171,7 +182,21 @@ def _belegte_zellen(ws) -> list:
 
 # Dieselbe Datei (gleicher Inhalt, gleiche Einstellungen) wird nur einmal eingelesen, solange das Modell noch irgendwo
 # gebraucht wird (z. B. Analyse und Eintragen im selben Lauf). Das Modell ist nach dem Einlesen schreibgeschuetzt gedacht.
-_MODELLE: "weakref.WeakValueDictionary[tuple[str, str, str], ExcelModell]" = weakref.WeakValueDictionary()
+_MODELLE: "weakref.WeakValueDictionary[tuple[str, str, str, str], ExcelModell]" = weakref.WeakValueDictionary()
+
+# Layout-Profil, das gilt, wenn ExcelModell ohne ausdruecklichen `profil` aufgerufen wird. So kann runs.py auch den
+# Applier (der die Excel selbst nochmals einliest) denselben Aufbau sehen lassen wie die Analyse. Standard: kein Profil.
+_STANDARD_PROFIL: "ContextVar[Profil | None]" = ContextVar("cde_standard_profil", default=None)
+
+
+@contextmanager
+def profil_kontext(profil: "Profil | None") -> Iterator[None]:
+    """Innerhalb dieses Blocks benutzt jedes ExcelModell(pfad) ohne eigenen Parameter dieses (bestaetigte) Profil."""
+    token = _STANDARD_PROFIL.set(profil)
+    try:
+        yield
+    finally:
+        _STANDARD_PROFIL.reset(token)
 
 
 def _datei_hash(pfad: Path) -> str:
@@ -184,11 +209,14 @@ def _datei_hash(pfad: Path) -> str:
 
 
 class ExcelModell:
-    def __new__(cls, pfad: str | Path) -> "ExcelModell":
+    def __new__(cls, pfad: str | Path, profil: "Profil | None" = None) -> "ExcelModell":
+        if profil is None:
+            profil = _STANDARD_PROFIL.get()
         try:
             p = Path(pfad)
             schluessel = (str(p.resolve()), _datei_hash(p),
-                          repr(sorted(config.lade("zuordnung")["excel"].items())))
+                          repr(sorted(config.lade("zuordnung")["excel"].items())),
+                          profil.hash if profil is not None else "")
         except (OSError, TypeError, KeyError):
             schluessel = None
         if schluessel is not None and schluessel in _MODELLE:
@@ -198,10 +226,13 @@ class ExcelModell:
         self._fertig = False
         return self
 
-    def __init__(self, pfad: str | Path) -> None:
+    def __init__(self, pfad: str | Path, profil: "Profil | None" = None) -> None:
         if self._fertig:                      # aus dem Zwischenspeicher: schon eingelesen
             return
         self.pfad = Path(pfad)
+        # Profil = vom Menschen festgelegter Aufbau je Blatt (src/layouts.py); es ersetzt dort die Erkennung.
+        # Ob es bestaetigt ist, prueft layouts.py, nicht dieses Modul.
+        self.profil: "Profil | None" = profil if profil is not None else _STANDARD_PROFIL.get()
         self.warnungen: list[str] = []
         self.layouts: dict[str, BlattLayout] = {}
         self.zellen: dict[tuple[str, int, int], str] = {}
@@ -274,8 +305,19 @@ class ExcelModell:
         je_blatt: dict[str, dict[tuple[int, int], str]] = {name: {} for name in self.layouts}
         for (b, r, c), t in self.zellen.items():
             je_blatt[b][(r, c)] = t
+        if self.profil is not None:
+            fehlt = [n for n in self.profil.blaetter if n not in self.layouts]
+            if fehlt:
+                self.warnungen.append(f"Das Profil '{self.profil.name}' nennt {len(fehlt)} Blatt/Blätter, die es in dieser Excel nicht gibt "
+                                      "(sie werden übergangen).")
+            self.warnungen.append(f"Der Aufbau wurde durch das Profil '{self.profil.name}' festgelegt "
+                                  "(nicht automatisch erkannt), soweit das Profil die Blätter nennt.")
         for name in self.layouts:
-            self._layout_erkennen(name, cfg, je_blatt[name])
+            bp = self.profil.blaetter.get(name) if self.profil is not None else None
+            if bp is not None:
+                self._layout_aus_profil(name, bp, cfg, je_blatt[name])
+            else:
+                self._layout_erkennen(name, cfg, je_blatt[name])
         self._kandidaten_bauen()
 
     @staticmethod
@@ -491,6 +533,56 @@ class ExcelModell:
         for g in lay.sicherheit_gruende if melden else ():
             self.warnungen.append(f"Aufbau von Blatt '{blatt}' unsicher: {g} Treffer in diesem Blatt werden nur als Vorschlag zum Prüfen angeboten.")
 
+    def _layout_aus_profil(self, blatt: str, bp: "BlattProfil", cfg: dict, zellen: dict[tuple[int, int], str]) -> None:
+        """Aufbau eines Blatts so, wie ihn das Profil festlegt (statt _layout_erkennen). Die Sicherheit ist "hoch",
+        weil die Angabe vom Menschen kommt; Unstimmigkeiten mit den Daten werden als Warnung gemeldet."""
+        from .layouts import ProfilFehler        # erst hier: layouts.py importiert dieses Modul
+        lay = self.layouts[blatt]
+        lay.profil = self.profil.name           # type: ignore[union-attr]
+        sp = get_column_letter
+        nr = list(self.layouts).index(blatt) + 1          # Blattnummer fuer Meldungen (Blattnamen kommen nie in Meldungen)
+        if bp.ignorieren:
+            lay.ignoriert = True
+            for r in range(1, lay.max_zeile + 1):
+                self.zeilen_section[(blatt, r)] = None
+            return
+        genannt = {"Section": bp.section_spalte, "Titel": bp.titel_spalte, "Inhalt": bp.inhalt_spalte}
+        if zellen:
+            for art, c in genannt.items():
+                if c and c > lay.max_spalte:
+                    raise ProfilFehler(f"Im Profil '{self.profil.name}' steht für ein Blatt die {art}-Spalte {sp(c)}, "   # type: ignore[union-attr]
+                                       f"aber das Blatt (Blatt {nr}) reicht nur bis Spalte {sp(lay.max_spalte)}. "
+                                       "Bitte die Spalte im Profil korrigieren.")
+        else:
+            self.warnungen.append(f"Blatt {nr} ist laut Profil festgelegt, enthält aber keinen Text.")
+        lay.section_spalte, lay.titel_spalte, lay.inhalt_spalte = bp.section_spalte, bp.titel_spalte, bp.inhalt_spalte
+        lay.modell = bp.modell
+        treffer: list[tuple[int, str, str]] = []
+        if bp.section_spalte:
+            for (r, c), t in sorted(zellen.items()):
+                if c == bp.section_spalte and r > bp.kopfzeile:
+                    k = self._kopf_art(t, cfg)
+                    if k:
+                        treffer.append((r, k[0], k[1]))
+            kombi = sum(1 for _, art, _ in treffer if art == "kombi")
+            lay.kombiniert = (not bp.titel_spalte) and kombi > len(treffer) - kombi
+            lay.kopf_zeilen = [r for r, _, _ in treffer]
+            if not treffer and zellen:
+                self.warnungen.append(f"Laut Profil steht die Section in Spalte {sp(bp.section_spalte)}, dort wurde aber keine "
+                                      f"Gliederungsnummer gefunden (Blatt {nr}).")
+        if bp.inhalt_spalte and zellen and not any(c == bp.inhalt_spalte for (_, c) in zellen):
+            self.warnungen.append(f"Laut Profil steht der Inhalt in Spalte {sp(bp.inhalt_spalte)}, dort steht aber kein Text "
+                                  f"(Blatt {nr}).")
+        aktuell: str | None = None
+        kopfset = set(lay.kopf_zeilen)
+        for r in range(1, lay.max_zeile + 1):
+            if r in kopfset:
+                t = zellen[(r, bp.section_spalte)]  # type: ignore[index]
+                aktuell = section_nummer(t) or (kopf_zerlegen(t) or (None, ""))[0]
+            self.zeilen_section[(blatt, r)] = aktuell
+        self._zahl_sections(blatt, lay)
+        lay.sicherheit, lay.sicherheit_gruende = HOCH_S, []
+
     def _zahl_sections(self, blatt: str, lay: BlattLayout) -> None:
         """Section-Nummern, die als Zahl in der Excel stehen: gleich lautende sind nicht unterscheidbar (2.10 wird 2.1)."""
         if not lay.section_spalte:
@@ -550,6 +642,8 @@ class ExcelModell:
                 self.nach_blatt_section.setdefault((blatt, k.section), []).append(k.id)
 
         for (blatt, zeile, spalte), text in sorted(self.zellen.items()):
+            if self.layouts[blatt].ignoriert:
+                continue                                  # Profil: dieses Blatt wird nie abgeglichen
             absaetze = [(m.start(), m.end()) for m in re.finditer(r"[^\n]+", text) if m.group().strip()]
             for s, e in absaetze:
                 add("absatz", blatt, zeile, spalte, self._tokens(blatt, zeile, spalte, text, s, e), text[s:e], s, e, text)

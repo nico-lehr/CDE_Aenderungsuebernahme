@@ -26,7 +26,8 @@ from typing import Any
 
 from . import config
 from .applier import uebernehmen
-from .excel_model import ExcelModell
+from . import layouts
+from .excel_model import ExcelModell, profil_kontext
 from .models import GELESENE_SCHEMAS
 from .pdf_reader import analysiere_pdf
 from .planner import plane
@@ -204,18 +205,27 @@ def _info(d: Path) -> dict[str, Any]:
     return info
 
 
-def analysiere(run_id: str) -> dict[str, Any]:
+def analysiere(run_id: str, profil: str | None = None) -> dict[str, Any]:
+    """Analysiert einen Lauf. `profil` = Name eines Layout-Profils (src/layouts.py): wird nur angenommen, wenn es
+    aktiv ist und zu seinem aktuellen Inhalt eine bestaetigte Vorschau gibt (neue Profile gehen nie direkt live)."""
     d = lauf_dir(run_id)
     info = _info(d)
+    prof = None
+    if profil:
+        try:
+            prof = layouts.bestaetigtes_profil(profil)
+        except layouts.ProfilFehler as e:
+            raise LaufFehler(e.meldung, 409, "profil") from None
     pdf, excel = d / "eingabe" / info["pdf"], d / "eingabe" / info["excel"]
     pa = analysiere_pdf(pdf)
-    xl = ExcelModell(excel)
+    xl = ExcelModell(excel, prof)
     plan = plane(pa, xl)
     bil = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
     daten = {
         "run_id": run_id, "pdf_name": info["pdf"], "excel_name": info["excel"],
         "pdf_sha256": _sha(pdf), "excel_sha256": _sha(excel), "seiten": pa.seiten,
-        "bilanz": bil, "layout": plan.layout, "warnungen": plan.warnungen, "ignoriert": plan.ignoriert,
+        "bilanz": bil, "layout": plan.layout, "profil": {"name": prof.name, "hash": prof.hash} if prof else None,
+        "warnungen": plan.warnungen, "ignoriert": plan.ignoriert,
         "luecken": plan.luecken,
         "farben": pa.farben, "aenderungen": [a.zu_dict() for a in plan.aenderungen],
     }
@@ -308,6 +318,17 @@ def _neuer_ergebnis_ordner(d: Path) -> Path:
     return _reserviere(d, name)
 
 
+def _profil_des_plans(plan: dict[str, Any]) -> "layouts.Profil | None":
+    """Das Profil, mit dem der Lauf analysiert wurde (plan.json 'profil'), aus seiner Bestaetigung; ohne Profil None."""
+    p = plan.get("profil")
+    if not p:
+        return None
+    try:
+        return layouts.profil_aus_bestaetigung(str(p["name"]), str(p["hash"]))
+    except (layouts.ProfilFehler, KeyError, TypeError) as e:
+        raise LaufFehler(getattr(e, "meldung", "Das Profil dieses Laufs ist nicht mehr bestätigt. Bitte neu analysieren."), 409, "profil") from None
+
+
 def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[str, Any]:
     d = lauf_dir(run_id)
     plan = _lese_plan(d)
@@ -327,7 +348,8 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[st
     try:
         stamm = Path(info["excel"]).stem
         ziel = ordner / f"{stamm}_aktualisiert{Path(info['excel']).suffix}"
-        res = uebernehmen(aenderungen, quelle, ziel, freig)
+        with profil_kontext(_profil_des_plans(plan)):          # der Applier liest die Excel selbst: gleicher Aufbau wie bei der Analyse
+            res = uebernehmen(aenderungen, quelle, ziel, freig)
         markierte = plan["bilanz"]["woerter_im_pdf"]
         bil = bilanz(aenderungen, markierte, plan.get("ignoriert", []), plan.get("luecken", []))
         warn = list(plan.get("warnungen", [])) + res.warnungen
