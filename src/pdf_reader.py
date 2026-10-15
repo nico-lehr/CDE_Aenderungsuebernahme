@@ -49,7 +49,16 @@ _HINWEIS_TEXT = {
     "design_blau": "Die Überschrift ist blau wie alle Überschriften des Dokuments. Das wurde als Gestaltung gewertet, nicht als „neu“.",
     "design_flaeche": "Eine Farbfläche hinter dem Text sieht nach Gestaltung aus (Tabellenkopf, Streifen). "
                       "Sie wurde nicht als Markierung gewertet.",
+    "mehrspaltig": "Dieses Wort steht in einem Bereich mit mehreren Spalten nebeneinander. Die Wörter können vermischt "
+                   "gelesen worden sein (ein Satz kann zerrissen sein).",
+    "tabelle": "Dieses Wort steht in einer Tabelle. Die Tabelle wurde zeilenweise als normaler Text gelesen; "
+               "Zellen können falsch zugeordnet sein.",
 }
+
+
+def hinweis_text(code: str) -> str:
+    """Satz in einfachem Deutsch zu einem Hinweis-Code eines Worts (leer, wenn es keinen gibt)."""
+    return _HINWEIS_TEXT.get("kommentar" if code.startswith("kommentar_") else code, "")
 
 
 @dataclass
@@ -1043,12 +1052,13 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
             aktuell.append(z)
             vorher = z
         abschliessen()
-    _seitenumbruch(ergebnis, block_zeilen, weich_ids, {norm(w) for w in lay["keine_silbentrennung_vor"]}, kurz)
+    _seitenumbruch(ergebnis, block_zeilen, weich_ids, {norm(w) for w in lay["keine_silbentrennung_vor"]}, kurz,
+                   lay["silbentrennung_min_buchstaben"])
     return seiten_nutz
 
 
 def _seitenumbruch(ergebnis: PdfAnalyse, block_zeilen: dict[int, tuple[_Zeile, _Zeile]], weich_ids: set[int],
-                   ausnahmen: set[str], kurz: Any) -> None:
+                   ausnahmen: set[str], kurz: Any, min_buchstaben: int = 2) -> None:
     """Absatz ueber den Seitenumbruch: ein am Seitenende getrenntes Wort wird zusammengefuegt; setzt sich ein Absatz
     auf der naechsten Seite fort, bekommen beide Bloecke einen Hinweis (die Woerter bleiben je Seite)."""
     bl = ergebnis.blocks
@@ -1057,7 +1067,7 @@ def _seitenumbruch(ergebnis: PdfAnalyse, block_zeilen: dict[int, tuple[_Zeile, _
         b, b2 = bl[i], bl[i + 1]
         if b.kind == b2.kind == "absatz" and b2.page > b.page and b.tokens and b2.tokens:
             v, t = b.tokens[-1], b2.tokens[0]
-            m = _verbinden(v, t, id(v) in weich_ids, ausnahmen)
+            m = _verbinden(v, t, id(v) in weich_ids, ausnahmen, min_buchstaben)
             if m is not None:
                 b.tokens[-1] = m
                 del b2.tokens[0]
@@ -1165,20 +1175,24 @@ def _zeilenabstand(abstaende: list[float], body: float) -> float:
     return statistics.median(stark[0])
 
 
-def _verbinden(v: PdfToken, t: PdfToken, weich: bool, ausnahmen: set[str]) -> PdfToken | None:
+def _verbinden(v: PdfToken, t: PdfToken, weich: bool, ausnahmen: set[str], min_buchstaben: int = 2) -> PdfToken | None:
     """Fuegt ein am Zeilenende getrenntes Wort wieder zusammen ('Kapazi-' + 'taet'; mit '-' oder weichem Trennstrich).
-    Gilt fuer unveraenderte, neue und gestrichene Woerter, wenn beide Teile denselben Status haben."""
+    Gilt fuer unveraenderte, neue und gestrichene Woerter, wenn beide Teile denselben Status haben.
+    `min_buchstaben` (config layout.silbentrennung_min_buchstaben): so viele Buchstaben muss das Stueck VOR dem Trennstrich haben.
+    Der weiche Trennstrich ist unsichtbar; er zaehlt nicht mit ('Ne' + 'nnleistung' ist genauso lang wie 'Ne-' + 'nnleistung')."""
     if v.status != t.status or v.status not in (KEEP, ADD, DEL):
         return None
     text_v = v.new if v.status == ADD else v.old
     text_t = t.new if t.status == ADD else t.old
-    if not text_t[:1].islower() or norm(text_t) in ausnahmen or len(text_v) < 3:
+    if not text_t[:1].islower() or norm(text_t) in ausnahmen or not text_v:
         return None
     if text_v.endswith("-"):
         strich = 1
     elif weich and text_v[-1].isalpha():
         strich = 0
     else:
+        return None
+    if len(text_v) - strich < min_buchstaben:
         return None
     bbox = (v.bbox[0], min(v.bbox[1], t.bbox[1]), max(v.bbox[2], t.bbox[2]), max(v.bbox[3], t.bbox[3]))
     if v.page != t.page:
@@ -1196,12 +1210,13 @@ def _silben(tokens: list[PdfToken], zeilen: list[_Zeile], cfg: dict, weich_ids: 
     if not lay["silbentrennung_zusammenfuegen"] or len(zeilen) < 2:
         return tokens
     ausnahmen = {norm(w) for w in lay["keine_silbentrennung_vor"]}
+    mindest = lay["silbentrennung_min_buchstaben"]
     erste_der_zeilen = {id(z.tokens[0]) for z in zeilen[1:]}
     out: list[PdfToken] = []
     for t in tokens:
         if out and id(t) in erste_der_zeilen:
             v = out[-1]
-            m = _verbinden(v, t, id(v) in weich_ids, ausnahmen)
+            m = _verbinden(v, t, id(v) in weich_ids, ausnahmen, mindest)
             if m is not None:
                 if id(t) in weich_ids:
                     weich_ids.add(id(m))
@@ -1443,6 +1458,17 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
     for l, seite, boxen in ergebnis.regionen:
         l["woerter"] = sum(1 for b in ergebnis.blocks if b.page == seite for t in b.tokens
                            if t.status != KEEP and any(_in_box(t, box) for box in boxen))
+        if l["art"] in ("mehrspaltig", "tabelle"):      # geaenderte Woerter im Bereich tragen den Hinweis (der Planer uebernimmt sie nie allein)
+            for b in ergebnis.blocks:
+                if b.page != seite:
+                    continue
+                gesetzt = False
+                for t in b.tokens:
+                    if t.status != KEEP and any(_in_box(t, box) for box in boxen):
+                        t.hinweis = ";".join(sorted(set(filter(None, t.hinweis.split(";"))) | {l["art"]}))
+                        gesetzt = True
+                if gesetzt:
+                    b.hinweise += [h for h in _block_hinweise(b.tokens) if h not in b.hinweise]
     ergebnis.luecken.sort(key=lambda l: (l["seite"], l["art"]))
     # Farbuebersicht fuer das Dashboard (zum Kalibrieren)
     for (hx, k), n in text_farben.most_common():

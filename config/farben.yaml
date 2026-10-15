@@ -45,6 +45,7 @@ layout:
   kopf_fuss_max_schrift: 1.15  # ... und nicht groesser als Fliesstext * Faktor ist
   silbentrennung_zusammenfuegen: true
   keine_silbentrennung_vor: [und, oder, bzw, sowie, bis, to, and, or]
+  silbentrennung_min_buchstaben: 2   # so viele Buchstaben muss das Stueck vor dem Trennstrich haben (auch beim unsichtbaren weichen Strich)
 
 flaechen:                    # gefuellte Rechtecke hinter Text: Markierung oder Gestaltung (Tabellenkopf, Baenderung)?
   max_ueberstand_em: 1.0     # eine Markierung ragt hoechstens so weit (in Schriftgroessen) ueber den Text hinaus
