@@ -99,19 +99,12 @@ def test_rt106_korpus_hyperlinks_zaehlen_als_neu_seed15(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-107 Korpus synth_0037_standard (Stoerer 'silbentrennung'): ein GESTRICHENES Wort mit "
-                          "weichem Trennstrich bleibt in zwei Stuecke zerrissen (Zusammenfueger arbeitet nur bei "
-                          "schwarzem Text); Besitzer K-PDF")
 def test_rt107_korpus_getrenntes_gestrichenes_wort_seed37(tmp_path):
     a, ab = _abweichung(tmp_path, 37, "standard")
     _pruefe_stille_abweichung(a, ab, "Paar 37")
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-108 Korpus synth_0057_schwer (Stoerer 'silbentrennung'): drei BLAUE neue Woerter mit "
-                          "Trennstrich bleiben in je zwei Stuecke zerrissen (wie RT-63/64, hier im Korpus); Besitzer K-PDF")
 def test_rt108_korpus_getrennte_blaue_woerter_seed57(tmp_path):
     a, ab = _abweichung(tmp_path, 57, "schwer")
     _pruefe_stille_abweichung(a, ab, "Paar 57")

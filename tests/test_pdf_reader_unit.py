@@ -563,3 +563,156 @@ def test_reines_cyan_in_cmyk_ist_unbekannte_farbe(tmp_path):
     inhalt = zeile(56, 64, "Das ist ") + zeile(92, 64, "neuer Text hier", farbe="1 0 0 0 k") + zeile(168, 64, " im Satz.")
     a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
     assert _luecke(a, "unbekannte_farbe")["woerter"] == 3
+
+
+# =================================================================================================
+# Blockschnitt: Fussnoten, Listen, Ueberschriften, Seitenumbruch
+# =================================================================================================
+def _blocks(a, art: str = "absatz"):
+    return [b for b in a.blocks if b.kind == art]
+
+
+def test_fussnoten_druecken_den_zeilenabstand_nicht(tmp_path):
+    from tests.redteam._bau_pdf import eindeutiger_text
+    d = dok()
+    d.block(eindeutiger_text(62, 38, "Erstwort", "Endwort", "{+neuwort+}"))
+    d.block(eindeutiger_text(63, 30, "Zweitwort", "Schlusswort"))
+    for i in range(3):
+        assert d.fussnote("Dies ist eine erfundene Fussnote mit etwas Text zur Erlaeuterung.", marke=str(i + 1))
+    a = lese(tmp_path, d)
+    absaetze = [b for b in _blocks(a) if "Erstwort" in b.alt_text + b.neu_text or "Zweitwort" in b.alt_text]
+    assert len(absaetze) == 2 and "Endwort" in absaetze[0].neu_text and "Schlusswort" in absaetze[1].alt_text
+
+
+_ZIELE = ("Kapazitaetserweiterung Sicherheitsarchitektur Netzanbindung Verfuegbarkeitsgarantie Kapazitaetsplanung "
+          "Leistungsfaehigkeit Netzanschlussbedingungen Verantwortlichkeiten Wartungsintervalle")
+
+
+@pytest.mark.parametrize("trennung", ["ascii", "weich"])
+@pytest.mark.parametrize("markup", ["{+%s+}", "{-%s-}", "%s"], ids=["neu", "weg", "schwarz"])
+def test_getrenntes_wort_wird_in_jeder_farbe_zusammengefuegt(tmp_path, trennung, markup):
+    d = dok(trennung=trennung)
+    d.block("Wir pruefen heute ausfuehrlich die Anforderung ob die " + markup % _ZIELE + " gilt und sonst nichts weiter.")
+    assert d.getrennt, "im Test-PDF wurde nichts getrennt"
+    a = lese(tmp_path, d)
+    woerter = [w for t in alle_tokens(a) for w in (t.old, t.new) if w]
+    for wort, _, _ in d.getrennt:
+        assert wort in woerter, (wort, trennung, markup)
+    assert not [w for w in woerter if w.endswith("-") and len(w) > 6]
+
+
+def test_zusammengefuegtes_wort_behaelt_den_status(tmp_path):
+    d = dok(trennung="ascii")
+    d.block("Wir pruefen heute ausfuehrlich die Anforderung ob die {+Kapazitaetserweiterung Sicherheitsarchitektur "
+            "Netzanbindung Verfuegbarkeitsgarantie+} gilt und sonst nichts weiter.")
+    a = lese(tmp_path, d)
+    for wort, _, _ in d.getrennt:
+        t = token(a, wort)
+        assert t.status == ADD and t.old == "" and t.new == wort
+
+
+def test_trennung_vor_und_oder_und_gemischter_status_wird_nicht_zusammengefuegt(tmp_path):
+    from tests.redteam._bau_pdf import zeile
+    zeilen = (zeile(56, 64, "Der Netzanschluss erfolgt ueber Strom-") + zeile(56, 79, "und Datenleitungen und weiter geht es.")
+              + zeile(56, 94, "Wir lesen das Wort Sicher-", farbe="0 0 1 rg") + zeile(56, 109, "heitsarchitektur im Satz."))
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=zeilen)]))
+    assert token(a, "Strom-") is not None and token(a, "und") is not None
+    assert token(a, "Sicher-") is not None and token(a, "heitsarchitektur") is not None
+
+
+def test_wort_ueber_den_seitenumbruch_wird_zusammengefuegt(tmp_path):
+    d = dok(trennung="ascii")
+    d.block("Wort Wort Wort Wort zuerst die {+Verfuegbarkeitsgarantie Kapazitaetserweiterung Sicherheitsarchitektur+} "
+            "und danach noch viel mehr Text der auf der naechsten Seite weitergeht.", umbruch_nach_zeile=1)
+    assert d.stats["trennung_seitenende"] == 1 and d.seitenzahl == 2
+    a = lese(tmp_path, d)
+    t = token(a, "Sicherheitsarchitektur")
+    assert t.status == ADD and t.page == 1
+    assert not [x for x in alle_tokens(a) if x.new in ("tektur", "Sicherheitsarchi-")]
+
+
+def test_absatz_ueber_den_seitenumbruch_bekommt_fortsetzungs_hinweis(tmp_path):
+    d = dok()
+    d.block("Dies ist ein Absatz der ueber einen Seitenumbruch geht und mehrere Zeilen hat damit das Ganze testbar ist "
+            "und noch weiter geht fuer eine dritte Zeile {+neu am Ende+}", umbruch_nach_zeile=1)
+    a = lese(tmp_path, d)
+    assert len(a.blocks) == 2
+    assert any("nächsten Seite" in h for h in a.blocks[0].hinweise)
+    assert any("Fortsetzung" in h for h in a.blocks[1].hinweise)
+    assert [t.old or t.new for b in a.blocks for t in b.tokens][-3:] == ["neu", "am", "Ende"]
+
+
+def test_neuer_absatz_nach_satzende_auf_der_naechsten_seite_hat_keinen_hinweis(tmp_path):
+    d = dok()
+    d.block("Der erste Absatz endet hier mit einem Punkt.")
+    d.seitenumbruch()
+    d.block("Der zweite Absatz beginnt auf der naechsten Seite.")
+    a = lese(tmp_path, d)
+    assert len(a.blocks) == 2 and all(not b.hinweise for b in a.blocks)
+
+
+def test_enge_liste_mit_nummer_punkt_wird_getrennt(tmp_path):
+    d = dok()
+    d.block("Einleitung vor der Liste ohne Neuerung.")
+    for i, wort in enumerate(("Alpha", "Beta", "Gamma"), 1):
+        d.block(f"Das {wort} Listenelement ist hier eingetragen und lang genug.", marker=f"{i}.", abstand_danach=0)
+    a = lese(tmp_path, d)
+    assert len(a.blocks) == 4 and all(len([t for t in b.tokens if t.old in ("Alpha", "Beta", "Gamma")]) <= 1 for b in a.blocks)
+
+
+def test_zahl_mit_punkt_am_zeilenanfang_im_fliesstext_teilt_nicht(tmp_path):
+    inhalt = zeile(56, 64, "Die Frist endet am letzten Tag des Monats, also am") + zeile(56, 79, "2. Mai des Jahres und danach geht es weiter.")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert len(a.blocks) == 1
+
+
+@pytest.mark.parametrize("marker", [["A)", "B)", "C)"], ["i.", "ii.", "iii."], ["•", "•", "•"], ["(1)", "(2)", "(3)"]])
+def test_enge_liste_mit_anderen_zeichen_wird_getrennt(tmp_path, marker):
+    inhalt = zeile(56, 64, "Einleitung vor der Liste ohne Neuerung.")
+    for i, (m, wort) in enumerate(zip(marker, ("Alpha", "Beta", "Gamma"))):
+        top = 79 + 15 * i
+        inhalt += zeile(56, top, m, kodierung="cp1252") + zeile(72, top, f"Das {wort} Listenelement ist hier und lang genug.")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert len(a.blocks) == 4
+
+
+def test_gedankenstrich_im_satz_teilt_nicht_aber_strichliste_schon(tmp_path):
+    d = dok()
+    d.block("Wort Wort Wort Wort Wort Wort Der Betrieb laeuft – stabil und wird dokumentiert und die Anlage wird "
+            "regelmaessig gewartet damit alles in Ordnung bleibt und {+nichts ausfaellt+}.", spalte_bis=300)
+    a = lese(tmp_path / "satz", d)
+    assert len(a.blocks) == 1
+    inhalt = zeile(56, 64, "Folgende Punkte gelten:") + "".join(
+        zeile(56, 79 + 15 * i, "–", ) + zeile(72, 79 + 15 * i, f"Punkt Nummer {i} steht hier") for i in range(3))
+    a = lese(tmp_path / "liste", roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert len(a.blocks) == 4
+
+
+def test_zweizeilige_ueberschrift_bleibt_ein_block(tmp_path):
+    d = dok()
+    d.ueberschrift("2.4 Anforderungen an die Verfuegbarkeit und die Kapazitaet der gesamten Netzanbindung im Normalbetrieb")
+    d.block("Folgetext der Section hier im Satz und {+neu+}.")
+    a = lese(tmp_path, d)
+    koepfe = _blocks(a, "ueberschrift")
+    assert len(koepfe) == 1 and koepfe[0].tokens[-1].old == "Normalbetrieb"
+    folge = _blocks(a)[0]
+    assert folge.section_alt == "2.4" and folge.section_neu == "2.4"
+
+
+def test_aufeinanderfolgende_nummerierte_ueberschriften_bleiben_getrennt(tmp_path):
+    d = dok()
+    d.ueberschrift("1 Erste")
+    d.ueberschrift("1.1 Zweite")
+    d.block("Text.")
+    assert len(_blocks(lese(tmp_path, d), "ueberschrift")) == 2
+
+
+def test_umnummerierte_ueberschrift_liest_alte_und_neue_nummer(tmp_path):
+    d = dok()
+    d.ueberschrift("{-2.3-} {+2.2+} Geltungsbereich der Anforderungen")
+    d.block("Folgetext der Section hier im Satz.")
+    a = lese(tmp_path, d)
+    kopf = _blocks(a, "ueberschrift")[0]
+    assert (kopf.section_alt, kopf.section_neu) == ("2.3", "2.2")
+    folge = _blocks(a)[0]
+    assert (folge.section_alt, folge.section_neu) == ("2.3", "2.2")

@@ -52,9 +52,6 @@ def test_rt61_unveraenderter_wortteil_bleibt_im_alten_stand(tmp_path):
 # b) Fussnote druckt die Zeilenabstand-Schaetzung
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-62 Fussnoten (8 pt, 3 Zeilen) druecken die Zeilenabstand-Schaetzung: jede Zeile des "
-                          "Fliesstexts wird ein eigener Block; Besitzer K-PDF")
 def test_rt62_fussnote_zerreisst_den_fliesstext(tmp_path):
     d = dok()
     d.block(_eindeutiger_text(62, 38, "Erstwort", "Endwort", "{+neuwort+}"))
@@ -87,9 +84,6 @@ def _wort_zusammen_oder_hinweis(a, ganz: str, anfang: str) -> bool:
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-63 Silbentrennung ('-') in einem BLAUEN Wort: 'Sicherheitsarchi-' und 'tektur' bleiben "
-                          "zwei neue Woerter (nur schwarze Woerter werden zusammengefuegt); Besitzer K-PDF")
 def test_rt63_silbentrennung_blaues_wort_mit_strich(tmp_path):
     d = dok(trennung="ascii")
     d.block(_TEXT_C)
@@ -101,9 +95,6 @@ def test_rt63_silbentrennung_blaues_wort_mit_strich(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-64 Weicher Trennstrich (U+00AD) in einem BLAUEN Wort: 'Sicherheitsarchi' und 'tektur' "
-                          "bleiben zwei neue Woerter, der Strich fehlt, kein Hinweis; Besitzer K-PDF")
 def test_rt64_silbentrennung_blaues_wort_weicher_strich(tmp_path):
     d = dok(trennung="weich")
     d.block(_TEXT_C)
@@ -115,9 +106,6 @@ def test_rt64_silbentrennung_blaues_wort_weicher_strich(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-65 Weicher Trennstrich (U+00AD) in einem SCHWARZEN Wort: pdfplumber laesst den Strich weg, "
-                          "'Ueberga' und 'beprotokolle' bleiben zwei Woerter (der Zusammenfueger sucht nur '-'); Besitzer K-PDF")
 def test_rt65_silbentrennung_schwarzes_wort_weicher_strich(tmp_path):
     d = dok(trennung="weich")
     d.block("Der Betreiber stellt die Speicherkapazitaet bereit und dokumentiert Verantwortlichkeiten "
@@ -130,9 +118,6 @@ def test_rt65_silbentrennung_schwarzes_wort_weicher_strich(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-66 Silbentrennung genau am Seitenende: 'Sicherheitsarchi-' steht am Ende von Seite 1, "
-                          "'tektur' am Anfang von Seite 2; die Teile werden nie zusammengefuegt; Besitzer K-PDF")
 def test_rt66_silbentrennung_am_seitenende(tmp_path):
     d = dok(trennung="ascii")
     d.block("Wort Wort Wort Wort zuerst die {+Verfuegbarkeitsgarantie Kapazitaetserweiterung Sicherheitsarchitektur+} "
@@ -148,9 +133,6 @@ def test_rt66_silbentrennung_am_seitenende(tmp_path):
 # e) Absatz ueber den Seitenumbruch
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-67 Absatz laeuft ueber den Seitenumbruch: er wird immer in zwei Bloecke geteilt, "
-                          "ohne Hinweis, dass der zweite die Fortsetzung ist; Besitzer K-PDF")
 def test_rt67_absatz_ueber_seitenumbruch_bleibt_ein_absatz(tmp_path):
     d = dok()
     d.block("Dies ist ein Absatz der ueber einen Seitenumbruch geht und mehrere Zeilen hat damit das Ganze testbar ist "
@@ -167,9 +149,6 @@ def test_rt67_absatz_ueber_seitenumbruch_bleibt_ein_absatz(tmp_path):
 # i) Aufzaehlungen, Symbolzeichen, Gedankenstrich
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-68 Enge Liste '1.' / '2.' / '3.' (Zeilenabstand wie im Fliesstext): alle Punkte werden "
-                          "EIN Block (nur '1)', 'a)' und Punkte wie '-' werden erkannt); Besitzer K-PDF")
 def test_rt68_enge_liste_mit_nummer_punkt(tmp_path):
     d = dok()
     d.block("Einleitung vor der Liste ohne Neuerung.")
@@ -187,9 +166,6 @@ _SYMBOL_SCHRIFT = ("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encodin
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-69 Enge Liste mit 'A)' / 'i.' / Symbolzeichen (Wingdings U+F0B7, Quadrat): "
-                          "die Punkte werden EIN Block (das Muster kennt nur Kleinbuchstaben 'a)' und Ziffern); Besitzer K-PDF")
 @pytest.mark.parametrize("marker,schrift", [(["A)", "B)", "C)"], ""), (["i.", "ii.", "iii."], ""),
                                             (["\x80"] * 3, _SYMBOL_SCHRIFT), (["\x81"] * 3, _SYMBOL_SCHRIFT)],
                          ids=["A)", "i.", "U+F0B7", "Quadrat"])
@@ -205,9 +181,6 @@ def test_rt69_enge_liste_symbolzeichen_und_grossbuchstaben(tmp_path, marker, sch
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-70 Gedankenstrich '–' steht zufaellig am Zeilenanfang im Fliesstext: der Absatz wird "
-                          "dort geteilt (gilt als Aufzaehlungszeichen); Besitzer K-PDF")
 def test_rt70_gedankenstrich_am_zeilenanfang_teilt_keinen_absatz(tmp_path):
     d = dok()
     d.block("Wort Wort Wort Wort Wort Wort Der Betrieb laeuft – stabil und wird dokumentiert und die Anlage wird "
@@ -283,9 +256,6 @@ def test_rt73_zierlinie_hinter_ueberschrift_ist_keine_durchstreichung(tmp_path):
 # n) Ueberschriften
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-74 Zweizeilige Ueberschrift: die zweite Zeile wird ein eigener Absatz-Block "
-                          "(und damit Teil des Section-Textes); Besitzer K-PDF")
 def test_rt74_zweizeilige_ueberschrift_bleibt_ein_block(tmp_path):
     d = dok()
     d.ueberschrift("2.4 Anforderungen an die Verfuegbarkeit und die Kapazitaet der gesamten Netzanbindung im Normalbetrieb")
@@ -301,9 +271,6 @@ def test_rt74_zweizeilige_ueberschrift_bleibt_ein_block(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-75 Umnummerierte Ueberschrift '{-2.3-} {+2.2+}': section_neu wird nur aus dem ERSTEN "
-                          "Wort gelesen und bleibt leer (auch fuer den Folgeabsatz); Besitzer K-PDF")
 def test_rt75_umnummerierte_ueberschrift_section_neu(tmp_path):
     d = dok()
     d.ueberschrift("{-2.3-} {+2.2+} Geltungsbereich der Anforderungen")

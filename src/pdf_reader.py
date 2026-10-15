@@ -154,6 +154,7 @@ class _Z:
     status: str = KEEP
     leer: bool = False                 # Leerraum-Zeichen (wird nur fuer Geometrie gebraucht)
     unsichtbar: bool = False           # Render-Modus 3 (unsichtbare Textebene)
+    weich: bool = False                # weicher Trennstrich (Code 173), von pdfminer als Leerzeichen gelesen
     weiss: bool = False
     hex: str = ""
     farbklasse: str | None = None
@@ -184,6 +185,7 @@ class _Zeile:
     fett: bool
     seite: int
     unsichtbar: bool = False
+    weich_ende: bool = False          # die Zeile endet mit einem weichen Trennstrich
 
 
 @dataclass
@@ -240,8 +242,8 @@ def _richtung(c: dict) -> str:
     return "schraeg"
 
 
-def _render_modi(page: Any) -> list[int] | None:
-    """Text-Render-Modus je Zeichen (3 = unsichtbar). pdfplumber gibt ihn nicht heraus, deshalb wird die Seite
+def _render_modi(page: Any) -> list[tuple[int, bool]] | None:
+    """Je Zeichen: (Text-Render-Modus (3 = unsichtbar), weicher Trennstrich?). pdfplumber gibt ihn nicht heraus, deshalb wird die Seite
     hier mit einem eigenen Geraet ausgewertet und das Ergebnis als Layout der Seite abgelegt.
     None, wenn das nicht moeglich ist (dann gelten alle Zeichen als sichtbar)."""
     try:
@@ -253,7 +255,7 @@ def _render_modi(page: Any) -> list[int] | None:
     class _Geraet(PDFPageAggregatorWithMarkedContent):
         def __init__(self, *a: Any, **kw: Any) -> None:
             super().__init__(*a, **kw)
-            self.modi: list[int] = []
+            self.modi: list[tuple[int, bool]] = []
             self._modus = 0
 
         def render_string(self, textstate: Any, seq: Any, ncs: Any, graphicstate: Any) -> None:
@@ -262,7 +264,14 @@ def _render_modi(page: Any) -> list[int] | None:
 
         def render_char(self, *a: Any, **kw: Any) -> float:   # type: ignore[override]
             adv = super().render_char(*a, **kw)
-            self.modi.append(self._modus)
+            weich = False
+            try:
+                font, cid = a[1], a[5]
+                # Code 173 (weicher Trennstrich) liest pdfminer als Leerzeichen; in Schriften mit festem Code ist er das
+                weich = cid == 173 and not font.is_multibyte() and not str(font.to_unichr(cid)).strip()
+            except Exception:
+                pass
+            self.modi.append((self._modus, weich))
             return adv
 
     try:
@@ -389,7 +398,8 @@ def _lese_seite(page: Any, nr: int, cfg: dict) -> _SeitenDaten:
         x0, top, x1, bot = rahmen.box(c["x0"], c["top"], c["x1"], c["bottom"])
         z = _Z(text=text, x0=x0, x1=x1, top=top, bottom=bot,
                size=float(c.get("size") or 10), font=str(c.get("fontname") or ""), leer=leer)
-        z.unsichtbar = bool(modi and modi[i] in (3, 7))
+        z.unsichtbar = bool(modi and modi[i][0] in (3, 7))
+        z.weich = bool(modi and modi[i][1])
         if rgb is not None:
             z.hex = _hex(rgb)
             z.weiss = min(rgb) >= 0.97
@@ -802,6 +812,7 @@ def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> t
 
 def _zeilen(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> list[_Zeile]:
     tol = cfg["layout"]["zeilen_toleranz"]
+    weiche = [z for z in zeichen if z.weich]
     zeichen = [z for z in zeichen if not z.leer]
     zeichen = sorted(zeichen, key=lambda z: ((z.top + z.bottom) / 2, z.x0))
     cluster: list[list[_Z]] = []
@@ -820,7 +831,8 @@ def _zeilen(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> li
         if not toks:
             continue
         t0 = toks[0]
-        if t0.status == KEEP and _NUR_PRIVAT.fullmatch(t0.old):      # Symbolschrift-Aufzaehlungspunkt am Zeilenanfang: kein Lesefehler
+        if t0.status == KEEP and _NUR_PRIVAT.fullmatch(t0.old):      # Symbolschrift-Aufzaehlungspunkt am Zeilenanfang = Aufzaehlungszeichen
+            t0.old = t0.new = "•"
             t0.hinweis = ";".join(h for h in t0.hinweis.split(";") if h and h != "nicht_lesbar")
             infos[0].unlesbar = False
         fett_n = sum(1 for z in cl if re.search(r"bold|black|heavy|semibold", z.font, re.I))
@@ -828,13 +840,36 @@ def _zeilen(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> li
             tokens=toks, infos=infos, top=min(z.top for z in cl), bottom=max(z.bottom for z in cl),
             x0=min(z.x0 for z in cl), x1=max(z.x1 for z in cl),
             size=statistics.median(z.size for z in cl), fett=fett_n / len(cl) > 0.6, seite=seite,
-            unsichtbar=sum(1 for z in cl if z.unsichtbar or z.weiss) * 2 > len(cl)))
+            unsichtbar=sum(1 for z in cl if z.unsichtbar or z.weiss) * 2 > len(cl),
+            weich_ende=any(min(c.top for c in cl) <= (w.top + w.bottom) / 2 <= max(c.bottom for c in cl)
+                           and w.x0 >= max(c.x1 for c in cl) - 1 for w in weiche)))
     zeilen.sort(key=lambda z: z.top)
     return zeilen
 
 
 # ---------------------------------------------------------------- Bloecke
-_AUFZAEHLUNG = re.compile(r"^([•\-–·▪●○*]|\(?\d{1,2}\)|[a-z]\))$")
+_PUNKTE = "•·▪▫■□●○◦‣⁃◆◇➢➤►▶✓✔→*"
+_RE_PUNKT = re.compile(f"^[{re.escape(_PUNKTE)}]$")
+_RE_STRICH = re.compile(r"^[-–—]$")
+_RE_ZAHL_PUNKT = re.compile(r"^(\d{1,2})\.$")
+_RE_KLAMMER = re.compile(r"^(\(?\d{1,2}\)|\(?[A-Za-z]\)|\(?(?:i{1,3}|iv|vi{0,3}|ix|x)\))$")
+_RE_ROEMISCH = re.compile(r"^(?:i{1,3}|iv|vi{0,3}|ix|x)\.$")
+
+
+def _marke(text: str) -> tuple[str, int] | None:
+    """Aufzaehlungszeichen am Zeilenanfang: ('punkt' | 'strich' | 'zahl' | 'klammer' | 'roemisch', Nummer) oder None."""
+    if _RE_PUNKT.match(text):
+        return "punkt", 0
+    if _RE_STRICH.match(text):
+        return "strich", 0
+    m = _RE_ZAHL_PUNKT.match(text)
+    if m:
+        return "zahl", int(m.group(1))
+    if _RE_KLAMMER.match(text):
+        return "klammer", 0
+    if _RE_ROEMISCH.match(text):
+        return "roemisch", 0
+    return None
 
 
 def _erste_form(t: PdfToken) -> str:
@@ -903,7 +938,9 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
     sec_neu: str | None = None
     idx = 0
     seiten_nutz: list[list[_Zeile]] = []
-    abstaende: list[float] = []
+    abstaende: list[float] = []           # Zeilenabstaende im Fliesstext (Zeilen in Fliesstext-Schriftgroesse)
+    alle_abstaende: list[float] = []      # Ersatz, falls es keine zwei Fliesstext-Zeilen untereinander gibt
+    weich_ids = {id(z.tokens[-1]) for zl in alle_zeilen for z in zl if z.weich_ende}
     for zl in alle_zeilen:
         nutz = []
         for z in zl:
@@ -915,9 +952,13 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
                 continue
             nutz.append(z)
         seiten_nutz.append(nutz)
-        abstaende += [b.top - a.top for a, b in zip(nutz, nutz[1:]) if 0.9 * a.size < b.top - a.top < 3 * a.size]
+        for a, b in zip(nutz, nutz[1:]):
+            if 0.9 * a.size < b.top - a.top < 3 * a.size:
+                alle_abstaende.append(b.top - a.top)
+                if abs(a.size - body) <= 0.5 and abs(b.size - body) <= 0.5:
+                    abstaende.append(b.top - a.top)
     _design_ueberschriften(seiten_nutz, body, cfg, ergebnis)
-    median = _zeilenabstand(abstaende, body)
+    median = _zeilenabstand(abstaende or alle_abstaende, body)
     weit = median >= 1.5 * body          # grosser Zeilenabstand: Absatzende erkennt man an der kurzen Zeile
     rechts_x = sorted(z.x1 for zl in seiten_nutz for z in zl if len(z.tokens) >= 5)
     rechts = rechts_x[int(0.9 * (len(rechts_x) - 1))] if rechts_x else None
@@ -929,8 +970,12 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
     else:
         schwelle_kurz = None
 
+    def kurz_im_text(z: _Zeile) -> bool:        # deutlich kuerzer als die langen Zeilen des Textes
+        return rechts is not None and z.x1 < rechts - 3 * z.size
+
     def kurz(z: _Zeile) -> bool:
-        return (rechts is not None and z.x1 < rechts - 3 * z.size) or (schwelle_kurz is not None and z.x1 < schwelle_kurz)
+        return kurz_im_text(z) or (schwelle_kurz is not None and z.x1 < schwelle_kurz)
+    block_zeilen: dict[int, tuple[_Zeile, _Zeile]] = {}      # Block -> (erste, letzte Zeile)
     for nutz in seiten_nutz:
         if not nutz:
             continue
@@ -943,37 +988,95 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
                 return
             toks = [t for z in aktuell for t in z.tokens]
             if art == "ueberschrift":
-                t0 = toks[0]
-                n_alt = section_nummer(t0.old) if t0.old else None
-                n_neu = section_nummer(t0.new) if t0.new else None
+                n_alt = next((section_nummer(t.old) for t in toks if t.old), None)      # '{-2.3-} {+2.2+} Titel'
+                n_neu = next((section_nummer(t.new) for t in toks if t.new), None)
                 if n_alt or n_neu:
                     sec_alt, sec_neu = n_alt, n_neu
                 else:   # unnummerierte Ueberschrift: Zuordnung ueber Text, Nummern bleiben
                     sec_alt = sec_neu = None
             else:
-                toks = _silben(toks, aktuell, cfg)
+                toks = _silben(toks, aktuell, cfg, weich_ids)
             bbox = (min(z.x0 for z in aktuell), min(z.top for z in aktuell),
                     max(z.x1 for z in aktuell), max(z.bottom for z in aktuell))
             ergebnis.blocks.append(PdfBlock(idx=idx, page=aktuell[0].seite, kind=art, tokens=toks, bbox=bbox,
                                             section_alt=sec_alt, section_neu=sec_neu,
                                             hinweise=_block_hinweise(toks)))
+            block_zeilen[idx] = (aktuell[0], aktuell[-1])
             idx += 1
             aktuell = []
 
         vorher: _Zeile | None = None
+        block_marke: str | None = None        # Art des Aufzaehlungszeichens, mit dem der aktuelle Block beginnt
+        letzte_nr = 0                         # letzte Nummer einer Liste "1." "2." ...
         for z in nutz:
             kopf = _ist_ueberschrift(z, body, cfg)
-            neu_start = (not aktuell or kopf or art == "ueberschrift"
-                         or (vorher is not None and z.top - vorher.top > lay["absatz_faktor"] * median)
-                         or (weit and vorher is not None and kurz(vorher))
-                         or bool(_AUFZAEHLUNG.match(_erste_form(z.tokens[0]))))
+            # zweite Zeile einer Ueberschrift: gleiche Schrift, enger Abstand, keine eigene Nummer
+            folge_kopf = (art == "ueberschrift" and vorher is not None and abs(z.size - vorher.size) < 0.5
+                          and z.fett == vorher.fett and z.top - vorher.top <= 1.6 * vorher.size
+                          and section_nummer(z.tokens[0].old or z.tokens[0].new) is None)
+            marke = _marke(_erste_form(z.tokens[0]))
+            ist_listenpunkt = False
+            if marke and vorher is not None:
+                m_art, m_nr = marke
+                if m_art == "zahl":
+                    ist_listenpunkt = m_nr == 1 or m_nr == letzte_nr + 1
+                elif m_art == "strich":
+                    # ein Strich am Zeilenanfang ist nur dann ein Listenpunkt, wenn davor ein Satz endet,
+                    # die Zeile davor kurz war oder die Liste mit einem Strich schon laeuft
+                    ende = _erste_form(vorher.tokens[-1])[-1:]
+                    ist_listenpunkt = block_marke == "strich" or ende in (".", ":", ";", "!", "?") or kurz_im_text(vorher)
+                else:
+                    ist_listenpunkt = True
+            neu_start = (not aktuell or (kopf and not folge_kopf) or (art == "ueberschrift" and not folge_kopf)
+                         or (not folge_kopf and (
+                             (vorher is not None and z.top - vorher.top > lay["absatz_faktor"] * median)
+                             or (weit and vorher is not None and kurz(vorher))
+                             or ist_listenpunkt)))
             if neu_start:
                 abschliessen()
                 art = "ueberschrift" if kopf else "absatz"
+                block_marke = marke[0] if (marke and ist_listenpunkt) else None
+                if kopf:
+                    letzte_nr = 0
+                elif marke and ist_listenpunkt and marke[0] == "zahl":
+                    letzte_nr = marke[1]
             aktuell.append(z)
             vorher = z
         abschliessen()
+    _seitenumbruch(ergebnis, block_zeilen, weich_ids, {norm(w) for w in lay["keine_silbentrennung_vor"]}, kurz)
     return seiten_nutz
+
+
+def _seitenumbruch(ergebnis: PdfAnalyse, block_zeilen: dict[int, tuple[_Zeile, _Zeile]], weich_ids: set[int],
+                   ausnahmen: set[str], kurz: Any) -> None:
+    """Absatz ueber den Seitenumbruch: ein am Seitenende getrenntes Wort wird zusammengefuegt; setzt sich ein Absatz
+    auf der naechsten Seite fort, bekommen beide Bloecke einen Hinweis (die Woerter bleiben je Seite)."""
+    bl = ergebnis.blocks
+    i = 0
+    while i < len(bl) - 1:
+        b, b2 = bl[i], bl[i + 1]
+        if b.kind == b2.kind == "absatz" and b2.page > b.page and b.tokens and b2.tokens:
+            v, t = b.tokens[-1], b2.tokens[0]
+            m = _verbinden(v, t, id(v) in weich_ids, ausnahmen)
+            if m is not None:
+                b.tokens[-1] = m
+                del b2.tokens[0]
+                if not b2.tokens:
+                    del bl[i + 1]
+                    for k, rest in enumerate(bl[i + 1:], i + 1):
+                        rest.idx = k
+                else:
+                    b2.bbox = (min(x.bbox[0] for x in b2.tokens), min(x.bbox[1] for x in b2.tokens),
+                               max(x.bbox[2] for x in b2.tokens), max(x.bbox[3] for x in b2.tokens))
+                continue
+            text_v, text_t = _erste_form(v), _erste_form(t)
+            letzte = block_zeilen.get(b.idx, (None, None))[1]
+            if text_t[:1].islower() or (not re.search(r"[.!?:;)\"”»]$", text_v) and letzte is not None and not kurz(letzte)):
+                for blk, satz in ((b, "Der Absatz geht auf der nächsten Seite weiter."),
+                                  (b2, "Dieser Absatz ist die Fortsetzung des Absatzes von der vorigen Seite.")):
+                    if satz not in blk.hinweise:
+                        blk.hinweise.append(satz)
+        i += 1
 
 
 def _design_ueberschriften(seiten_nutz: list[list[_Zeile]], body: float, cfg: dict, ergebnis: PdfAnalyse) -> None:
@@ -1062,8 +1165,33 @@ def _zeilenabstand(abstaende: list[float], body: float) -> float:
     return statistics.median(stark[0])
 
 
-def _silben(tokens: list[PdfToken], zeilen: list[_Zeile], cfg: dict) -> list[PdfToken]:
-    """Fuegt am Zeilenende getrennte Woerter ('Kapazi-' + 'taet') wieder zusammen."""
+def _verbinden(v: PdfToken, t: PdfToken, weich: bool, ausnahmen: set[str]) -> PdfToken | None:
+    """Fuegt ein am Zeilenende getrenntes Wort wieder zusammen ('Kapazi-' + 'taet'; mit '-' oder weichem Trennstrich).
+    Gilt fuer unveraenderte, neue und gestrichene Woerter, wenn beide Teile denselben Status haben."""
+    if v.status != t.status or v.status not in (KEEP, ADD, DEL):
+        return None
+    text_v = v.new if v.status == ADD else v.old
+    text_t = t.new if t.status == ADD else t.old
+    if not text_t[:1].islower() or norm(text_t) in ausnahmen or len(text_v) < 3:
+        return None
+    if text_v.endswith("-"):
+        strich = 1
+    elif weich and text_v[-1].isalpha():
+        strich = 0
+    else:
+        return None
+    bbox = (v.bbox[0], min(v.bbox[1], t.bbox[1]), max(v.bbox[2], t.bbox[2]), max(v.bbox[3], t.bbox[3]))
+    if v.page != t.page:
+        bbox = v.bbox
+    hin = ";".join(sorted((set(v.hinweis.split(";")) | set(t.hinweis.split(";"))) - {""}))
+    alt = (v.old[:len(v.old) - strich] + t.old) if v.old else ""
+    neu = (v.new[:len(v.new) - strich] + t.new) if v.new else ""
+    return PdfToken(old=alt, new=neu, status=v.status, page=v.page, bbox=bbox, hinweis=hin)
+
+
+def _silben(tokens: list[PdfToken], zeilen: list[_Zeile], cfg: dict, weich_ids: set[int]) -> list[PdfToken]:
+    """Fuegt am Zeilenende getrennte Woerter wieder zusammen. weich_ids: Woerter, hinter denen ein weicher
+    Trennstrich steht (wird um zusammengefuegte Woerter ergaenzt)."""
     lay = cfg["layout"]
     if not lay["silbentrennung_zusammenfuegen"] or len(zeilen) < 2:
         return tokens
@@ -1073,12 +1201,11 @@ def _silben(tokens: list[PdfToken], zeilen: list[_Zeile], cfg: dict) -> list[Pdf
     for t in tokens:
         if out and id(t) in erste_der_zeilen:
             v = out[-1]
-            if (v.status == KEEP and t.status == KEEP and len(v.old) > 2 and v.old.endswith("-")
-                    and t.old[:1].islower() and norm(t.old) not in ausnahmen):
-                bbox = (v.bbox[0], min(v.bbox[1], t.bbox[1]), max(v.bbox[2], t.bbox[2]), max(v.bbox[3], t.bbox[3]))
-                hin = ";".join(sorted((set(v.hinweis.split(";")) | set(t.hinweis.split(";"))) - {""}))
-                out[-1] = PdfToken(old=v.old[:-1] + t.old, new=v.new[:-1] + t.new, status=KEEP, page=v.page, bbox=bbox,
-                                   hinweis=hin)
+            m = _verbinden(v, t, id(v) in weich_ids, ausnahmen)
+            if m is not None:
+                if id(t) in weich_ids:
+                    weich_ids.add(id(m))
+                out[-1] = m
                 continue
         out.append(t)
     return out
