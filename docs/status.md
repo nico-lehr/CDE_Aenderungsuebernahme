@@ -21,7 +21,7 @@ Ob es bei echten Dokumenten trägt, zeigt erst die Messung an deinen echten Paar
 | 4 | Abdeckung ohne Nachfrage | ≥ 70 % (Standard 90 %) | 77,1 % | 88,2 % | ok |
 | 4 | Nicht-Übernahmen ohne Grund | 0 | 0 | 0 | ok |
 | 5 | Lese-Lücke | ≤ 2 % | 5,8 % | 1,4 % | ok |
-| 6 | Zweiter Lauf ändert nichts (Idempotenz) | alle Paare | 0 von 60 | 51 von 60 | NICHT ok |
+| 6 | Zweiter Lauf ändert nichts (Idempotenz) | alle Paare | 0 von 60 | 57 von 60 (nach K-FINAL; vorher 51) | NICHT ok |
 | 6 | Kollateralschaden | 0 | 2 | 0 | ok |
 | 6 | Struktur unverändert (Blätter, versteckte Zeilen, Merges …) | 0 | nicht gemessen | 0 | ok |
 | 6 | Originale unverändert | alle | 60 von 60 | 60 von 60 | ok |
@@ -61,9 +61,9 @@ Ob es bei echten Dokumenten trägt, zeigt erst die Messung an deinen echten Paar
 | Thema | Stand | Wirkung |
 |---|---|---|
 | 5 stille Fehler im Entwicklungskorpus | alle `plan_falsch`; 4 davon nur Leerzeichen/Zeilenumbruch-Form (ein Satz am Zeilenumbruch wird als eigener Absatz eingetragen; Leerzeichen vor geschütztem Leerzeichen) | Text ist inhaltlich richtig, Form stimmt nicht exakt |
-| Idempotenz 51 von 60 | in 9 Paaren ändert ein zweiter Lauf auf dem Ergebnis noch etwas | Risiko für Doppel-Einträge, wenn jemand dasselbe PDF zweimal auf dasselbe Ergebnis anwendet |
+| Idempotenz 57 von 60 (Seeds 1–60); ungesehene Seeds 61–120: 54 von 60 | Behoben (K-FINAL): Steht der alte Satz in einer **falschen** Section eindeutig, wurde er dort automatisch als „übernommen / hoch / Wirkung ok“ geschrieben (Prüfer hat das bewiesen); die richtige Section blieb unberührt. Passt jetzt die Section des PDF-Blocks (alte Nummer) nicht zur gefundenen Excel-Stelle, ist der Treffer höchstens „mittel“ (Vorschlag); Umnummerierung ist nicht betroffen. Messung vorher → nachher: Seeds 1–60 51 → 57 von 60, Seeds 61–120 49 → 54 von 60; Abdeckung ohne Nachfrage und stille Fehler unverändert. **Rest 3 bzw. 6 Paare:** derselbe Satz/dasselbe Wort steht **in derselben Section** (meist in derselben Zelle) mehrmals; der erste Lauf trifft die richtige Stelle, der zweite Lauf ändert die andere. | Ein zweiter Lauf mit demselben PDF auf dem **Ergebnis** kann automatisch eine andere Stelle ändern, die unverändert bleiben soll (nicht nur Doppel-Einträge). Ein Ergebnis nie ein zweites Mal mit demselben PDF bearbeiten; für eine neue Fassung die ursprüngliche Excel nehmen. Offen (Planer). |
 | Vorschlags-Genauigkeit 72 % | Vorschläge („prüfen“) sind nach Freigabe oft nicht exakt | Mensch muss prüfen — dafür sind sie Vorschläge |
-| `RT-88` (xfail) | der Reader ist repariert (Separation-Farben); der Test selbst ist fehlerhaft gebaut (setzt im PDF schwarzen Text) | kein Tool-Fehler |
+| `RT-88` | erledigt (K-FINAL): der Testaufbau war fehlerhaft (schwarzer Text statt Sonderfarbe) und ist repariert; der Test prüft jetzt die Separation-Farbe wirklich, der xfail-Marker ist entfernt | kein Tool-Fehler |
 | Zwei-Spalten/Tabellen/Bilder/Scan ohne `erwartet.json` | bei **echten Paaren** kann die Messung „Lücke nicht gemeldet“ nie prüfen (nur Scan-Seiten und große Bilder per PDF-Plausibilität) | Kriterium 1 steht bei echten Paaren auf „nicht gemessen“ |
 | Messung vertraut `bilanz()['stimmt']` des Tools | nicht unabhängig geprüft | Rest-Risiko |
 | Gruppen-Freigabe bei Section-Löschung | die Kopplung gilt beim Planen; gibt ein Mensch nur Überschrift oder nur einen Absatz frei, kann das den Rest trennen | bräuchte ein Gruppenfeld (Schema 3) |
