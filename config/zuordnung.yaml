@@ -14,11 +14,18 @@ excel:
 
 einfuegen:
   neuer_absatz: auto          # auto | zelle | zeile
-  neue_section: zeile
+  # Hinweis: Eine neue Section wird immer als neue Zeile eingefuegt. Die frühere Einstellung "neue_section"
+  # wurde nie gelesen und ist entfernt (Regel 1: nichts anbieten, was nicht wirkt).
 geloeschtes:
   inhalt: leeren              # leeren | zeile_entfernen
 markierung:
   geaenderte_zellen: keine    # keine | kommentar | gelb
+
+planer:                       # Planen und Anwenden (src/planner.py, src/applier.py)
+  # Zeichen, die beim Lesen eines PDF oft verfaelscht werden (Ligaturen, Ersatzzeichen): Neutext damit wird nie automatisch uebernommen
+  verdaechtige_zeichen: ["\uFB00", "\uFB01", "\uFB02", "\uFB03", "\uFB04", "\uFB05", "\uFB06", "\uFFFD"]
+  verdaechtige_muster: ['\(cid:\d+\)']   # kaputte PDF-Schrift: "(cid:12)"
+  doppelt_min_woerter: 3      # Ab so vielen Woertern gilt "gleicher Absatz steht schon" als sicher (nicht uebernommen); kuerzer = nur Vorschlag
 
 # --- Schema 2: bisher im Code fest eingebaute Werte (Verhalten unveraendert; werden von K-XL / K-PL verdrahtet) ---
 matcher:                      # Bewertung eines Treffers (src/matcher.py)

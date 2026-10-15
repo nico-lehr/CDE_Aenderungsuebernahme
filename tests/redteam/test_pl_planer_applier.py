@@ -36,9 +36,6 @@ def _section_lauf(tmp_path, freigeben: str):
     return l, kopf, folge
 
 
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-01 Folgeabsatz einer neuen Section steht auf 'uebernommen/ok', obwohl nichts in der Excel steht; Besitzer K-PL")
 def test_rt01_folgeabsatz_allein_freigegeben_ohne_wirkung(tmp_path):
     l, kopf, folge = _section_lauf(tmp_path, "folge")
     in_excel = any(FOLGE in t for t in alle_texte(l.out))
@@ -46,9 +43,6 @@ def test_rt01_folgeabsatz_allein_freigegeben_ohne_wirkung(tmp_path):
         scheitern(f"Folgeabsatz hat Status 'uebernommen' (Nachkontrolle: {folge.nachkontrolle!r}), steht aber nicht in der Excel")
 
 
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-02 Nur die Ueberschrift freigegeben: Folgeabsatz steht trotzdem in der Excel, Status bleibt 'pruefen'; Besitzer K-PL")
 def test_rt02_nur_ueberschrift_freigegeben_folgeabsatz_schleicht_mit(tmp_path):
     l, kopf, folge = _section_lauf(tmp_path, "kopf")
     in_excel = any(FOLGE in t for t in alle_texte(l.out))
@@ -66,9 +60,6 @@ def _zweimal(tmp_path, elemente, layout, text):
     return sum(t.count(text) for t in alle_texte(l2.out)), l2
 
 
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-03 Zweiter Lauf traegt eingefuegten Satz nochmal ein (nicht idempotent); Besitzer K-PL")
 def test_rt03_zweiter_lauf_text_eingefuegt_nicht_doppelt(tmp_path):
     el = [("h", "1 Eins"), ("p", "Dieses Dokument beschreibt die Anforderungen. {+Es gilt für alle Standorte des Kunden.+}"),
           ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")]
@@ -76,9 +67,6 @@ def test_rt03_zweiter_lauf_text_eingefuegt_nicht_doppelt(tmp_path):
     assert n == 1, f"Satz steht nach dem zweiten Lauf {n}-mal in der Excel (Status {l2.aen[0].status}/{l2.aen[0].konfidenz})"
 
 
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-04 Zweiter Lauf traegt neuen Absatz (Zelle) nochmal ein; Besitzer K-PL")
 def test_rt04_zweiter_lauf_absatz_neu_in_zelle_nicht_doppelt(tmp_path):
     el = [("h", "1 Eins"), ("p", "Erster Absatz."), ("p", "{+Neuer Absatz hier unten.+}"), ("h", "2 Zwei"),
           ("p", "Zweiter Absatz mit genug Text darin.")]
@@ -86,9 +74,6 @@ def test_rt04_zweiter_lauf_absatz_neu_in_zelle_nicht_doppelt(tmp_path):
     assert n == 1, f"Neuer Absatz steht nach dem zweiten Lauf {n}-mal in der Excel"
 
 
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-05 Zweiter Lauf traegt neuen Absatz (eigene Zeile) nochmal ein; Besitzer K-PL")
 def test_rt05_zweiter_lauf_absatz_neu_als_zeile_nicht_doppelt(tmp_path):
     el = [("h", "1 Eins"), ("p", "Erster Absatz."), ("p", "{+Neuer Absatz hier unten.+}"), ("h", "2 Zwei"),
           ("p", "Zweiter Absatz mit genug Text darin.")]
@@ -99,9 +84,6 @@ def test_rt05_zweiter_lauf_absatz_neu_als_zeile_nicht_doppelt(tmp_path):
 # ---------------------------------------------------------------------------------------------
 # RT-06 / RT-07: gestrichenes Aufzaehlungszeichen allein
 # ---------------------------------------------------------------------------------------------
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-06 Gestrichenes '•' mitten im Text: 'uebernommen/ok', aber nur ein Leerzeichen eingefuegt, '•' bleibt; Besitzer K-PL")
 def test_rt06_gestrichener_punkt_mitten_im_text(tmp_path):
     el = [("h", "1 Eins"), ("p", "Das System läuft stabil im Betrieb {-•-} und liefert Daten."), ("h", "2 Zwei"),
           ("p", "Zweiter Absatz mit genug Text darin.")]
@@ -111,9 +93,6 @@ def test_rt06_gestrichener_punkt_mitten_im_text(tmp_path):
         scheitern(f"Status 'uebernommen'/{ae.nachkontrolle}, aber Zelle ist jetzt {zelle(l.out, 2, 3)!r}")
 
 
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-07 Gestrichenes '•' am Absatzanfang: 'uebernommen/ok', '•' bleibt, nur Doppel-Leerzeichen; Besitzer K-PL")
 def test_rt07_gestrichener_punkt_am_anfang(tmp_path):
     el = [("h", "1 Eins"), ("p", "{-•-} Das System läuft stabil im Betrieb und liefert Daten."), ("h", "2 Zwei"),
           ("p", "Zweiter Absatz mit genug Text darin.")]
@@ -124,12 +103,8 @@ def test_rt07_gestrichener_punkt_am_anfang(tmp_path):
 
 
 @pytest.mark.parametrize("alt, neu", [
-    pytest.param("•", "-", marks=[pytest.mark.redteam, pytest.mark.xfail(
-        strict=True, raises=AssertionError,
-        reason="RT-53 Ersetztes '•' -> '-': Neues wird nur eingefuegt, '•' bleibt stehen, trotzdem 'uebernommen/ok'; Besitzer K-PL")]),
-    pytest.param(".", "!", marks=[pytest.mark.redteam, pytest.mark.xfail(
-        strict=True, raises=AssertionError,
-        reason="RT-53 Ersetztes freistehendes '.' -> '!': Neues wird nur eingefuegt, '.' bleibt stehen, trotzdem 'uebernommen/ok'; Besitzer K-PL")]),
+    pytest.param("•", "-"),
+    pytest.param(".", "!"),
 ])
 def test_rt53_ersetztes_zeichen_ohne_normform_bleibt_nicht_stehen(tmp_path, alt, neu):
     """Woerter, die nach der Normalisierung leer sind ('•', '.', '-'), zaehlen fuer den Planer nicht als 'alter Text'."""
@@ -151,9 +126,6 @@ def _neuer_absatz(neu: str, layout: str = "L3"):
             ("p", "Zweiter Absatz mit genug Text darin.")]
 
 
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-08 Neuer Absatz '=SUMME(A1:A9)' wird in der Excel zur Formel; Besitzer K-PL")
 def test_rt08_neutext_mit_gleichheitszeichen_wird_keine_formel(tmp_path):
     l = lauf(tmp_path, _neuer_absatz("=SUMME(A1:A9)"), "L3")
     ws = blatt(l.out)
@@ -161,9 +133,6 @@ def test_rt08_neutext_mit_gleichheitszeichen_wird_keine_formel(tmp_path):
     assert not formeln, f"In der Excel steht jetzt eine Formel statt Text: {formeln} (Status {l.aen[0].status})"
 
 
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-09 Ersetzter Zellanfang '=...' wird in der Excel zur Formel; Besitzer K-PL")
 def test_rt09_ersetzter_zellanfang_mit_gleichheitszeichen_wird_keine_formel(tmp_path):
     el = [("h", "1 Eins"), ("p", "{-Dieses-} {+=Dieses+} Dokument beschreibt die Anforderungen an das System."),
           ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")]
@@ -173,9 +142,6 @@ def test_rt09_ersetzter_zellanfang_mit_gleichheitszeichen_wird_keine_formel(tmp_
     assert not formeln, f"In der Excel steht jetzt eine Formel statt Text: {formeln} (Status {l.aen[0].status})"
 
 
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-10 Steuerzeichen im Neutext (plan.json) -> Absturz IllegalCharacterError beim Uebernehmen, leerer ergebnis-Ordner bleibt; Besitzer K-PL")
 def test_rt10_steuerzeichen_im_neutext_stuerzt_nicht_ab(tmp_path):
     ordner = tmp_path / "fx"
     ordner.mkdir()
@@ -199,9 +165,6 @@ def test_rt10_steuerzeichen_im_neutext_stuerzt_nicht_ab(tmp_path):
         scheitern(f"Absturz beim Uebernehmen: {type(e).__name__}: {e}; halbfertige Ordner: {leer}")
 
 
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-11 Neutext mit '(cid:12)' (kaputte PDF-Schrift) wird ungeprueft als 'uebernommen' geschrieben; Besitzer K-PL")
 def test_rt11_cid_muell_wird_nicht_automatisch_uebernommen(tmp_path):
     l = lauf(tmp_path, _neuer_absatz("Teil (cid:12) hier unten."), "L3")
     ae = l.aen[0]
@@ -210,9 +173,6 @@ def test_rt11_cid_muell_wird_nicht_automatisch_uebernommen(tmp_path):
         scheitern(f"'(cid:12)' steht jetzt in der Excel, Status {ae.status}/{ae.konfidenz}, Grund {ae.grund!r}")
 
 
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-12 Ligatur-Zeichen 'ﬁ' im Neutext wird ungeprueft als 'uebernommen' geschrieben; Besitzer K-PL")
 def test_rt12_ligatur_wird_nicht_ungeprueft_geschrieben(tmp_path):
     el = _neuer_absatz("Die €nale Prüfung folgt hier unten.")
     alt = baue_alt(tmp_path, [("h", "1 Eins"), ("p", "Erster Absatz."), ("h", "2 Zwei"),
@@ -239,12 +199,8 @@ GEL_EX = [("h", "1 Eins"), ("p", "Erster Absatz mit Text."),
 
 
 @pytest.mark.parametrize("layout, nr", [
-    pytest.param("L1", 13, marks=[pytest.mark.redteam, pytest.mark.xfail(
-        strict=True, raises=AssertionError,
-        reason="RT-13 Gestrichener Absatz (eine Zelle, mehrere Absaetze): ungestrichene Woerter dazwischen gehen verloren; Besitzer K-PL")]),
-    pytest.param("L3", 14, marks=[pytest.mark.redteam, pytest.mark.xfail(
-        strict=True, raises=AssertionError,
-        reason="RT-14 Gestrichener Absatz (eigene Zeile): ganze Zelle geleert, ungestrichene Woerter dazwischen gehen verloren; Besitzer K-PL")]),
+    pytest.param("L1", 13),
+    pytest.param("L3", 14),
 ])
 def test_rt13_14_zelle_leeren_verliert_nicht_gestrichene_woerter(tmp_path, layout, nr):
     alt = baue_alt(tmp_path, GEL_EX, layout)
@@ -260,12 +216,8 @@ def test_rt13_14_zelle_leeren_verliert_nicht_gestrichene_woerter(tmp_path, layou
 # RT-15: Nachkontrolle prueft nur "Neutext kommt irgendwo in der Zelle vor"
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("neu", [
-    pytest.param("s", marks=[pytest.mark.redteam, pytest.mark.xfail(
-        strict=True, raises=AssertionError,
-        reason="RT-15 Einfuegen an veraltetem Plan: Nachkontrolle meldet 'ok', weil Neutext 's' irgendwo vorkommt; Besitzer K-PL")]),
-    pytest.param("2.2", marks=[pytest.mark.redteam, pytest.mark.xfail(
-        strict=True, raises=AssertionError,
-        reason="RT-15 Einfuegen an veraltetem Plan: Nachkontrolle meldet 'ok', weil Neutext '2.2' irgendwo vorkommt; Besitzer K-PL")]),
+    pytest.param("s"),
+    pytest.param("2.2"),
 ])
 def test_rt15_nachkontrolle_erkennt_falsche_stelle(tmp_path, neu):
     """Plan wurde fuer 'Das Rack ...' gemacht (Einfuegestelle hinter 'Das Rack' = Position 8). Inzwischen steht in
@@ -286,9 +238,6 @@ def test_rt15_nachkontrolle_erkennt_falsche_stelle(tmp_path, neu):
 # ---------------------------------------------------------------------------------------------
 # RT-16: Ersetzen und Einfuegen an derselben Stelle (gleicher start)
 # ---------------------------------------------------------------------------------------------
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-16 Einfuegen (seq 2) und Ersetzen (seq 1) am gleichen start: Text wird zerstueckelt ('Gerätystem'); Besitzer K-PL")
 def test_rt16_ersetzen_und_einfuegen_gleicher_start(tmp_path):
     p = schreibe_excel(tmp_path / "a.xlsx", [["Nr.", "Titel", "Inhalt"],
                                               ["1", "Eins", "Das System muss laufen und stabil bleiben."],
@@ -309,9 +258,6 @@ def test_rt16_ersetzen_und_einfuegen_gleicher_start(tmp_path):
 # ---------------------------------------------------------------------------------------------
 # RT-17: neue Zeile direkt nach einer Ueberschriftszeile uebernimmt deren Format
 # ---------------------------------------------------------------------------------------------
-@pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-17 Neuer Absatz direkt unter der Ueberschrift uebernimmt das Ueberschriftsformat (fett, Fuellfarbe); Besitzer K-PL")
 def test_rt17_neue_zeile_nach_ueberschrift_hat_absatzformat(tmp_path):
     el = [("h", "1 Eins"), ("p", "{+Neu direkt nach der Überschrift eins.+}"), ("p", "Absatz eins mit genug Text darin."),
           ("h", "2 Zwei"), ("p", "Absatz zwei mit genug Text darin.")]
