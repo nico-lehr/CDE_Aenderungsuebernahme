@@ -29,10 +29,10 @@ from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 
 from . import config
-from .excel_model import ExcelModell
+from .excel_model import ExcelModell, zahl_als_text
 from .models import (MITTEL, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN, WIRKUNG_ABWEICHUNG, WIRKUNG_KEINE, WIRKUNG_OK,
                      Aenderung, Operation)
-from .planner import neutext_probleme
+from .planner import neutext_probleme, zahl_aus_text
 from .textutil import norm
 
 
@@ -49,7 +49,15 @@ def _text(zelle) -> str:
         return ""
     if isinstance(v, CellRichText):
         return str(v)
-    return v if isinstance(v, str) else ("%g" % v if isinstance(v, float) else str(v))
+    if isinstance(v, str):
+        return v
+    if isinstance(v, (int, float)) and not isinstance(v, bool):      # so wie das Excel-Modell (nie "%g": 2.10 bleibt 2.10)
+        return zahl_als_text(v, zelle.number_format)
+    return str(v)
+
+
+def _ist_zahlzelle(zelle) -> bool:
+    return zelle.data_type == "n" and isinstance(zelle.value, (int, float)) and not isinstance(zelle.value, bool)
 
 
 def _ws(text: str) -> str:
@@ -124,7 +132,18 @@ def _folge_gruppen(aenderungen: list[Aenderung]) -> dict[str, list[Aenderung]]:
     return gruppen
 
 
-def _schneiden(a: Operation, b: Operation) -> bool:
+def _nur_loeschen(o: Operation) -> bool:
+    return o.art == "ersetzen" and o.text == ""
+
+
+def _schneiden(a: Operation, b: Operation, text: str | None = None) -> bool:
+    """Ueberschneiden sich zwei Operationen? Zwei reine Loeschungen, die nur ein gemeinsames Leerzeichen teilen
+    (zwei aufeinanderfolgende gestrichene Absaetze nehmen beide das Leerzeichen dazwischen mit), gelten als vertraeglich:
+    `_wende_text_an` loescht den gemeinsamen Teil nur einmal."""
+    if text is not None and _nur_loeschen(a) and _nur_loeschen(b):
+        von, bis = max(a.start, b.start), min(a.ende, b.ende)
+        if von < bis and not text[von:bis].strip():
+            return False
     ins_a, ins_b = a.start == a.ende, b.start == b.ende
     if ins_a and ins_b:
         return False
@@ -135,28 +154,34 @@ def _schneiden(a: Operation, b: Operation) -> bool:
     return a.start < b.ende and b.start < a.ende
 
 
-def _ueberlappen(ops: list[Operation]) -> set[str]:
-    """IDs der Aenderungen, deren Operationen sich in einer Zelle ueberschneiden (die spaetere verliert)."""
+def _ueberlappen(ops: list[Operation], text: str | None = None) -> set[str]:
+    """IDs der Aenderungen, deren Operationen sich in einer Zelle ueberschneiden (die spaetere verliert).
+    Mit `text` (Zelltext) zaehlt ein gemeinsames Leerzeichen zweier Loeschungen nicht als Ueberschneidung."""
     verlierer: set[str] = set()
     s = sorted(ops, key=lambda o: (o.start, o.ende, o.seq))
     for i, a in enumerate(s):
         for b in s[:i]:
             if b.aenderung == a.aenderung or a.aenderung in verlierer or b.aenderung in verlierer:
                 continue
-            if _schneiden(a, b):
+            if _schneiden(a, b, text):
                 verlierer.add(a.aenderung)
     return verlierer
 
 
 def _wende_text_an(orig: str, ops: list[Operation]) -> str:
     text = orig
+    grenze = len(orig)        # kleinster Start der schon angewendeten Operationen: dahinter hat sich der Text geaendert
     # Von hinten nach vorn. Bei gleichem Start wird erst ersetzt und dann eingefuegt: der eingefuegte Text steht vor dem
     # ersetzten (Reihenfolge unabhaengig von `seq`, sonst wird der Text zerstueckelt).
     for o in sorted(ops, key=lambda o: (o.start, 1 if o.art == "ersetzen" else 0, o.seq), reverse=True):
         if o.art == "ersetzen":
-            text = text[:o.start] + o.text + text[o.ende:]
+            ende = o.ende
+            if _nur_loeschen(o) and ende > grenze:       # gemeinsames Leerzeichen mit einer spaeteren Loeschung: nur einmal weg
+                ende = max(o.start, grenze)
+            text = text[:o.start] + o.text + text[ende:]
         else:   # einfuegen
             text = text[:o.start] + o.text + text[o.start:]
+        grenze = min(grenze, o.start)
     if any(o.absatz_weg for o in ops) and "\n\n" not in orig and not orig.startswith("\n") and not orig.endswith("\n"):
         text = "\n".join(z for z in text.split("\n") if z.strip())
     if not orig.endswith("\n"):
@@ -178,13 +203,31 @@ def _zelltext(orig: str, ops: list[Operation]) -> str:
 
 
 def _verschiebe_hoehen(ws, ab: int, delta: int) -> None:
-    hoehen = {r: ws.row_dimensions[r].height for r in list(ws.row_dimensions.keys()) if r >= ab}
-    for r in hoehen:
-        ws.row_dimensions[r].height = None
-    for r, h in hoehen.items():
+    """Zeilenmerkmale (Hoehe, ausgeblendet, Gliederungsebene, Zeilenformat) wandern mit ihrer Zeile.
+    Ab Zeile `ab` um `delta` Zeilen; bei delta < 0 verschwinden die geloeschten Zeilen davor."""
+    unten = min(ab, ab + delta) if delta < 0 else ab
+    merkmale = {}
+    for r in [r for r in ws.row_dimensions.keys() if r >= unten]:
+        d = ws.row_dimensions[r]
+        merkmale[r] = (d.height, d.hidden, d.outlineLevel, d.collapsed, copy(d._style))
+    for r in merkmale:
+        d = ws.row_dimensions[r]
+        d.height, d.hidden, d.outlineLevel, d.collapsed = None, False, 0, False
+        d._style = None
+    for r, (hoehe, versteckt, ebene, zu, stil) in merkmale.items():
         ziel = r + delta
-        if ziel >= 1:
-            ws.row_dimensions[ziel].height = h
+        if r >= ab and ziel >= 1:
+            d = ws.row_dimensions[ziel]
+            d.height, d.hidden, d.outlineLevel, d.collapsed = hoehe, versteckt, ebene, zu
+            d._style = stil
+
+
+def _links_nachziehen(ws) -> None:
+    """Hyperlinks stehen mit ihrer Zelladresse in der Datei: nach dem Verschieben von Zellen neu eintragen."""
+    for zelle in ws._cells.values():
+        link = getattr(zelle, "_hyperlink", None)           # verbundene Zellen (MergedCell) haben keinen Link
+        if link is not None:
+            link.ref = zelle.coordinate
 
 
 def _verschiebe_verbunden(ws, ab: int, delta: int) -> None:
@@ -196,19 +239,23 @@ def _verschiebe_verbunden(ws, ab: int, delta: int) -> None:
 
 
 def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Path,
-                freigaben: set[str] | None = None, cfg: dict | None = None) -> UebernahmeErgebnis:
+                freigaben: set[str] | None = None, cfg: dict | None = None,
+                xl: ExcelModell | None = None) -> UebernahmeErgebnis:
     """Trägt alle Aenderungen mit Status 'uebernommen' sowie freigegebene 'pruefen' ein.
 
     Die Aenderung-Objekte werden aktualisiert (Konflikte -> nicht_uebernommen,
     freigegebene Vorschlaege -> uebernommen/bestaetigt, Nachkontrolle und Wirkung; Aenderungen ohne
-    nachweisbare Wirkung werden zurueckgestuft)."""
+    nachweisbare Wirkung werden zurueckgestuft).
+
+    `xl`: schon gebautes Modell derselben Quell-Excel (spart das erneute Einlesen); ohne Angabe wird es gebaut."""
     cfg = cfg or config.lade("zuordnung")
     anw = cfg.get("anwenden") or config.lade("zuordnung")["anwenden"]
     farbe, autor = anw["markierung_farbe"], anw["kommentar_autor"]
     freigaben = freigaben or set()
     quelle, ziel = Path(quelle), Path(ziel)
     ergebnis = UebernahmeErgebnis(ausgabe=str(ziel))
-    xl = ExcelModell(quelle)                                    # nur zum Lesen (Layout, Sections)
+    if xl is None:
+        xl = ExcelModell(quelle)                                # nur zum Lesen (Layout, Sections)
     wb = load_workbook(str(quelle), rich_text=True, keep_vba=(quelle.suffix.lower() == ".xlsm"))
 
     # --- Welche Aenderungen werden angewendet? (neue Section + Folgeabsaetze gelten als Gruppe) ---------------
@@ -307,6 +354,34 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             _hinweise(ae, "Der neue Text beginnt mit „=“. Er wird als Text eingetragen, nicht als Formel.")
     aktiv = [a for a in aktiv if a.id in nach_id]
 
+    # --- Zeile einfuegen: Risiken der Excel (Formeln, Formatierung, Filter, Links ...). Nie automatisch. -------
+    risiko_cache: dict[tuple[str, int], list[str]] = {}
+
+    def zeilen_risiken(ae: Aenderung) -> list[str]:
+        out: list[str] = []
+        for op in ae.ops:
+            if op.art == "zeile_einfuegen" and not op.abgedeckt:
+                pos = op.zeile if op.vor else op.zeile + 1
+                if (op.blatt, pos) not in risiko_cache:
+                    risiko_cache[(op.blatt, pos)] = xl.einfuege_risiken(op.blatt, pos)
+                out += [r for r in risiko_cache[(op.blatt, pos)] if r not in out]
+        return out
+
+    for ae in list(aktiv):
+        if ae.id not in nach_id:
+            continue
+        risiken = zeilen_risiken(ae)
+        if not risiken:
+            continue
+        if ae.bestaetigt:               # ein Mensch hat es freigegeben: eintragen, aber laut warnen
+            ergebnis.warnungen.append(f"Änderung {ae.id} ({ae.ziel}): Die Zeile wurde auf Freigabe eingefügt, obwohl "
+                                      f"in der Excel etwas verrutschen oder brechen kann: {' '.join(risiken)} Bitte die Ergebnis-Excel prüfen.")
+            _hinweise(ae, *risiken)
+        else:
+            entferne(ae, PRUEFEN, "Beim Einfügen der neuen Zeile könnten Dinge in der Excel verrutschen oder brechen. "
+                                  "Die Änderung wird nicht automatisch eingetragen.", *risiken)
+    aktiv = [a for a in aktiv if a.id in nach_id]
+
     # --- Zelltext-Operationen je Zelle ---------------------------------------------------
     je_zelle: dict[tuple[str, int, int], list[Operation]] = {}
     for ae in aktiv:
@@ -321,9 +396,32 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                 if o.art == "ersetzen":
                     o.abgedeckt = True
         else:
-            for aid in _ueberlappen(text_ops):
+            for aid in _ueberlappen(text_ops, _text(wb[key[0]].cell(key[1], key[2]))):
                 if aid in nach_id:
                     entferne(nach_id[aid], NICHT, "Konflikt: überschneidet sich mit einer anderen Änderung in derselben Zelle.")
+    aktiv = [a for a in aktiv if a.id in nach_id]
+
+    # --- Zahl-Zellen: der neue Text muss wieder eine Zahl sein, sonst geht das Zahlenformat verloren -------------
+    for (blatt, zeile, spalte), ops in je_zelle.items():
+        zelle = wb[blatt].cell(zeile, spalte)
+        ops = [o for o in ops if o.aenderung in nach_id and o.art != "zelle_leeren"]
+        if not ops or not _ist_zahlzelle(zelle) or any(o.abgedeckt for o in ops):
+            continue
+        neu_text = _zelltext(_text(zelle), ops)
+        if not neu_text.strip() or zahl_aus_text(neu_text, zelle.number_format) is not None:
+            continue
+        for aid in dict.fromkeys(o.aenderung for o in ops):
+            ae = nach_id.get(aid)
+            if ae is None:
+                continue
+            if ae.bestaetigt:
+                _hinweise(ae, "Die Zelle war eine Zahl, jetzt steht dort Text. Das Zahlenformat geht verloren.")
+                ergebnis.warnungen.append(f"Änderung {ae.id} ({ae.ziel}): Die Zelle war eine Zahl und ist jetzt Text; "
+                                          f"das Zahlenformat geht verloren.")
+            else:
+                entferne(ae, PRUEFEN, "Zahlenformat geht verloren: Die Zelle ist in der Excel eine Zahl, der neue Text ist keine "
+                                      "(oder sieht anders aus als das Zahlenformat).",
+                         "Die Zelle ist eine Zahl. Wird dort Text eingetragen, geht das Zahlenformat verloren. Bitte von Hand entscheiden.")
     aktiv = [a for a in aktiv if a.id in nach_id]
 
     geleerte: set[tuple[str, int, int]] = set()
@@ -337,7 +435,11 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
         neu = _zelltext(orig, ops)
         if any(o.art == "zelle_leeren" for o in ops):
             geleerte.add((blatt, zeile, spalte))
-        _setze_wert(zelle, neu)
+        zahl = zahl_aus_text(neu, zelle.number_format) if _ist_zahlzelle(zelle) else None
+        if zahl is not None:
+            zelle.value = zahl                    # bleibt eine Zahl, das Zahlenformat der Zelle bleibt
+        else:
+            _setze_wert(zelle, neu)
         zell_info[(blatt, zeile, spalte)] = {"orig": orig, "neu": neu, "ops": ops,
                                              "aen": [nach_id[i] for i in dict.fromkeys(o.aenderung for o in ops)]}
 
@@ -366,7 +468,15 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                 continue
             cols = [c for c in (lay.section_spalte, lay.titel_spalte, lay.inhalt_spalte) if c]
             if all(wb[blatt].cell(zeile, c).value in (None, "") for c in cols) and not wb[blatt].merged_cells.ranges:
-                loeschen.add((blatt, zeile))
+                risiken = xl.einfuege_risiken(blatt, zeile)
+                if risiken:                    # die leere Zeile bleibt stehen (nichts geht kaputt), dafuer ein Hinweis
+                    for ae in zell_info[(blatt, zeile, spalte)]["aen"]:
+                        _hinweise(ae, "Die leere Zeile wurde nicht entfernt, weil dabei Dinge in der Excel verrutschen "
+                                      "oder brechen könnten:", *risiken)
+                    ergebnis.warnungen.append(f"{blatt}, Zeile {zeile}: Die geleerte Zeile wurde nicht entfernt (sie bleibt leer "
+                                              f"stehen), weil sonst in der Excel etwas verrutschen oder brechen könnte.")
+                else:
+                    loeschen.add((blatt, zeile))
     ereignisse = [("del", b, r) for b, r in loeschen] + [("ins", b, p) for (b, p) in einfuegungen]
     ereignisse.sort(key=lambda e: (e[1], -e[2], 0 if e[0] == "del" else 1))
     abbildung: dict[str, list[tuple[str, int]]] = {}
@@ -376,6 +486,7 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             ws.delete_rows(pos, 1)
             _verschiebe_hoehen(ws, pos + 1, -1)
             _verschiebe_verbunden(ws, pos + 1, -1)
+            _links_nachziehen(ws)
             abbildung.setdefault(blatt, []).append(("del", pos))
         else:
             ops = sorted(einfuegungen[(blatt, pos)], key=lambda o: o.seq)
@@ -383,6 +494,7 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             ws.insert_rows(pos, n)
             _verschiebe_hoehen(ws, pos, n)
             _verschiebe_verbunden(ws, pos, n)
+            _links_nachziehen(ws)
             abbildung.setdefault(blatt, []).append(("ins", pos, n))        # type: ignore[arg-type]
             for i, op in enumerate(ops):
                 neu_zeile = pos + i

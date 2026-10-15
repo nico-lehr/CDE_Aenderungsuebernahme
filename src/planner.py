@@ -20,7 +20,7 @@ from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.utils import get_column_letter
 
 from . import config
-from .excel_model import Kandidat, ExcelModell
+from .excel_model import Kandidat, ExcelModell, zahl_als_text
 from .matcher import Matcher, Treffer
 from .models import (ADD, DEL, HOCH, KEEP, MITTEL, MOD, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN,
                      Aenderung, Operation, PdfBlock, PdfToken)
@@ -64,6 +64,23 @@ def neutext_probleme(texte: Iterable[str], cfg: dict | None = None) -> dict[str,
     return out
 
 
+_ZAHL_TEXT = re.compile(r"-?\d+(\.\d+)?")
+
+
+def zahl_aus_text(text: str, zahlenformat: str | None = None) -> int | float | None:
+    """Zahl, die genau diesen Text als Anzeige hat -- sonst None (dann bliebe nur Text, das Zahlenformat ginge verloren).
+
+    Ohne `zahlenformat` wird nur geprueft, ob der Text eine einfache Zahl ist (Planer, kennt das Format nicht);
+    mit Format muss die Anzeige der Zahl (siehe `zahl_als_text`) buchstabengleich sein (Applier). Hoechstens 15 Ziffern."""
+    t = text.strip()
+    if not _ZAHL_TEXT.fullmatch(t) or sum(c.isdigit() for c in t) > 15:
+        return None
+    wert: int | float = float(t) if "." in t else int(t)
+    if zahlenformat is not None and zahl_als_text(wert, zahlenformat) != t:
+        return None
+    return wert
+
+
 def _wort_gleich(a: str, b: str) -> bool:
     """Zwei Woerter gelten als gleich: gleiche Normform; Woerter ohne Normform ('•') muessen buchstabengleich sein."""
     na, nb = norm(a), norm(b)
@@ -97,6 +114,8 @@ class _Planer:
         self._tr: dict[int, Treffer | None] = {}
         self.verbraucht: set[int] = set()   # Bloecke, die schon als Teil einer neuen Section behandelt wurden
         self._nach_norms: dict[tuple[str, ...], list[Kandidat]] | None = None   # Normform -> Kandidaten (Idempotenz)
+        self._ag: list[str] = []                    # Gruende, warum die Ankerstelle des aktuellen neuen Blocks unsicher ist
+        self._risiko_cache: dict[tuple[str, int], list[str]] = {}               # (Blatt, Einfuegezeile) -> Risiken
 
     # ------------------------------------------------------------ Helfer
     def treffer(self, b: PdfBlock) -> Treffer | None:
@@ -128,10 +147,40 @@ class _Planer:
             grund = (grund + "; " if grund else "") + "Der neue Text könnte aus dem PDF verfälscht gelesen worden sein."
         if p["formel"] and any(o.art in ("ersetzen", "einfuegen", "zeile_einfuegen") for o in ae.ops):
             self._hinweis(ae, "Der neue Text beginnt mit „=“. Er wird als Text eingetragen, nicht als Formel.")
+        for op in ae.ops:                # Zahl-Zelle: der neue Text muss wieder eine Zahl sein, sonst geht das Zahlenformat verloren
+            if op.art in ("ersetzen", "einfuegen") and self.xl.ist_zahl(op.blatt, op.zeile, op.spalte):
+                alt_z = self.xl.text(op.blatt, op.zeile, op.spalte)
+                ergebnis = alt_z[:op.start] + op.text + alt_z[op.ende:]
+                if ergebnis.strip() and zahl_aus_text(ergebnis) is None:
+                    if stufe == HOCH:
+                        stufe = MITTEL
+                    self._hinweis(ae, "Die Zelle in der Excel ist eine Zahl, der neue Text ist keine. Das Zahlenformat geht verloren.")
+                    grund = (grund + "; " if grund else "") + "Zahlenformat geht verloren (die Zelle ist eine Zahl, der neue Text nicht)."
+                    break
+        risiken = self._zeilen_risiken(ae)
+        if risiken:                      # Zeile einfuegen verschiebt Dinge, die openpyxl nicht mitzieht: nie automatisch
+            if stufe == HOCH:
+                stufe = MITTEL
+            for r in risiken:
+                self._hinweis(ae, r)
+            grund = (grund + "; " if grund else "") + ("Beim Einfügen der neuen Zeile könnten Dinge in der Excel verrutschen "
+                                                       "oder brechen (siehe Hinweise). Bitte vor dem Eintragen prüfen.")
         ae.konfidenz = stufe
         ae.status = STATUS_VON_STUFE.get(stufe, NICHT)
         if grund:
             ae.grund = (ae.grund + "; " if ae.grund else "") + grund
+
+    def _zeilen_risiken(self, ae: Aenderung) -> list[str]:
+        """Risiken (einfache Saetze) aller Zeilen-Einfuegungen einer Aenderung. Leer = unbedenklich."""
+        out: list[str] = []
+        for op in ae.ops:
+            if op.art != "zeile_einfuegen" or op.abgedeckt:
+                continue
+            pos = op.zeile if op.vor else op.zeile + 1
+            if (op.blatt, pos) not in self._risiko_cache:
+                self._risiko_cache[(op.blatt, pos)] = self.xl.einfuege_risiken(op.blatt, pos)
+            out += [r for r in self._risiko_cache[(op.blatt, pos)] if r not in out]
+        return out
 
     @staticmethod
     def _hinweis(ae: Aenderung, text: str) -> None:
@@ -507,7 +556,21 @@ class _Planer:
             return
         tr, direkt, davor = anker
         cand = tr.kandidat
-        stufe = tr.stufe if direkt else MITTEL
+        # Fuer einen NEUEN Absatz zaehlt die Anker-Sicherheit (nicht die Sicherheit fuers Ersetzen): deckt der PDF-Text nur
+        # den Anfang eines laengeren Excel-Absatzes ab, wuerde der neue Absatz mitten im Satz landen.
+        stufe = tr.anker_stufe if direkt else MITTEL
+        if (direkt and stufe != HOCH and tr.stufe == HOCH and cand.art != "kopf" and tr.zuordnung
+                and max(tr.zuordnung.values()) >= len(cand.norms) - 1):
+            stufe = HOCH      # der PDF-Text reicht bis zum letzten Wort des Excel-Absatzes (Rest steht auf der Seite davor): Ende ist sicher
+        if stufe != HOCH:
+            stufe = MITTEL
+        self._ag = []
+        if stufe != HOCH:
+            if direkt:
+                self._ag = list(tr.gruende) + [g for g in tr.anker_gruende if g not in tr.gruende]
+            else:
+                self._ag = ["der Absatz davor konnte in der Excel nicht zugeordnet werden, die Einfügestelle ist nur ungefähr bestimmbar"]
+            self._anker_grund(ae, self._ag)
         ae.score = tr.score
         ae.excel_text = cand.text[:200]
         lay = self.xl.layouts[cand.blatt]
@@ -543,6 +606,13 @@ class _Planer:
                 self._absatz_in_zelle(ae, b, cand, lay, stufe, seq, tr)
             else:
                 self._absatz_als_zeile(ae, b, cand, lay, stufe, davor, seq)
+
+    def _anker_grund(self, ae: Aenderung, gruende: list[str]) -> None:
+        """Gruende, warum die Ankerstelle fuer einen neuen Absatz unsicher ist: in `grund` und als Hinweis."""
+        for g in gruende:
+            self._hinweis(ae, g[:1].upper() + g[1:] + ".")
+        if gruende:
+            ae.grund = (ae.grund + "; " if ae.grund else "") + "Die Stelle für den neuen Absatz ist unsicher: " + "; ".join(gruende)
 
     def _vorhanden(self, b: PdfBlock, ist_kopf: bool, cand: Kandidat) -> Kandidat | None:
         """Steht ein Absatz/eine Ueberschrift mit genau diesem neuen Text schon in der Excel? (Idempotenz)"""
@@ -608,6 +678,8 @@ class _Planer:
             if ae.status == NICHT:            # die Section selbst ging nicht (z. B. Steuerzeichen) -> Folgeabsatz auch nicht
                 self._nicht(kae, "Gehört zu einer neuen Section, die nicht eingetragen werden kann.")
             elif modus_zeile:
+                for h in ae.hinweise:                 # Risiken und Ankerzweifel der Section gelten auch fuer den Absatz in ihrer Zeile
+                    self._hinweis(kae, h)
                 # Der Folgeabsatz steht in der Zelle der neuen Section-Zeile. Eine "abgedeckte" Markierungs-Operation
                 # (ohne Zellen) bindet ihn an die Section: Status und Freigabe gelten fuer beide gemeinsam (applier).
                 kae.ops = [Operation("zeile_einfuegen", cand.blatt, cand.zeile, lay.inhalt_spalte or 0, seq=seq,
@@ -615,6 +687,8 @@ class _Planer:
                 kae.ziel = ae.ziel
                 self._setze(kae, stufe, "als Teil der neuen Section eingetragen")
                 kae.konfidenz, kae.status = ae.konfidenz, ae.status
+                if ae.status == PRUEFEN and ae.grund:
+                    kae.grund = (kae.grund + "; " if kae.grund else "") + ae.grund
                 self._hinweis(kae, "Dieser Absatz gehört zur neuen Section und wird nur zusammen mit ihr eingetragen.")
             else:
                 folge += 1
@@ -623,6 +697,7 @@ class _Planer:
                                 vor=not davor, aenderung=kae.id)
                 kae.ops = [kop]
                 kae.ziel = ae.ziel
+                self._anker_grund(kae, self._ag)
                 self._setze(kae, stufe)
 
     def _absatz_in_zelle(self, ae, b, cand, lay, stufe, seq, tr) -> None:

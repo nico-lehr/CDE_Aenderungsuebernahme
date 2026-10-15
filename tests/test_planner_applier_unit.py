@@ -519,3 +519,241 @@ def test_lauf_schreibt_wirkung_und_hinweise_in_json_und_protokoll(tmp_path):
     assert erg["aenderungen"][0]["hinweise"] == ae["hinweise"]
     kopf = _zellen_text(runs.lauf_dir(run_id) / res["ordner"] / "aenderungsprotokoll.xlsx")["Änderungen"][0]
     assert "Wirkung" in kopf and "Warnungen" in kopf
+
+
+# ---------------------------------------------------------------------------------------------
+# Runde 2: Excel-Sicherheit (Zeilen einfuegen), Zahl-Zellen, "%g", Ueberlappung, Anker, xl-Parameter
+# ---------------------------------------------------------------------------------------------
+def _bearbeite(pfad, fn):
+    wb = load_workbook(str(pfad))
+    fn(wb)
+    wb.save(str(pfad))
+
+
+_EL_SECTION = [("h", "1 Eins"), ("p", "Absatz eins mit genug Text darin."),
+               ("h", "2 Zwei"), ("p", "Absatz zwei mit genug Text darin."),
+               ("h", "{+2.5 Neue Section+}"), ("p", "{+Folgeabsatz der neuen Section steht hier.+}"),
+               ("h", "3 Drei"), ("p", "Absatz drei mit genug Text darin."),
+               ("h", "4 Vier"), ("p", "Absatz vier mit genug Text darin.")]
+
+
+def _mit_formel(wb):
+    wb["CDE"]["F2"] = "=C7"          # zeigt auf eine Zeile unterhalb der Einfuegestelle
+
+
+def test_zeile_einfuegen_ohne_risiko_bleibt_automatisch(tmp_path):
+    l = lauf(tmp_path, _EL_SECTION, "L1")
+    neu = next(a for a in l.aen if a.typ == "section_neu")
+    assert (neu.status, neu.konfidenz) == (UEBERNOMMEN, "hoch")
+    assert zeile_mit(l.out, "Neue Section") is not None
+
+
+def test_zeile_einfuegen_mit_formel_wird_pruefen_mit_saetzen(tmp_path):
+    l = lauf(tmp_path, _EL_SECTION, "L1", nachher=lambda p: _bearbeite(p, _mit_formel))
+    kopf = next(a for a in l.aen if a.typ == "section_neu")
+    folge = next(a for a in l.aen if a.typ == "absatz_neu")
+    assert kopf.status == PRUEFEN and kopf.konfidenz == "mittel"
+    assert any("Formeln" in h for h in kopf.hinweise)
+    assert "Zeile" in kopf.grund
+    assert folge.status == PRUEFEN and folge.grund          # der Folgeabsatz geht nur zusammen mit der Section
+    assert zeile_mit(l.out, "Neue Section") is None         # nichts wurde geschrieben
+    assert l.bil["stimmt"]
+
+
+def test_zeile_einfuegen_mit_formel_nach_freigabe_mit_warnung(tmp_path):
+    alt = baue_alt(tmp_path, _EL_SECTION, "L1", nachher=lambda p: _bearbeite(p, _mit_formel))
+    l0 = analysiere(tmp_path, _EL_SECTION, alt)
+    kopf = next(a for a in l0.aen if a.typ == "section_neu")
+    l = uebernimm(l0, {kopf.id})
+    assert kopf.status == UEBERNOMMEN and kopf.bestaetigt and kopf.nachkontrolle == "ok"
+    assert zeile_mit(l.out, "Neue Section") is not None
+    assert any(kopf.id in w and "Formeln" in w for w in l.res.warnungen)
+    assert blatt(l.out)["F2"].value == "=C7"            # Formeln werden nie veraendert
+
+
+def test_applier_stuft_uebernommene_zeile_mit_risiko_zurueck(tmp_path):
+    """Auch ein von Hand gebauter Plan ('uebernommen') darf bei Risiko nicht automatisch Zeilen einfuegen."""
+    alt = baue_alt(tmp_path, _EL_SECTION, "L1", nachher=lambda p: _bearbeite(p, _mit_formel))
+    plan = analysiere(tmp_path, _EL_SECTION, alt).plan
+    for a in plan.aenderungen:                           # so tun, als haette der Planer nichts bemerkt
+        a.status, a.konfidenz = UEBERNOMMEN, "hoch"
+    out = tmp_path / "out.xlsx"
+    uebernehmen(plan.aenderungen, alt, out)
+    assert all(a.status == PRUEFEN for a in plan.aenderungen if a.typ in ("section_neu", "absatz_neu"))
+    assert zeile_mit(out, "Neue Section") is None
+
+
+def test_versteckte_zeile_und_hyperlink_wandern_mit_der_zeile(tmp_path):
+    def eig(wb):
+        ws = wb["CDE"]
+        z = next(c.row for row in ws.iter_rows() for c in row if c.value and "Absatz drei" in str(c.value))
+        ws.row_dimensions[z].hidden = True
+        ws.row_dimensions[z].outlineLevel = 1
+        ws.cell(z, 3).hyperlink = "https://example.org/x"
+    alt = baue_alt(tmp_path, _EL_SECTION, "L1", nachher=lambda p: _bearbeite(p, eig))
+    l0 = analysiere(tmp_path, _EL_SECTION, alt)
+    kopf = next(a for a in l0.aen if a.typ == "section_neu")
+    l = uebernimm(l0, {kopf.id})                          # Freigabe: Risiko wird gemeldet, aber alles wandert mit
+    ws = blatt(l.out)
+    alt_r = zeile_mit(alt, "Absatz drei")
+    neu_r = zeile_mit(l.out, "Absatz drei")
+    assert alt_r is not None and neu_r == alt_r + 1
+    assert ws.row_dimensions[neu_r].hidden and ws.row_dimensions[neu_r].outlineLevel == 1
+    assert not ws.row_dimensions[alt_r].hidden
+    assert ws.cell(neu_r, 3).hyperlink is not None and ws.cell(neu_r, 3).hyperlink.ref == f"C{neu_r}"
+    assert ws.cell(alt_r, 3).hyperlink is None
+
+
+def test_leere_zeile_wird_bei_risiko_nicht_entfernt(tmp_path):
+    cfg = copy.deepcopy(config.lade("zuordnung"))
+    cfg["geloeschtes"]["inhalt"] = "zeile_entfernen"
+    p = schreibe_excel(tmp_path / "a.xlsx", [["Nr.", "Titel", "Inhalt"], [None, None, "Erster Absatz mit genug Text."],
+                                             ["2", "Zwei", "Zweiter Absatz mit genug Text."],
+                                             ["3", "Drei", "Dritter Absatz mit genug Text."]])
+    _bearbeite(p, lambda wb: wb["CDE"].__setitem__("F4", "=C4"))          # Formel unterhalb der Loeschstelle
+    op = Operation("zelle_leeren", "CDE", 2, 3, seq=1, aenderung="A1", erwartet="Erster Absatz mit genug Text.")
+    a = _ae("A1", [op], typ="absatz_geloescht", alt="Erster Absatz mit genug Text.", neu="")
+    res = uebernehmen([a], p, tmp_path / "out.xlsx", cfg=cfg)
+    ws = blatt(tmp_path / "out.xlsx")
+    assert ws.max_row == 4 and ws["C2"].value is None               # Zeile bleibt (leer) stehen
+    assert a.status == UEBERNOMMEN and any("Zeile" in h for h in a.hinweise)
+    assert res.warnungen
+
+
+def test_ankerstufe_mittel_macht_neuen_absatz_zu_pruefen(tmp_path):
+    ex = [("h", "1 Eins"),
+          ("p", "Die Anlage wird vor dem Versand einzeln geprüft und danach dokumentiert; anschließend wird ein "
+                "Prüfbericht erstellt und dem Kunden übergeben."),
+          ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")]
+    el = [("h", "1 Eins"), ("p", "Die Anlage wird vor dem Versand einzeln geprüft und danach"),
+          ("p", "{+Neuer Absatz nach dem Anfang.+}"), ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")]
+    l = uebernimm(analysiere(tmp_path, el, baue_alt(tmp_path, ex, "L1")))
+    ae = next(a for a in l.aen if a.typ == "absatz_neu")
+    assert ae.status == PRUEFEN and ae.konfidenz == "mittel"
+    assert "unsicher" in ae.grund and ae.hinweise
+
+
+def _zahlen_excel(pfad, fmt="0.0", wert=2.2):
+    p = schreibe_excel(pfad, [["Nr.", "Titel", "Inhalt"], [1, "Eins", "Erster Abschnitt mit genug Text hier drin."],
+                              [wert, "Zwei", "Zweiter Abschnitt mit genug Text hier drin."],
+                              [3, "Drei", "Dritter Abschnitt mit genug Text hier drin."]])
+    _bearbeite(p, lambda wb: setattr(wb["CDE"]["A3"], "number_format", fmt))
+    return p
+
+
+def test_zahl_zelle_wird_als_zahl_ersetzt_zahlenformat_bleibt(tmp_path):
+    p = _zahlen_excel(tmp_path / "z.xlsx")
+    op = Operation("ersetzen", "CDE", 3, 1, 0, 3, "2.3", 1, aenderung="A1", erwartet="2.2")
+    a = _ae("A1", [op], alt="2.2", neu="2.3", ziel="CDE!A3")
+    uebernehmen([a], p, tmp_path / "out.xlsx")
+    z = blatt(tmp_path / "out.xlsx")["A3"]
+    assert (a.status, a.nachkontrolle) == (UEBERNOMMEN, "ok")
+    assert z.data_type == "n" and z.value == 2.3 and z.number_format == "0.0"
+
+
+def test_zahl_zelle_text_wird_pruefen_zahlenformat_geht_verloren(tmp_path):
+    p = _zahlen_excel(tmp_path / "z.xlsx")
+    op = Operation("ersetzen", "CDE", 3, 1, 0, 3, "zwei", 1, aenderung="A1", erwartet="2.2")
+    a = _ae("A1", [op], alt="2.2", neu="zwei", ziel="CDE!A3")
+    uebernehmen([a], p, tmp_path / "out.xlsx")
+    assert a.status == PRUEFEN and "Zahlenformat geht verloren" in a.grund and a.hinweise
+    assert blatt(tmp_path / "out.xlsx")["A3"].value == 2.2           # nichts geschrieben
+    # nach Freigabe: Text, aber laute Warnung
+    a2 = _ae("A1", [Operation("ersetzen", "CDE", 3, 1, 0, 3, "zwei", 1, aenderung="A1", erwartet="2.2")],
+             status=PRUEFEN, alt="2.2", neu="zwei", ziel="CDE!A3")
+    res = uebernehmen([a2], p, tmp_path / "out2.xlsx", {"A1"})
+    assert a2.status == UEBERNOMMEN and blatt(tmp_path / "out2.xlsx")["A3"].value == "zwei"
+    assert any("Zahlenformat" in w for w in res.warnungen)
+
+
+def test_zahl_zelle_mit_zwei_nachkommastellen_nur_gleiche_anzeige(tmp_path):
+    p = _zahlen_excel(tmp_path / "z.xlsx", fmt="0.00", wert=2.1)       # Anzeige "2.10"
+    ok = _ae("A1", [Operation("ersetzen", "CDE", 3, 1, 0, 4, "2.20", 1, aenderung="A1", erwartet="2.10")], alt="2.10", neu="2.20")
+    uebernehmen([ok], p, tmp_path / "out.xlsx")
+    assert ok.status == UEBERNOMMEN and blatt(tmp_path / "out.xlsx")["A3"].value == 2.2
+    abw = _ae("A2", [Operation("ersetzen", "CDE", 3, 1, 0, 4, "2.2", 1, aenderung="A2", erwartet="2.10")], alt="2.10", neu="2.2")
+    uebernehmen([abw], p, tmp_path / "out2.xlsx")
+    assert abw.status == PRUEFEN                                        # "2.2" sieht anders aus als das Format "0.00"
+
+
+def test_text_einer_grossen_zahl_ohne_prozent_g(tmp_path):
+    """'%g' machte aus 1234567.5 den Text '1.23457e+06'; die Stelle im Plan haette nie gepasst."""
+    from src.applier import _text
+    p = schreibe_excel(tmp_path / "g.xlsx", [["Nr.", "Titel", "Inhalt"], ["1", "Eins", 1234567.5]])
+    assert _text(load_workbook(str(p))["CDE"]["C2"]) == "1234567.5"
+
+
+def test_zwei_aufeinanderfolgende_gestrichene_absaetze_ueberlappen_nicht(tmp_path):
+    text = "Zeile eins\nPunkt aaa bbb. Ccc ddd."
+    p = schreibe_excel(tmp_path / "a.xlsx", [["Nr.", "Titel", "Inhalt"], ["1", "Eins", text]])
+    # Jede Loeschung nimmt das Leerzeichen dazwischen mit (Stelle 25): [11, 26) und [25, 34)
+    o1 = Operation("ersetzen", "CDE", 2, 3, 11, 26, "", 1, aenderung="A1", erwartet=text[11:26])
+    o2 = Operation("ersetzen", "CDE", 2, 3, 25, 34, "", 2, aenderung="A2", erwartet=text[25:34])
+    a1, a2 = _ae("A1", [o1], typ="text_geloescht", alt="Punkt aaa bbb."), _ae("A2", [o2], typ="text_geloescht", alt="Ccc ddd.")
+    uebernehmen([a1, a2], p, tmp_path / "out.xlsx")
+    assert (a1.status, a2.status) == (UEBERNOMMEN, UEBERNOMMEN)
+    assert (a1.nachkontrolle, a2.nachkontrolle) == ("ok", "ok")
+    assert zelle(tmp_path / "out.xlsx", 2, 3) == "Zeile eins"
+
+
+def test_wende_text_an_loescht_gemeinsames_leerzeichen_nur_einmal():
+    o1 = Operation("ersetzen", "CDE", 1, 1, 4, 8, "", 1, aenderung="A1")
+    o2 = Operation("ersetzen", "CDE", 1, 1, 7, 12, "", 2, aenderung="A2")
+    assert _wende_text_an("aaa bbb ccc ddd", [o1, o2]) == "aaa ddd"
+
+
+def test_ueberschneidung_mit_buchstaben_bleibt_konflikt(tmp_path):
+    p = schreibe_excel(tmp_path / "a.xlsx", [["Nr.", "Titel", "Inhalt"], ["1", "Eins", "aaa bbb ccc ddd"]])
+    o1 = Operation("ersetzen", "CDE", 2, 3, 0, 9, "", 1, aenderung="A1", erwartet="aaa bbb c")
+    o2 = Operation("ersetzen", "CDE", 2, 3, 7, 15, "", 2, aenderung="A2", erwartet=" ccc ddd")
+    a1, a2 = _ae("A1", [o1], typ="text_geloescht"), _ae("A2", [o2], typ="text_geloescht")
+    uebernehmen([a1, a2], p, tmp_path / "out.xlsx")
+    assert a2.status == NICHT and "Konflikt" in a2.grund
+
+
+def test_uebernehmen_mit_fertigem_modell_liest_die_excel_nicht_noch_einmal(tmp_path, monkeypatch):
+    from src import applier
+    from src.excel_model import ExcelModell
+    p = _basis_excel(tmp_path)
+    xl = ExcelModell(p)
+
+    def nie(*a, **k):
+        raise AssertionError("ExcelModell darf nicht noch einmal gebaut werden")
+    monkeypatch.setattr(applier, "ExcelModell", nie)
+    rep = Operation("ersetzen", "CDE", 2, 3, 4, 10, "Gerät", 1, aenderung="A1", erwartet="System")
+    a = _ae("A1", [rep], alt="System", neu="Gerät")
+    uebernehmen([a], p, tmp_path / "out.xlsx", xl=xl)
+    assert zelle(tmp_path / "out.xlsx", 2, 3) == "Das Gerät muss laufen und stabil bleiben."
+
+
+def test_zeile_einfuegen_mit_verbundenen_zellen_und_link_stuerzt_nicht_ab(tmp_path):
+    """Verbundene Zellen (MergedCell) haben keinen Hyperlink-Eintrag: das Nachziehen der Links darf nicht abstuerzen."""
+    def eig(wb):
+        ws = wb["CDE"]
+        z = next(c.row for row in ws.iter_rows() for c in row if c.value and "Absatz drei" in str(c.value))
+        ws.merge_cells(start_row=z, start_column=5, end_row=z + 1, end_column=5)
+        ws.cell(z, 3).hyperlink = "https://example.org/x"
+    alt = baue_alt(tmp_path, _EL_SECTION, "L1", nachher=lambda p: _bearbeite(p, eig))
+    l0 = analysiere(tmp_path, _EL_SECTION, alt)
+    kopf = next(a for a in l0.aen if a.typ == "section_neu")
+    assert kopf.status == PRUEFEN and any("verbundene" in h.lower() for h in kopf.hinweise)
+    l = uebernimm(l0, {kopf.id})
+    ws = blatt(l.out)
+    neu_r = zeile_mit(l.out, "Absatz drei")
+    rng = next(iter(ws.merged_cells.ranges))
+    assert (rng.min_row, rng.max_row) == (neu_r, neu_r + 1)
+    assert ws.cell(neu_r, 3).hyperlink is not None
+
+
+def test_ankerstufe_pdf_text_ist_das_ende_des_excel_absatzes_bleibt_automatisch(tmp_path):
+    """Seitenumbruch: auf der neuen Seite steht nur der Schluss des Absatzes. Der neue Absatz kommt danach, also ans Ende."""
+    ex = [("h", "1 Eins"),
+          ("p", "Die Anlage wird vor dem Versand einzeln geprüft und danach dokumentiert; anschließend wird ein "
+                "Prüfbericht erstellt und dem Kunden übergeben."),
+          ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")]
+    el = [("h", "1 Eins"), ("p", "Prüfbericht erstellt und dem Kunden übergeben."),
+          ("p", "{+Neuer Absatz nach dem Ende.+}"), ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")]
+    l = uebernimm(analysiere(tmp_path, el, baue_alt(tmp_path, ex, "L1")))
+    ae = next(a for a in l.aen if a.typ == "absatz_neu")
+    assert ae.status == UEBERNOMMEN, (ae.status, ae.grund)
+    assert zelle(l.out, 2, 3).endswith("dem Kunden übergeben.\nNeuer Absatz nach dem Ende.")

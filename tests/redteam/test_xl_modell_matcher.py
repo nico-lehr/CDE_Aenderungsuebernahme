@@ -33,8 +33,6 @@ def test_rt27_gleicher_absatz_zweimal_in_derselben_zelle(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-28 PDF-Block ist nur der Anfang eines langen Excel-Absatzes: neuer Absatz landet mitten im Satz. K-XL liefert jetzt Treffer.anker_stufe (mittel); offen, bis der Planer (K-PL, _anker) sie statt tr.stufe nutzt")
 def test_rt28_pdf_block_nur_anfang_des_excel_absatzes(tmp_path):
     el = [("h", "1 Eins"),
           ("p", "Die Anlage wird vor dem Versand einzeln geprüft und danach"),
@@ -83,8 +81,6 @@ def test_rt29_section_2_1_und_2_10_als_zahl_bleiben_verschieden(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-30 Section-Zahl 2.2 wird beim Ersetzen zu Text (Zelle war eine Zahl, Zahlenformat weg). K-XL liefert Kandidat.zelle_ist_zahl / ExcelModell.ist_zahl; offen, bis der Applier (K-PL) die Zahl wieder als Zahl schreibt")
 def test_rt30_zahl_bleibt_beim_ersetzen_eine_zahl(tmp_path):
     p = _zahlen_excel(tmp_path / "z.xlsx")
     el = [("h", "1 Eins"), ("p", "Erster Abschnitt mit genug Text hier drin."),

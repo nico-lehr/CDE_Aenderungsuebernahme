@@ -52,8 +52,6 @@ def _zeile(l, text: str) -> int:
 
 # ----------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-18 Verbundene Zelle ueber der Einfuegestelle wird nicht mitgezogen (Abschnitt 3 faellt aus der Verbindung); Besitzer K-PL")
 def test_rt18_verbundene_zelle_ueber_der_einfuegestelle(tmp_path):
     def merge(wb):
         wb["CDE"].merge_cells("D2:D4")       # Bemerkung gilt fuer die Sections 1 bis 3
@@ -67,8 +65,6 @@ def test_rt18_verbundene_zelle_ueber_der_einfuegestelle(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-19 Versteckte Zeile verrutscht: nach dem Einfuegen ist die falsche Zeile versteckt; Besitzer K-PL")
 def test_rt19_versteckte_zeile_bleibt_versteckt(tmp_path):
     def verstecke(wb):
         wb["CDE"].row_dimensions[6].hidden = True       # Section 5 ("Absatz fuenf")
@@ -81,8 +77,6 @@ def test_rt19_versteckte_zeile_bleibt_versteckt(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-20 Hyperlink bleibt an der alten Zelladresse haengen (falsche Zelle verlinkt); Besitzer K-PL")
 def test_rt20_hyperlink_wandert_mit(tmp_path):
     def link(wb):
         wb["CDE"]["C6"].hyperlink = "https://example.org/x"      # Zelle von Section 5
@@ -96,8 +90,6 @@ def test_rt20_hyperlink_wandert_mit(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-21 Bedingte Formatierung deckt nach dem Einfuegen die letzte Zeile nicht mehr ab; Besitzer K-PL")
 def test_rt21_bedingte_formatierung_wird_verschoben(tmp_path):
     def cf(wb):
         wb["CDE"].conditional_formatting.add(
@@ -112,8 +104,6 @@ def test_rt21_bedingte_formatierung_wird_verschoben(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-22 Datenvalidierung (Dropdown) deckt nach dem Einfuegen die letzte Zeile nicht mehr ab; Besitzer K-PL")
 def test_rt22_datenvalidierung_wird_verschoben(tmp_path):
     def dv(wb):
         ws = wb["CDE"]
@@ -130,8 +120,6 @@ def test_rt22_datenvalidierung_wird_verschoben(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-23 Autofilter reicht nach dem Einfuegen nicht mehr bis zur letzten Zeile; Besitzer K-PL")
 def test_rt23_autofilter_wird_erweitert(tmp_path):
     def af(wb):
         wb["CDE"].auto_filter.ref = "A1:D7"
@@ -144,8 +132,6 @@ def test_rt23_autofilter_wird_erweitert(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-24 Excel-Tabelle (Table) reicht nach dem Einfuegen nicht mehr bis zur letzten Zeile; Besitzer K-PL")
 def test_rt24_excel_tabelle_wird_erweitert(tmp_path):
     def tab(wb):
         wb["CDE"].add_table(Table(displayName="Tab1", ref="A1:D7"))
@@ -158,8 +144,6 @@ def test_rt24_excel_tabelle_wird_erweitert(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-25 Benannter Bereich zeigt nach dem Einfuegen auf zu wenige Zeilen; Besitzer K-PL")
 def test_rt25_benannter_bereich_wird_erweitert(tmp_path):
     def name(wb):
         wb.defined_names["Daten"] = DefinedName("Daten", attr_text="CDE!$A$2:$D$7")
@@ -173,8 +157,6 @@ def test_rt25_benannter_bereich_wird_erweitert(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-26 Formel, die auf Zeilen unterhalb zeigt, wird nicht angepasst (zeigt auf die falsche Zeile); Besitzer K-PL")
 def test_rt26_formel_nach_unten_wird_angepasst(tmp_path):
     def formel(wb):
         wb["CDE"]["F2"] = "=C7"            # zeigt auf Section 6
