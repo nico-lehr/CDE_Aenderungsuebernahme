@@ -4,3 +4,14 @@
 # Kein Cookie/Session-Gebrauch: Browser teilen Cookies zwischen Ports.
 host: 127.0.0.1
 port: 5100
+# Nur diese Rechnernamen duerfen im Host-Header (und im Origin) stehen. Schuetzt vor fremden
+# Webseiten und DNS-Rebinding. Der Server bindet ausserdem NUR an Loopback (127.0.0.1, localhost, ::1).
+erlaubte_hosts:
+  - 127.0.0.1
+  - localhost
+  - "::1"
+# Upload-Grenzen in MB: gesamt (alle Dateien einer Anfrage) und je Datei.
+upload_max_mb: 200
+upload_max_mb_datei: 100
+# Laengster erlaubter Dateiname (Zeichen und Bytes). Die meisten Dateisysteme erlauben 255.
+dateiname_max_laenge: 255

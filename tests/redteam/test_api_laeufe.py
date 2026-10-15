@@ -41,8 +41,6 @@ def _daten_wurzel() -> Path:
 # RT-39 / RT-40: gleichzeitige und abgebrochene Uebernahmen
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-39 Zwei gleichzeitige Uebernahmen: Ordnernummer 'Anzahl+1' ist nicht atomar -> FileExistsError; Besitzer K-API")
 def test_rt39_zwei_gleichzeitige_uebernahmen(fx, monkeypatch):
     rid = _lauf_anlegen(fx)
     schranke = threading.Barrier(2)
@@ -72,8 +70,6 @@ def test_rt39_zwei_gleichzeitige_uebernahmen(fx, monkeypatch):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-40 Abgebrochene Uebernahme laesst leeren ergebnis_NNN liegen; er zaehlt als Ergebnis mit; Besitzer K-API")
 def test_rt40_abgebrochene_uebernahme_hinterlaesst_keinen_halben_ordner(fx, monkeypatch):
     rid = _lauf_anlegen(fx)
 
@@ -92,8 +88,6 @@ def test_rt40_abgebrochene_uebernahme_hinterlaesst_keinen_halben_ordner(fx, monk
 # RT-41: plan.json atomar schreiben
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-41 plan.json wird nicht atomar geschrieben: ein Leser sieht eine halbe Datei; Besitzer K-API")
 def test_rt41_plan_json_nicht_atomar(fx, monkeypatch):
     rid = _lauf_anlegen(fx)                              # plan.json existiert schon (vollstaendig)
     halb, weiter = threading.Event(), threading.Event()
@@ -129,8 +123,6 @@ def test_rt41_plan_json_nicht_atomar(fx, monkeypatch):
 # RT-42 / RT-43: Regel 29 (append-only) -- Laeufe duerfen nicht verschwinden
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-42 DELETE /api/lauf/<id> loescht den Lauf von der Platte (Regel 29: append-only); Besitzer K-API")
 def test_rt42_delete_loescht_lauf_nicht_von_der_platte(client, fx):
     rid = _hochladen(client, fx).get_json()["run_id"]
     antwort = client.delete(f"/api/lauf/{rid}")
@@ -139,8 +131,6 @@ def test_rt42_delete_loescht_lauf_nicht_von_der_platte(client, fx):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-43 Fehlgeschlagene Analyse loescht den ganzen Lauf samt Eingaben (Regel 29); Besitzer K-API")
 def test_rt43_fehlgeschlagene_analyse_loescht_sich_nicht(client, fx, tmp_path):
     kaputt = tmp_path / "kaputt.pdf"
     kaputt.write_bytes(b"%PDF-1.4 sieht aus wie ein PDF, ist aber keins")
@@ -155,8 +145,6 @@ def test_rt43_fehlgeschlagene_analyse_loescht_sich_nicht(client, fx, tmp_path):
 # RT-44..46: Fehlermeldungen in einfachem Deutsch (JSON), ohne Rohtext von Ausnahmen
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-44 Upload ueber dem Limit liefert eine englische HTML-Fehlerseite statt JSON mit deutscher Meldung; Besitzer K-API")
 def test_rt44_zu_grosser_upload_liefert_json(client, fx, monkeypatch):
     monkeypatch.setitem(app.config, "MAX_CONTENT_LENGTH", 1024)
     r = client.post("/api/lauf", data={"pdf": (open(fx["pdf"], "rb"), "a.pdf"), "excel": (open(fx["alt"], "rb"), "cde.xlsx")},
@@ -166,8 +154,6 @@ def test_rt44_zu_grosser_upload_liefert_json(client, fx, monkeypatch):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-45 Fehlermeldung der Analyse enthaelt den Rohtext der Ausnahme; Besitzer K-API")
 def test_rt45_analysefehler_zeigt_keinen_rohtext(client, fx, monkeypatch):
     def kaputt(run_id):
         raise RuntimeError("ROHTEXT_XYZ No /Root object! C:\\intern\\pfad\\datei.py line 12")
@@ -178,8 +164,6 @@ def test_rt45_analysefehler_zeigt_keinen_rohtext(client, fx, monkeypatch):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-46 Fehlermeldung beim Uebernehmen enthaelt den Rohtext der Ausnahme; Besitzer K-API")
 def test_rt46_uebernahmefehler_zeigt_keinen_rohtext(client, fx, monkeypatch):
     rid = _hochladen(client, fx).get_json()["run_id"]
 
@@ -195,8 +179,6 @@ def test_rt46_uebernahmefehler_zeigt_keinen_rohtext(client, fx, monkeypatch):
 # RT-47: plan.json aus der Zukunft
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-47 plan.json mit schema_version 99: TypeError-Text/500 statt klarer Meldung 'neuere Version'; Besitzer K-API")
 def test_rt47_plan_json_aus_der_zukunft_gibt_klare_meldung(client, fx):
     rid = _hochladen(client, fx).get_json()["run_id"]
     pj = runs.lauf_dir(rid) / "plan.json"
@@ -215,8 +197,6 @@ def test_rt47_plan_json_aus_der_zukunft_gibt_klare_meldung(client, fx):
 # RT-48 / RT-49: Host-/Origin-Pruefung (Angriff von fremder Webseite bzw. DNS-Rebinding)
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-48 POST mit fremdem Origin (fremde Webseite) wird angenommen; Besitzer K-API")
 def test_rt48_fremder_origin_wird_abgelehnt(client, fx):
     rid = _hochladen(client, fx).get_json()["run_id"]
     r = client.post(f"/api/lauf/{rid}/uebernehmen", json={"freigaben": []}, headers={"Origin": "http://boese.example"})
@@ -224,8 +204,6 @@ def test_rt48_fremder_origin_wird_abgelehnt(client, fx):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-49 Anfrage mit fremdem Host-Header (DNS-Rebinding) wird angenommen; Besitzer K-API")
 def test_rt49_fremder_host_wird_abgelehnt(client, fx):
     r = client.get("/api/lauf", base_url="http://boese.example:5100")
     assert r.status_code in (400, 403, 421), f"Anfrage mit Host boese.example wurde angenommen (Status {r.status_code})"
@@ -235,8 +213,6 @@ def test_rt49_fremder_host_wird_abgelehnt(client, fx):
 # RT-52: ein kaputter Lauf darf die Lauf-Liste nicht unbrauchbar machen
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-52 Eine einzige kaputte plan.json laesst die ganze Lauf-Liste mit 500 (HTML) abstuerzen; Besitzer K-API")
 def test_rt52_ein_kaputter_lauf_zerstoert_nicht_die_liste(client, fx, monkeypatch):
     monkeypatch.setitem(app.config, "PROPAGATE_EXCEPTIONS", False)
     gut, kaputt = _lauf_anlegen(fx), _lauf_anlegen(fx)
@@ -250,8 +226,6 @@ def test_rt52_ein_kaputter_lauf_zerstoert_nicht_die_liste(client, fx, monkeypatc
 # RT-50 / RT-51: Dateinamen beim Upload
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-50 Windows-Reservenamen (CON, NUL, COM1) werden als Dateiname uebernommen; Besitzer K-API")
 @pytest.mark.parametrize("pdf_name, xlsx_name", [("CON.pdf", "NUL.xlsx"), ("com1.pdf", "Aux.xlsx"), ("LPT1.PDF", "prn.xlsx")])
 def test_rt50_windows_reservenamen(fx, pdf_name, xlsx_name):
     rid = runs.neuer_lauf(fx["pdf"], fx["alt"], pdf_name, xlsx_name)
@@ -262,8 +236,6 @@ def test_rt50_windows_reservenamen(fx, pdf_name, xlsx_name):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-51 Sehr langer Dateiname beim Upload: 500 (HTML) und halber Lauf-Ordner statt 400 mit Meldung; Besitzer K-API")
 def test_rt51_sehr_langer_dateiname(client, fx, monkeypatch):
     monkeypatch.setitem(app.config, "PROPAGATE_EXCEPTIONS", False)      # wie im echten Betrieb: Fehlerseite statt Traceback
     r = _hochladen(client, fx, name_pdf="a" * 300 + ".pdf")
