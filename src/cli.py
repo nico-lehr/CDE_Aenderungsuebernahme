@@ -3,6 +3,7 @@
 analyse  : nur auswerten und die Bilanz anzeigen (schreibt nichts in die Excel)
 lauf     : auswerten und alle sicheren Aenderungen eintragen
            (mit --alle-vorschlaege werden auch Vorschlaege ("pruefen") uebernommen)
+messen   : Messwerkzeug fuer Paare (PDF + Excel vorher + nachher), siehe src/messen.py
 """
 from __future__ import annotations
 
@@ -22,6 +23,10 @@ def _zeige(daten: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if args and args[0] == "messen":
+        from . import messen
+        return messen.main(args[1:])
     p = argparse.ArgumentParser(prog="cde", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("befehl", choices=["analyse", "lauf"])
     p.add_argument("--pdf", required=True)
