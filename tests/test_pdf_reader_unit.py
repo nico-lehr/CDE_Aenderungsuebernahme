@@ -407,3 +407,102 @@ def test_linie_die_knapp_den_letzten_buchstaben_verfehlt_streicht_das_ganze_wort
     a = lese(tmp_path / "zwei", pdf("Wart"))                    # drei Buchstaben fehlen: bleibt Teilmarkierung
     t = alle_tokens(a)[0]
     assert t.status == MOD and t.old == "Wartung" and t.new == "ung" and "teilweise_markiert" in t.hinweis
+
+
+# =================================================================================================
+# Gedrehte Seiten, Kommentare, Mischformen
+# =================================================================================================
+def _gedreht_pdf(art: str, farbe: str) -> bytes:
+    from tests.redteam._bau_pdf import annot_gedreht90, zeile_gedreht90
+    inhalt = (zeile_gedreht90(56, 64, "Erste Zeile bleibt gleich hier.") + zeile_gedreht90(56, 79, "Zweite Zeile ist ")
+              + zeile_gedreht90(146, 79, "neuer Text") + zeile_gedreht90(56, 94, "Dritte Zeile mit "))
+    return roh_pdf([RohSeite(inhalt=inhalt, attribute="/Rotate 90",
+                             annots=[annot_gedreht90(art, 146, 79, 220, 90, farbe)])])
+
+
+@pytest.mark.parametrize("art,farbe,erwartet", [("Highlight", "0 0 1", ADD), ("StrikeOut", "1 0 0", DEL)])
+def test_kommentar_auf_um_90_grad_gedrehter_seite_trifft_die_woerter(tmp_path, art, farbe, erwartet):
+    a = lese(tmp_path, _gedreht_pdf(art, farbe))
+    assert [token(a, w).status for w in ("neuer", "Text", "ist", "Dritte")] == [erwartet, erwartet, KEEP, KEEP]
+
+
+@pytest.mark.parametrize("rot", [0, 90, 180, 270])
+def test_kommentar_bereich_stimmt_mit_dem_rechteck_von_pdfplumber_ueberein(tmp_path, rot):
+    import pdfplumber
+    from src.pdf_reader import _Markierer, _Rahmen
+    an = "/Subtype /Highlight /Rect [100 200 180 215] /QuadPoints [100 215 180 215 100 200 180 200] /C [0 0 1] /F 4"
+    pfad = tmp_path / "r.pdf"
+    pfad.write_bytes(roh_pdf([RohSeite(inhalt=zeile(56, 64, "Text"), annots=[an], attribute=f"/Rotate {rot}")]))
+    with pdfplumber.open(str(pfad)) as pdf:
+        page = pdf.pages[0]
+        m = _Markierer(page, config.lade("farben"), _Rahmen("h", float(page.width), float(page.height)))
+        a = page.annots[0]
+        erwartet = (a["x0"], a["top"], a["x1"], a["bottom"])
+        assert m.annot[0][:4] == pytest.approx(erwartet, abs=0.01)
+
+
+@pytest.mark.parametrize("grad", [90, 180, 270])
+def test_seite_mit_quer_oder_kopfueber_stehendem_text_wird_gelesen(tmp_path, grad):
+    d = dok()
+    d.block("Das ist ein Satz mit mehreren Woertern und {+neuen+} Worten drin.")
+    d.seite_rotieren(grad)
+    a = lese(tmp_path, d)
+    assert a.blocks[0].neu_text == "Das ist ein Satz mit mehreren Woertern und neuen Worten drin."
+    assert token(a, "neuen").status == ADD and a.luecken == [] and a.seiten_masse[1] == (595.0, 842.0)
+
+
+def test_randvermerk_in_anderer_schreibrichtung_wird_gemeldet_nicht_gelesen(tmp_path):
+    from tests.redteam._bau_pdf import zeile_gedreht90
+    rand = zeile_gedreht90(20, 300, "Vermerk am Rand", 9.0)
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=_text_seite([TEXT]) + rand)]))
+    assert token(a, "Vermerk") is None and a.luecken == []
+    assert any("3 Wörter" in w and "Schreibrichtung" in w for w in a.warnungen)
+    rand_blau = zeile_gedreht90(20, 300, "Vermerk am Rand", 9.0, "0 0 1 rg")
+    a = lese(tmp_path / "b", roh_pdf([RohSeite(inhalt=_text_seite([TEXT]) + rand_blau)]))
+    assert [(l["art"], l["woerter"]) for l in a.luecken] == [("sonstiges", 3)]
+
+
+def test_blau_und_durchgestrichen_ist_entfaellt_mit_hinweis(tmp_path):
+    a = _einzel(tmp_path, "Das ist {@bs:blau durchgestrichen@} im Satz.")
+    ts = [token(a, "blau"), token(a, "durchgestrichen")]
+    assert [t.status for t in ts] == [DEL, DEL] and all(t.hinweis == "gemischt_blau_strich" for t in ts)
+    assert any("blau UND durchgestrichen" in h for h in a.blocks[0].hinweise)
+    assert not token(a, "Satz.").hinweis
+
+
+def test_unterstrichenes_schwarzes_wort_bekommt_hinweis_farbige_nicht(tmp_path):
+    from tests.fixtures.pdf_writer import breite
+    y = 842 - 74.2
+    inhalt = (zeile(56, 64, "Das ist ein wichtiger Satz hier.") + "0 0 0 RG 0.8 w %.2f %.2f m %.2f %.2f l S\n"
+              % (56 + breite("Das ist ein ", 11), y, 56 + breite("Das ist ein wichtiger Satz", 11), y))
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert [bool(token(a, w).hinweis) for w in ("ein", "wichtiger", "Satz", "hier.")] == [False, True, True, False]
+    assert token(a, "wichtiger").hinweis == "unterstrichen" and a.luecken == []
+
+
+def test_tabellenlinien_unter_dem_text_sind_keine_unterstreichung(tmp_path):
+    d = dok()
+    d.tabelle([["Name", "Wert"], ["Strom", "5 kW"], ["Spannung", "230 V"]], kopf_farbe=None, band_farbe=None)
+    a = lese(tmp_path, d)
+    assert not any("unterstrichen" in t.hinweis for t in alle_tokens(a))
+
+
+@pytest.mark.parametrize("art", ["Underline", "Squiggly", "Caret", "Ink", "FreeText"])
+def test_kommentare_anderer_art_auf_text_bekommen_hinweis(tmp_path, art):
+    from tests.redteam._bau_pdf import annot
+    an = annot(art, 56, 64, 90, 77, "1 0 0")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=zeile(56, 64, "Wichtig hier steht Text im Satz."), annots=[an])]))
+    t = token(a, "Wichtig")
+    assert t.status == KEEP and t.hinweis == "kommentar_" + art.lower()
+    assert a.blocks[0].hinweise and "Kommentar" in a.blocks[0].hinweise[0]
+
+
+def test_kommentar_ohne_text_darunter_wird_gewarnt_aber_link_und_notiz_nicht(tmp_path):
+    from tests.redteam._bau_pdf import annot
+    ink = annot("Ink", 300, 400, 400, 450, "1 0 0")
+    link = "/Subtype /Link /Rect [56 700 120 712] /Border [0 0 0] /A << /S /URI /URI (https://beispiel.example) >>"
+    notiz = "/Subtype /Text /Rect [10 10 30 30] /Contents (Notiz)"
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=zeile(56, 64, "Ein Satz im Text."), annots=[ink, link, notiz])]))
+    kommentar = [w for w in a.warnungen if "Kommentar" in w]
+    assert len(kommentar) == 1 and "Ink" in kommentar[0] and "Seite 1" in kommentar[0]
+    assert all(not t.hinweis for t in alle_tokens(a))

@@ -30,6 +30,7 @@ durchstreichung:
   max_ueberstand_em: 1.0     # Linie ragt hoechstens so weit (in Schriftgroessen) ueber den Text hinaus; sonst Zierlinie
   hell_min_helligkeit: 0.6   # hellgraue Linien (neutral und heller als das) sind Zierlinien, keine Durchstreichung
   hell_max_saettigung: 0.1
+  unterstreichung_band: [0.8, 1.3]   # Hoehenband (Anteil der Zeichenhoehe) einer Unterstreichung
 
 annotationen:                # PDF-Kommentare (Hervorheben / Durchstreichen)
   aktiv: true

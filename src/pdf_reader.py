@@ -41,6 +41,11 @@ _HINWEIS_TEXT = {
     "linie_unklar": "Eine Linie läuft quer durch den Text (Zierlinie?). Sie wurde nicht als Durchstreichung gewertet.",
     "link": "Hyperlink: die blaue Farbe wurde nicht als „neu“ gewertet.",
     "teilweise_markiert": "Ein Wort ist nur zum Teil markiert (Linie oder Fläche deckt nicht das ganze Wort). Bitte prüfen.",
+    "gemischt_blau_strich": "Ein Wort ist blau UND durchgestrichen (widersprüchlich). Es wurde als „entfällt“ gelesen.",
+    "gemischt_widerspruch": "Ein Wort ist gleichzeitig als „neu“ und als „entfällt“ markiert. Es wurde als „entfällt“ gelesen.",
+    "unterstrichen": "Ein unterstrichenes Wort: eine Unterstreichung hat keine feste Bedeutung und wurde nicht ausgewertet.",
+    "kommentar": "Ein PDF-Kommentar (z. B. Unterstreichung, Notiz) liegt auf dem Text. Seine Bedeutung ist unklar; "
+                 "er wurde nicht ausgewertet.",
     "design_blau": "Die Überschrift ist blau wie alle Überschriften des Dokuments. Das wurde als Gestaltung gewertet, nicht als „neu“.",
     "design_flaeche": "Eine Farbfläche hinter dem Text sieht nach Gestaltung aus (Tabellenkopf, Streifen). "
                       "Sie wurde nicht als Markierung gewertet.",
@@ -192,10 +197,49 @@ class _SeitenDaten:
     tabellen: list[tuple[float, float, float, float]] = field(default_factory=list)
     zu_viele_linien: bool = False
     grafik_objekte: int = 0
-    rect_farben: Counter = field(default_factory=Counter)
+    rahmen: Any = None                 # _Rahmen (Leserichtung der Seite)
+    fremd_woerter: int = 0             # Woerter in einer anderen Schreibrichtung als der Text der Seite
+    fremd_farbig: bool = False         # ... davon mindestens eines in Legendenfarbe
 
 
 # ---------------------------------------------------------------- Seite lesen
+@dataclass(frozen=True)
+class _Rahmen:
+    """Bringt die Seite in Leserichtung. art: 'h' = Text steht waagerecht (nichts zu tun) | 'ab' = Text laeuft von
+    oben nach unten | 'auf' = von unten nach oben | 'um' = kopfueber. (w, h) = Masse der Seite, wie pdfplumber sie meldet."""
+    art: str = "h"
+    w: float = 0.0
+    h: float = 0.0
+
+    def box(self, x0: float, top: float, x1: float, bot: float) -> tuple[float, float, float, float]:
+        if self.art == "ab":
+            return (top, self.w - x1, bot, self.w - x0)
+        if self.art == "auf":
+            return (self.h - bot, x0, self.h - top, x1)
+        if self.art == "um":
+            return (self.w - x1, self.h - bot, self.w - x0, self.h - top)
+        return (x0, top, x1, bot)
+
+    @property
+    def masse(self) -> tuple[float, float]:
+        return (self.h, self.w) if self.art in ("ab", "auf") else (self.w, self.h)
+
+
+def _kasten(o: dict, rahmen: _Rahmen) -> tuple[float, float, float, float]:
+    return rahmen.box(o["x0"], o["top"], o["x1"], o["bottom"])
+
+
+def _richtung(c: dict) -> str:
+    """Schreibrichtung eines Zeichens: 'h' | 'um' (kopfueber) | 'ab' | 'auf' | 'schraeg'."""
+    m = c.get("matrix") or (1, 0, 0, 1, 0, 0)
+    a, b = float(m[0]), float(m[1])
+    if abs(b) <= 0.2 * abs(a):
+        return "h" if a >= 0 else "um"
+    if abs(a) <= 0.2 * abs(b):
+        return "ab" if b < 0 else "auf"
+    return "schraeg"
+
+
 def _render_modi(page: Any) -> list[int] | None:
     """Text-Render-Modus je Zeichen (3 = unsichtbar). pdfplumber gibt ihn nicht heraus, deshalb wird die Seite
     hier mit einem eigenen Geraet ausgewertet und das Ergebnis als Layout der Seite abgelegt.
@@ -263,11 +307,33 @@ def _lese_seite(page: Any, nr: int, cfg: dict) -> _SeitenDaten:
     roh = list(page.chars)
     if modi is not None and len(modi) != len(roh):
         modi = None
+    # Schreibrichtung: Steht der Text (fast) ueberall quer oder kopfueber, wird die Seite in Leserichtung gebracht.
+    # Zeichen in einer anderen Richtung (Randvermerk, Wasserzeichen) werden nicht gelesen, aber gemeldet.
+    richtungen = [_richtung(c) for c in roh]
+    zaehl = Counter(r for r, c in zip(richtungen, roh) if (c.get("text") or "").strip())
+    haupt = zaehl.most_common(1)[0][0] if zaehl else "h"
+    rahmen = _Rahmen(haupt if haupt in ("ab", "auf", "um") else "h", sd.breite, sd.hoehe)
+    sd.rahmen = rahmen
+    sd.breite, sd.hoehe = rahmen.masse
+    fremd_wort_ende = True
     for i, c in enumerate(roh):
         text = c.get("text") or ""
-        rgb, unklar = _zeichenfarbe(c)
         leer = not text.strip()
-        z = _Z(text=text, x0=c["x0"], x1=c["x1"], top=c["top"], bottom=c["bottom"],
+        if haupt != "schraeg" and richtungen[i] != haupt:
+            # Zeichen einer anderen Schreibrichtung: nur zaehlen
+            if leer:
+                fremd_wort_ende = True
+            else:
+                if fremd_wort_ende:
+                    sd.fremd_woerter += 1
+                fremd_wort_ende = False
+                rgb_f, _ = _zeichenfarbe(c)
+                if _bedeutung(klasse(rgb_f, cfg), cfg):
+                    sd.fremd_farbig = True
+            continue
+        rgb, unklar = _zeichenfarbe(c)
+        x0, top, x1, bot = rahmen.box(c["x0"], c["top"], c["x1"], c["bottom"])
+        z = _Z(text=text, x0=x0, x1=x1, top=top, bottom=bot,
                size=float(c.get("size") or 10), font=str(c.get("fontname") or ""), leer=leer)
         z.unsichtbar = bool(modi and modi[i] in (3, 7))
         if rgb is not None:
@@ -284,8 +350,9 @@ def _lese_seite(page: Any, nr: int, cfg: dict) -> _SeitenDaten:
     # Bilder
     w, h = sd.breite, sd.hoehe
     for im in page.images:
-        x0, x1 = max(0.0, im["x0"]), min(w, im["x1"])
-        top, bot = max(0.0, im["top"]), min(h, im["bottom"])
+        bx0, btop, bx1, bbot = _kasten(im, rahmen)
+        x0, x1 = max(0.0, bx0), min(w, bx1)
+        top, bot = max(0.0, btop), min(h, bbot)
         if x1 > x0 and bot > top:
             sd.bilder.append((x0, top, x1, bot))
     sd.bild_anteil = _bild_anteil(sd.bilder, w, h)
@@ -301,20 +368,22 @@ def _tabellen_suchen(page: Any, sd: _SeitenDaten, cfg: dict) -> None:
     wag: list[tuple[float, float, float]] = []      # (y, x0, x1)
     senk: list[tuple[float, float, float]] = []     # (x, top, bottom)
     for l in page.lines:
-        dx, dy = l["x1"] - l["x0"], l["bottom"] - l["top"]
+        x0, top, x1, bot = _kasten(l, sd.rahmen)
+        dx, dy = x1 - x0, bot - top
         if dy <= 1.0 and dx >= lang:
-            wag.append(((l["top"] + l["bottom"]) / 2, l["x0"], l["x1"]))
+            wag.append(((top + bot) / 2, x0, x1))
         elif dx <= 1.0 and dy >= hoch:
-            senk.append(((l["x0"] + l["x1"]) / 2, l["top"], l["bottom"]))
+            senk.append(((x0 + x1) / 2, top, bot))
     for r in page.rects:
-        bw, bh = r["x1"] - r["x0"], r["bottom"] - r["top"]
+        x0, top, x1, bot = _kasten(r, sd.rahmen)
+        bw, bh = x1 - x0, bot - top
         if bh <= 1.6 and bw >= lang:
-            wag.append(((r["top"] + r["bottom"]) / 2, r["x0"], r["x1"]))
+            wag.append(((top + bot) / 2, x0, x1))
         elif bw <= 1.6 and bh >= hoch:
-            senk.append(((r["x0"] + r["x1"]) / 2, r["top"], r["bottom"]))
+            senk.append(((x0 + x1) / 2, top, bot))
         elif r.get("stroke") and bw >= hoch and bh >= hoch:       # Zelle mit Rahmen
-            wag += [(r["top"], r["x0"], r["x1"]), (r["bottom"], r["x0"], r["x1"])]
-            senk += [(r["x0"], r["top"], r["bottom"]), (r["x1"], r["top"], r["bottom"])]
+            wag += [(top, x0, x1), (bot, x0, x1)]
+            senk += [(x0, top, bot), (x1, top, bot)]
     if len(wag) + len(senk) > cfg["seiten"]["max_linien"]:
         sd.zu_viele_linien = True
         return
@@ -356,25 +425,43 @@ def _verschmelze(werte: list[float], tol: float) -> list[float]:
 
 
 # ---------------------------------------------------------------- Markierungen
+# Kommentar-Typen, die Text markieren oder anmerken koennten, hier aber nicht ausgewertet werden
+_ANDERE_KOMMENTARE = ("Underline", "Squiggly", "Caret", "Ink", "FreeText", "Stamp", "Square", "Circle", "Line",
+                      "Polygon", "PolyLine", "Redact")
+
+
+def _drehe_punkt(px: float, py: float, rot: int, w: float, h: float) -> tuple[float, float]:
+    """Punkt aus dem Seitenraum (PDF-Koordinaten, y nach oben) in die angezeigte Seite (x, top) -- wie pdfplumber."""
+    turns = (rot // 90) % 4
+    for i in range(turns):
+        comp = w if i == turns % 2 else h
+        px, py = py, comp - px
+    return px, h - py
+
+
 class _Markierer:
     """Sammelt pro Seite alle Markierungs-Signale und beantwortet: Status je Zeichen.
 
     Ablauf: __init__ sammelt die rohen Signale, pruefe() entscheidet mit Hilfe der Zeichen, welche davon wirklich
     Markierungen sind (und welche Gestaltung: Zierlinie, Tabellenkopf, Hyperlink), status() bewertet ein Zeichen."""
 
-    def __init__(self, page: Any, cfg: dict) -> None:
+    def __init__(self, page: Any, cfg: dict, rahmen: _Rahmen) -> None:
         self.cfg = cfg
+        self.rahmen = rahmen
         self.flaechen: list[tuple[float, float, float, float, str]] = []       # Hinterlegungen = Markierung
         self.unb_flaechen: list[tuple[float, float, float, float, str]] = []   # nicht zugeordnete Hinterlegungen
         self.design: list[tuple[float, float, float, float]] = []              # Hinterlegungen = Gestaltung
         self.striche: list[tuple[float, float, float]] = []
+        self.unterstriche: list[tuple[float, float, float]] = []
         self.annot: list[tuple[float, float, float, float, str]] = []
         self.unb_annot: list[tuple[float, float, float, float, str]] = []
         self.links: list[tuple[float, float, float, float]] = []
+        self.andere: list[dict[str, Any]] = []          # Kommentare anderer Art: {"typ", "boxen", "treffer"}
         self.rect_farben: Counter = Counter()
         self._flaechen_roh: list[tuple[float, float, float, float, str | None, str]] = []   # (Box, Bedeutung, Farbe)
-        self._striche_roh: list[tuple[float, float, float, bool]] = []                      # (x0, x1, y, hell)
+        self._linien_roh: list[tuple[float, float, float, bool]] = []                       # (x0, x1, y, hell)
         w, h = float(page.width), float(page.height)
+        bw, bh = rahmen.masse
         if cfg["hintergrund"]["aktiv"]:
             hg = cfg["hintergrund"]
             for r in page.rects:
@@ -385,29 +472,27 @@ class _Markierer:
                     continue
                 if r["width"] * r["height"] > hg["max_flaeche_anteil"] * w * h:
                     continue
-                if r["height"] <= 1.6:     # duenne Rechtecke sind Linien (siehe unten)
+                box = _kasten(r, rahmen)
+                if box[3] - box[1] <= 1.6:     # duenne Rechtecke sind Linien (siehe unten)
                     continue
                 k = klasse(rgb, cfg, hintergrund=True)
                 self.rect_farben[(_hex(rgb), k)] += 1
                 bed = _bedeutung(k, cfg)
-                box = (r["x0"], r["top"], r["x1"], r["bottom"])
                 if bed or (k is None and self._kraeftig_hg(rgb)):
                     self._flaechen_roh.append(box + (bed, _hex(rgb)))
         d = cfg["durchstreichung"]
         if d["aktiv"]:
-            bed = _bedeutung("durchgestrichen", cfg)
-            if bed:
-                for l in page.lines:
-                    if (l.get("linewidth", 1) or 0) <= d["max_linienstaerke_pt"] and abs(l["bottom"] - l["top"]) <= 1.2 \
-                            and (l["x1"] - l["x0"]) < d["max_breite_anteil"] * w:
-                        self._striche_roh.append((l["x0"], l["x1"], (l["top"] + l["bottom"]) / 2,
-                                                  self._hell(l.get("stroking_color"))))
-                for r in page.rects:
-                    if r["height"] <= 1.6 and 2 <= r["width"] < d["max_breite_anteil"] * w:
-                        self._striche_roh.append((r["x0"], r["x1"], (r["top"] + r["bottom"]) / 2,
-                                                  self._hell(r.get("non_stroking_color"))))
+            for l in page.lines:
+                x0, top, x1, bot = _kasten(l, rahmen)
+                if (l.get("linewidth", 1) or 0) <= d["max_linienstaerke_pt"] and abs(bot - top) <= 1.2 \
+                        and (x1 - x0) < d["max_breite_anteil"] * bw:
+                    self._linien_roh.append((x0, x1, (top + bot) / 2, self._hell(l.get("stroking_color"))))
+            for r in page.rects:
+                x0, top, x1, bot = _kasten(r, rahmen)
+                if bot - top <= 1.6 and 2 <= x1 - x0 < d["max_breite_anteil"] * bw:
+                    self._linien_roh.append((x0, x1, (top + bot) / 2, self._hell(r.get("non_stroking_color"))))
         if cfg["annotationen"]["aktiv"]:
-            self._annotationen(page, h)
+            self._annotationen(page)
 
     def _kraeftig_hg(self, rgb: tuple[float, float, float]) -> bool:
         hg = self.cfg["hintergrund"]
@@ -423,14 +508,36 @@ class _Markierer:
         _, s, v = colorsys.rgb_to_hsv(*(max(0.0, min(1.0, x)) for x in rgb))
         return s <= d["hell_max_saettigung"] and v >= d["hell_min_helligkeit"]
 
-    def _annotationen(self, page: Any, h: float) -> None:
+    def _boxen(self, a: dict, data: dict, page: Any) -> list[tuple[float, float, float, float]]:
+        """Bereiche eines Kommentars in Leserichtung (aus QuadPoints, sonst aus dem Rechteck)."""
+        quad = data.get("QuadPoints")
+        try:
+            q = [float(x) for x in quad] if quad else []
+        except (TypeError, ValueError):
+            q = []
+        boxen = []
+        if len(q) >= 8:
+            rot = int(getattr(page, "rotation", 0) or 0)
+            w, h = float(page.width), float(page.height)
+            for i in range(0, len(q) - 7, 8):
+                pts = [_drehe_punkt(q[i + j], q[i + j + 1], rot, w, h) for j in range(0, 8, 2)]
+                xs, ts = [p[0] for p in pts], [p[1] for p in pts]
+                boxen.append(self.rahmen.box(min(xs), min(ts), max(xs), max(ts)))
+        else:
+            boxen.append(_kasten(a, self.rahmen))
+        return boxen
+
+    def _annotationen(self, page: Any) -> None:
         cfg = self.cfg
         for a in page.annots:
             data = a.get("data") or {}
             sub = data.get("Subtype")
             name = getattr(sub, "name", str(sub))
             if name == "Link":
-                self.links.append((a["x0"], a["top"], a["x1"], a["bottom"]))
+                self.links.append(_kasten(a, self.rahmen))
+                continue
+            if name in _ANDERE_KOMMENTARE:
+                self.andere.append({"typ": name, "boxen": self._boxen(a, data, page), "treffer": 0})
                 continue
             if name == "StrikeOut":
                 bed = _bedeutung("durchgestrichen", cfg)
@@ -444,19 +551,7 @@ class _Markierer:
                 continue
             if not bed and not unb:
                 continue
-            quad = data.get("QuadPoints")
-            try:
-                q = [float(x) for x in quad] if quad else []
-            except (TypeError, ValueError):
-                q = []
-            boxen = []
-            if len(q) >= 8:
-                for i in range(0, len(q) - 7, 8):
-                    xs, ys = q[i:i + 8:2], q[i + 1:i + 8:2]
-                    boxen.append((min(xs), h - max(ys), max(xs), h - min(ys)))
-            else:
-                boxen.append((a["x0"], a["top"], a["x1"], a["bottom"]))
-            for x0, top, x1, bot in boxen:
+            for x0, top, x1, bot in self._boxen(a, data, page):
                 if bed:
                     self.annot.append((x0, top, x1, bot, bed))
                 else:
@@ -467,21 +562,26 @@ class _Markierer:
         """Entscheidet mit Hilfe der Zeichen der Seite, welche Linien und Flaechen echte Markierungen sind."""
         cfg = self.cfg
         d = cfg["durchstreichung"]
-        for x0, x1, y, hell in self._striche_roh:
-            treffer = [c for c in zeichen
-                       if c.top + d["band"][0] * (c.bottom - c.top) <= y <= c.top + d["band"][1] * (c.bottom - c.top)
-                       and min(x1, c.x1) - max(x0, c.x0) > 0]
-            if not treffer:
-                continue
-            size = statistics.median(c.size for c in treffer)
-            ueber = max(0.0, min(c.x0 for c in treffer) - x0) + max(0.0, x1 - max(c.x1 for c in treffer))
-            if hell or ueber > d["max_ueberstand_em"] * size:
-                # Zierlinie quer durch den Text: nicht als Durchstreichung werten, aber nicht verschweigen
-                for c in treffer:
-                    if not c.leer and (min(x1, c.x1) - max(x0, c.x0)) >= d["min_abdeckung"] * max(c.x1 - c.x0, 0.1):
-                        c.hinweis.add("linie_unklar")
-                continue
-            self.striche.append((x0, x1, y))
+        streichen = _bedeutung("durchgestrichen", cfg) is not None
+        for x0, x1, y, hell in self._linien_roh:
+            for art, band in (("strich", d["band"]), ("unter", d["unterstreichung_band"])):
+                if art == "strich" and not streichen:
+                    continue
+                treffer = [c for c in zeichen
+                           if c.top + band[0] * (c.bottom - c.top) <= y <= c.top + band[1] * (c.bottom - c.top)
+                           and min(x1, c.x1) - max(x0, c.x0) > 0]
+                if not treffer:
+                    continue
+                size = statistics.median(c.size for c in treffer)
+                ueber = max(0.0, min(c.x0 for c in treffer) - x0) + max(0.0, x1 - max(c.x1 for c in treffer))
+                if hell or ueber > d["max_ueberstand_em"] * size:
+                    if art == "strich":
+                        # Zierlinie quer durch den Text: nicht als Durchstreichung werten, aber nicht verschweigen
+                        for c in treffer:
+                            if not c.leer and (min(x1, c.x1) - max(x0, c.x0)) >= d["min_abdeckung"] * max(c.x1 - c.x0, 0.1):
+                                c.hinweis.add("linie_unklar")
+                    continue
+                (self.striche if art == "strich" else self.unterstriche).append((x0, x1, y))
         f = cfg["flaechen"]
         for x0, top, x1, bot, bed, hx in self._flaechen_roh:
             innen = [c for c in zeichen if x0 - 0.5 <= (c.x0 + c.x1) / 2 <= x1 + 0.5
@@ -500,49 +600,58 @@ class _Markierer:
             else:
                 self.unb_flaechen.append((x0, top, x1, bot, hx))
 
+    def _linie_trifft(self, linien: list[tuple[float, float, float]], c: _Z, band: list[float]) -> bool:
+        d = self.cfg["durchstreichung"]
+        h = c.bottom - c.top
+        lo, hi = c.top + band[0] * h, c.top + band[1] * h
+        breite = max(c.x1 - c.x0, 0.1)
+        return any(lo <= y <= hi and (min(x1, c.x1) - max(x0, c.x0)) / breite >= d["min_abdeckung"]
+                   for x0, x1, y in linien)
+
     def status(self, c: _Z) -> str:
         cfg = self.cfg
-        bed: set[str] = set()
+        quelle: dict[str, set[str]] = {}          # Bedeutung -> woher
         farbe_bed = c.farbe_bed
         cx, cy = (c.x0 + c.x1) / 2, (c.top + c.bottom) / 2
-        if farbe_bed == "neu" and c.farbklasse == "blau" and not c.leer:
+        in_link = False
+        if not c.leer:
             for x0, top, x1, bot in self.links:
                 if x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bot + 1:
-                    farbe_bed = None                    # Hyperlink: das Blau ist Gestaltung, keine Neu-Markierung
-                    c.hinweis.add("link")
+                    in_link = True
                     break
+        if in_link and farbe_bed == "neu" and c.farbklasse == "blau":
+            farbe_bed = None                        # Hyperlink: das Blau ist Gestaltung, keine Neu-Markierung
+            c.hinweis.add("link")
         if farbe_bed:
-            bed.add(farbe_bed)
-        geo = False
+            quelle.setdefault(farbe_bed, set()).add("farbe")
         for x0, top, x1, bot, b in self.flaechen:
             if x0 - 0.5 <= cx <= x1 + 0.5 and top - 0.5 <= cy <= bot + 0.5:
-                bed.add(b)
-                geo = True
+                quelle.setdefault(b, set()).add("flaeche")
         for x0, top, x1, bot, b in self.annot:
             if x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bot + 1:
-                bed.add(b)
-                geo = True
-        if self.striche:
-            d = cfg["durchstreichung"]
-            h = c.bottom - c.top
-            lo, hi = c.top + d["band"][0] * h, c.top + d["band"][1] * h
-            breite = max(c.x1 - c.x0, 0.1)
-            for x0, x1, y in self.striche:
-                if lo <= y <= hi:
-                    ueber = min(x1, c.x1) - max(x0, c.x0)
-                    if ueber / breite >= d["min_abdeckung"]:
-                        bed.add(_bedeutung("durchgestrichen", cfg) or "entfaellt")
-                        geo = True
-                        break
-        if "entfaellt" in bed:
+                quelle.setdefault(b, set()).add("annot")
+        if self.striche and self._linie_trifft(self.striche, c, cfg["durchstreichung"]["band"]):
+            quelle.setdefault(_bedeutung("durchgestrichen", cfg) or "entfaellt", set()).add("strich")
+        if "entfaellt" in quelle:
             erg = DEL
-        elif "neu" in bed:
+        elif "neu" in quelle:
             erg = ADD
         else:
             erg = KEEP
-        c.unscharf = erg != KEEP and geo and farbe_bed != ("neu" if erg == ADD else "entfaellt")
+        gewinner = quelle.get("entfaellt" if erg == DEL else "neu", set())
+        c.unscharf = erg != KEEP and "farbe" not in gewinner
+        if "neu" in quelle and "entfaellt" in quelle and not c.leer:
+            c.hinweis.add("gemischt_blau_strich" if "farbe" in quelle["neu"] and "strich" in quelle["entfaellt"]
+                          else "gemischt_widerspruch")
         if not c.leer:
+            for k in self.andere:
+                if any(x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bot + 1 for x0, top, x1, bot in k["boxen"]):
+                    k["treffer"] += 1
+                    c.hinweis.add("kommentar_" + k["typ"].lower())
             if erg == KEEP:
+                if self.unterstriche and not in_link and self._linie_trifft(self.unterstriche, c,
+                                                                            cfg["durchstreichung"]["unterstreichung_band"]):
+                    c.hinweis.add("unterstrichen")
                 for x0, top, x1, bot in self.design:
                     if x0 - 0.5 <= cx <= x1 + 0.5 and top - 0.5 <= cy <= bot + 0.5:
                         c.hinweis.add("design_flaeche")
@@ -558,6 +667,11 @@ class _Markierer:
                             break
         c.status = erg
         return erg
+
+    def meldungen(self, seite: int) -> list[str]:
+        """Kommentare, die auf keinem erkannten Text liegen."""
+        return [f"Seite {seite}: Ein PDF-Kommentar vom Typ {k['typ']} liegt nicht auf erkanntem Text und wurde nicht ausgewertet."
+                for k in self.andere if not k["treffer"]]
 
 
 def _zeichenstatus(g: list[_Z], anteil: float) -> list[str]:
@@ -872,7 +986,12 @@ def _block_hinweise(tokens: list[PdfToken]) -> list[str]:
         for c in t.hinweis.split(";") if t.hinweis else ():
             if c not in codes:
                 codes.append(c)
-    return [_HINWEIS_TEXT[c] for c in codes if c in _HINWEIS_TEXT]
+    saetze: list[str] = []
+    for c in codes:
+        satz = _HINWEIS_TEXT.get("kommentar" if c.startswith("kommentar_") else c)
+        if satz and satz not in saetze:
+            saetze.append(satz)
+    return saetze
 
 
 def _zeilenabstand(abstaende: list[float], body: float) -> float:
@@ -1025,6 +1144,16 @@ def _seite_luecken(sd: _SeitenDaten, zeilen_alle: list[_Zeile], nutz: list[_Zeil
                 "scan_seite", nr, f"Seite {nr} enthält keinen lesbaren Text, aber ein Bild oder eine Zeichnung "
                                   f"(Scan?). Änderungen darauf werden nicht gelesen.", 0))
         return True
+    # --- Text in anderer Schreibrichtung (Randvermerk, Wasserzeichen) ------------------------------
+    if sd.fremd_woerter:
+        if sd.fremd_farbig:
+            ergebnis.luecken.append(luecke(
+                "sonstiges", nr, f"Seite {nr}: {sd.fremd_woerter} Wörter stehen in einer anderen Schreibrichtung als der "
+                                 f"übrige Text und sind farbig markiert. Sie wurden nicht gelesen.", sd.fremd_woerter))
+        else:
+            ergebnis.warnungen.append(
+                f"Seite {nr}: {sd.fremd_woerter} Wörter stehen in einer anderen Schreibrichtung als der übrige Text "
+                f"(Randvermerk, Wasserzeichen?) und wurden nicht gelesen.")
     # --- Bilder im Text ------------------------------------------------------------------------
     for x0, t, x1, b in sd.bilder:
         flaeche = (x1 - x0) * (b - t) / (w * h)
@@ -1088,7 +1217,7 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
             sd = _lese_seite(page, nr, cfg)
             seiten_daten.append(sd)
             if any(not z.leer for z in sd.zeichen):
-                markierer[nr] = _Markierer(page, cfg)
+                markierer[nr] = _Markierer(page, cfg, sd.rahmen)
     # Grundfarbe des Dokuments (Farbe, in der der Grossteil des Textes steht): nie eine Markierung
     zaehler: Counter = Counter()
     for sd in seiten_daten:
@@ -1125,6 +1254,7 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
                 text_farben[(z.hex, z.farbklasse)] += 1
                 if z.unb == "bunt" and z.hex != grund_hex and z.farbklasse is None:
                     unbekannt[z.hex] += 1
+        ergebnis.warnungen += m.meldungen(nr)
         alle_zeilen.append(_zeilen(sd.zeichen, nr, cfg, grund_hex))
     nutz_pro_seite = _zu_bloecken(alle_zeilen, seiten_h, cfg, ergebnis)
     for sd, zl, nutz in zip(seiten_daten, alle_zeilen, nutz_pro_seite):

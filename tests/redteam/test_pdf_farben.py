@@ -197,9 +197,6 @@ def test_rt89_graustufen_markierung(tmp_path):
 # h) Mischformen und Annotationen
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-90 Blau UND durchgestrichen (widerspruechlich): wird still als 'entfaellt' gelesen, "
-                          "ohne Hinweis am Wort oder Block; Besitzer K-PDF")
 def test_rt90_blau_plus_strich_ohne_hinweis(tmp_path):
     d = dok()
     d.block("Das ist {@bs:blau durchgestrichen@} im Satz.")
@@ -211,9 +208,6 @@ def test_rt90_blau_plus_strich_ohne_hinweis(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-91 Schwarz UNTERSTRICHEN (Unterstreichung als Neu-Markierung): wird nie erkannt, "
-                          "nicht als Aenderung und nicht als Hinweis (Rueckfrage-Niveau); Besitzer K-PDF")
 def test_rt91_unterstreichung_wird_gemeldet(tmp_path):
     inhalt = (zeile(56, 64, "Das ist ein wichtiger Satz mit Unterstreichung hier.")
               + "0 0 0 RG 0.8 w 110.4 %.2f m 179 %.2f l S\n" % (SEITE_H - 74.2, SEITE_H - 74.2)
@@ -226,9 +220,6 @@ def test_rt91_unterstreichung_wird_gemeldet(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-92 PDF-Kommentare anderer Art (Underline, Squiggly, Caret, Ink, FreeText) werden ohne "
-                          "jede Meldung uebergangen; Besitzer K-PDF")
 @pytest.mark.parametrize("art", ["Underline", "Squiggly", "Caret", "Ink", "FreeText"])
 def test_rt92_annotationen_anderer_typen_werden_gemeldet(tmp_path, art):
     extra = " /DA (/Helv 0 Tf 0 g) /Contents (bitte pruefen)" if art == "FreeText" else ""
@@ -242,9 +233,6 @@ def test_rt92_annotationen_anderer_typen_werden_gemeldet(tmp_path, art):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-93 Hervorhebung auf einer um 90 Grad gedrehten Seite (/Rotate 90, Text aufrecht): die "
-                          "QuadPoints werden ohne Drehung umgerechnet, die Woerter bleiben unmarkiert, keine Meldung; Besitzer K-PDF")
 @pytest.mark.parametrize("art,farbe", [("Highlight", "0 0 1"), ("StrikeOut", "1 0 0")])
 def test_rt93_annotation_auf_gedrehter_seite(tmp_path, art, farbe):
     inhalt = (zeile_gedreht90(56, 64, "Erste Zeile bleibt gleich hier.") + zeile_gedreht90(56, 79, "Zweite Zeile ist ")
@@ -259,9 +247,6 @@ def test_rt93_annotation_auf_gedrehter_seite(tmp_path, art, farbe):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-94 Seite mit /Rotate 90 und quer stehendem Text (wie PdfDokument.seite_rotieren): der Text "
-                          "wird in Einzelzeichen-Bloecke zerlegt, keine Warnung, keine Luecke; Besitzer K-PDF")
 def test_rt94_gedrehte_seite_mit_querstehendem_text(tmp_path):
     d = dok()
     d.block("Das ist ein Satz mit mehreren Woertern und {+neuen+} Worten drin.")
