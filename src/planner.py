@@ -37,14 +37,28 @@ def _planer_cfg(cfg: dict | None) -> dict:
     return config.lade("zuordnung").get("planer", {})
 
 
+def _trennung_ohne_ausnahme(muster: "re.Pattern[str]", text: str, ausnahmen: set[str]) -> bool:
+    """Gibt es im Text einen Treffer des Trennmusters, dessen Rest-Wort keine erlaubte Ausnahme ist ("Ein- und Ausgang")?"""
+    for m in muster.finditer(text):
+        rest = (m.groupdict().get("rest") or "").casefold()
+        if rest not in ausnahmen:
+            return True
+    return False
+
+
 def neutext_probleme(texte: Iterable[str], cfg: dict | None = None) -> dict[str, Any]:
-    """Prueft Neutext auf Dinge, die in der Excel Schaden anrichten oder auf kaputtes PDF-Lesen hindeuten.
+    """Prueft Neutext auf Dinge, die in der Excel Schaden anrichten oder auf kaputtes PDF-Lesen hindeuten
+    (Ligaturen, Zeichencode-Reste, nicht zusammengefuegte Silbentrennung, Tabellen-Spaltentrenner; Muster in config planer:).
 
     Rueckgabe: steuerzeichen (nicht schreibbar), verdaechtig (Liste einfacher Hinweise -> nie automatisch),
     formel (Text beginnt mit '=' und wuerde von Excel als Formel gelesen)."""
     pl = _planer_cfg(cfg)
     zeichen = "".join(pl.get("verdaechtige_zeichen", []))
     muster = [re.compile(m) for m in pl.get("verdaechtige_muster", [])]
+    trennung = [re.compile(m) for m in pl.get("trennmuster", [])]
+    ausnahmen = {str(w).casefold() for w in pl.get("trennung_ausnahmen", [])}
+    tabelle = [re.compile(m, re.MULTILINE) for m in pl.get("tabellen_muster", [])]
+    tab_min = max(int(pl.get("tabellen_min_treffer", 1)), 1)
     out: dict[str, Any] = {"steuerzeichen": False, "verdaechtig": [], "formel": False}
     for t in texte:
         if not isinstance(t, str) or not t:
@@ -57,6 +71,16 @@ def neutext_probleme(texte: Iterable[str], cfg: dict | None = None) -> dict[str,
                 out["verdaechtig"].append(h)
         if any(m.search(t) for m in muster):
             h = "Der neue Text enthält Zeichencode-Reste aus dem PDF (z. B. „(cid:12)“). Die PDF-Schrift wurde nicht sauber gelesen."
+            if h not in out["verdaechtig"]:
+                out["verdaechtig"].append(h)
+        if any(_trennung_ohne_ausnahme(m, t, ausnahmen) for m in trennung):
+            h = ("Der neue Text enthält ein Trennmuster wie „Wort- Rest“ (Silbentrennung am Zeilenende). Das Wort könnte "
+                 "zerrissen sein. Bitte mit dem PDF vergleichen.")
+            if h not in out["verdaechtig"]:
+                out["verdaechtig"].append(h)
+        if tabelle and sum(len(m.findall(t)) for m in tabelle) >= tab_min:
+            h = ("Der neue Text enthält senkrechte Striche als Spaltentrenner (Text aus einer Tabelle?). Tabellen werden nicht "
+                 "gelesen. Bitte mit dem PDF vergleichen.")
             if h not in out["verdaechtig"]:
                 out["verdaechtig"].append(h)
         if t.startswith("="):

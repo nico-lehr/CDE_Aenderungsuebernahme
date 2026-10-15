@@ -310,3 +310,87 @@ def test_ueberschrift_unsicher_haelt_auch_den_inhalt_auf_pruefen(tmp_path):
     assert inhalt.status == "pruefen" and inhalt.konfidenz == "mittel"
     assert "zusammen" in inhalt.grund
     assert zeile_mit(l.out, "Die Reaktionszeit") is not None                  # der Inhalt wurde nicht allein geloescht
+
+
+# ===========================================================================================================
+# K-PL 2: Neutext mit Trennmuster "Wort- Rest" oder Tabellen-Spaltentrenner wird nie automatisch uebernommen
+# ===========================================================================================================
+@pytest.mark.parametrize("text", [
+    "Die Netzanschlussbe- dingungen sind einzuhalten.",
+    "Das Betrie- bsführungskonzept liegt vor.",
+    "Das Betrie­ bsführungskonzept liegt vor.",                       # weiches Trennzeichen
+    "Der Schalt- schrank ist beschriftet.",
+    "Siehe oben.\nDie Anlage wird jaehrlich ueberpru- ft.",                 # in der zweiten Zeile
+])
+def test_trennmuster_wird_erkannt(text):
+    from src.planner import neutext_probleme
+    p = neutext_probleme([text])
+    assert any("Trennmuster" in h for h in p["verdaechtig"]), p
+
+
+@pytest.mark.parametrize("text", [
+    "Der Ein- und Ausgang ist beschriftet.",                               # Ergaenzungsstrich
+    "Be- oder Entladen ist verboten.",
+    "Kabel- bzw. Leitungsschutz ist vorzusehen.",
+    "Wartungs-, Inspektions- sowie Pruefarbeiten sind zu dokumentieren.",
+    "Ein-, Aus- und Umbau sind getrennt zu melden.",
+    "Sowohl Ein- als auch Ausgaenge sind gesichert.",
+    "Der kWh-Zähler und die E-Mail-Adresse stehen im Nord-Süd-Plan.",      # echte Bindestriche ohne Leerzeichen
+    "Kennlinie A-B und Zeitraum 2020-2024 sind gleich.",
+    "Der Wert - wie gemessen - liegt bei 5 V.",                            # Bindestrich mit Leerzeichen davor
+    "Der Soll- Ist- Vergleich entfaellt.",                                 # Grossbuchstabe nach dem Strich
+    "Trennung a|b ohne Leerzeichen ist kein Tabellenrand.",
+])
+def test_echte_bindestriche_blockieren_nicht(text):
+    from src.planner import neutext_probleme
+    assert neutext_probleme([text])["verdaechtig"] == []
+
+
+@pytest.mark.parametrize("text", [
+    "Pos. | Bauteil | Menge | Einheit",
+    "| Pos. | Bauteil |\n| 1 | Netzteil |",
+    "Netzteil | 24 Stueck",
+])
+def test_tabellen_pipes_werden_erkannt(text):
+    from src.planner import neutext_probleme
+    p = neutext_probleme([text])
+    assert any("Spaltentrenner" in h for h in p["verdaechtig"]), p
+
+
+def test_muster_kommen_aus_der_config():
+    from src.planner import neutext_probleme
+    cfg = {"planer": {"trennmuster": [], "tabellen_muster": []}}
+    assert neutext_probleme(["Schalt- schrank", "A | B"], cfg)["verdaechtig"] == []         # ohne Muster in der Config nichts
+    cfg = {"planer": {"trennmuster": [r"(?<=\w)- (?P<rest>[a-z]\w*)"], "trennung_ausnahmen": ["schrank"]}}
+    assert neutext_probleme(["Schalt- schrank"], cfg)["verdaechtig"] == []                   # Ausnahme aus der Config
+    assert neutext_probleme(["Schalt- kasten"], cfg)["verdaechtig"]
+
+
+def _neu_lauf(tmp_path, neuer_text: str):
+    from tests.redteam._bau import baue_alt, lauf
+    xl = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."),
+          ("h", "2 Zwei"), ("p", "Die Reaktionszeit darf 150 ms nicht ueberschreiten."),
+          ("h", "3 Drei"), ("p", "Alle Steckverbindungen sind eindeutig beschriftet.")]
+    pdf = xl[:4] + [("p", "{+" + neuer_text + "+}")] + xl[4:]
+    alt = baue_alt(tmp_path, xl, "L1")
+    l = lauf(tmp_path, pdf, "L1", alt=alt)
+    neu = [a for a in l.aen if a.typ == "absatz_neu"]
+    assert len(neu) == 1
+    return l, neu[0]
+
+
+def test_neuer_absatz_mit_trennmuster_bleibt_auf_pruefen_mit_hinweis(tmp_path):
+    l, neu = _neu_lauf(tmp_path, "Die Netzanschlussbe- dingungen sind einzuhalten und zu dokumentieren.")
+    assert neu.status == "pruefen" and neu.konfidenz == "mittel"
+    assert any("Trennmuster" in h for h in neu.hinweise) and "verfälscht" in neu.grund
+
+
+def test_neuer_absatz_mit_tabellen_pipes_bleibt_auf_pruefen_mit_hinweis(tmp_path):
+    l, neu = _neu_lauf(tmp_path, "Pos. | Bauteil | Menge | Einheit")
+    assert neu.status == "pruefen"
+    assert any("Spaltentrenner" in h for h in neu.hinweise)
+
+
+def test_neuer_absatz_mit_ergaenzungsstrich_wird_weiter_automatisch_uebernommen(tmp_path):
+    l, neu = _neu_lauf(tmp_path, "Der Ein- und Ausgang ist beschriftet und kWh-Zähler sind plombiert.")
+    assert (neu.status, neu.konfidenz) == ("uebernommen", "hoch"), (neu.status, neu.grund, neu.hinweise)
