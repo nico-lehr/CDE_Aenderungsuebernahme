@@ -143,6 +143,7 @@ class Diff:
     neue: list[tuple[int, tuple[str, ...], tuple[str, ...]]] = field(default_factory=list)   # (Anker, Rohtexte, Keys)
     neue_nr: list[int] = field(default_factory=list)                    # Zeilennummer jeder neuen Zeile in X (parallel zu `neue`)
     blind: set = field(default_factory=set)                             # Soll-Zellen, die nur "PDF-blind" verglichen werden (siehe _blind)
+    neue_vi: list[int] = field(default_factory=list)                    # Index der vorher-Zeile direkt vor jeder neuen Zeile (roh)
     # Anker = Nummer der letzten behaltenen vorher-Zeile VOR der neuen Zeile (0 = ganz oben).
     # "Behalten" heisst: nicht weg UND nicht ausgeleert (eine Zeile, in der nur noch unverwaltete Spalten wie
     # Bemerkung stehen, zaehlt wie eine geloeschte Zeile -- im Soll genauso wie im Ergebnis).
@@ -278,11 +279,22 @@ def _diff(v: list[Zeile], x: list[Zeile], leer: Callable[[Zeile], bool] | None =
             weg(zeiger)
             zeiger += 1
     for vi, z in roh_neu:
+        d.neue_vi.append(vi)
         while vi >= 0 and (vi in weg_idx or vi in leer_idx):
             vi -= 1
         d.neue.append((v[vi].nr if vi >= 0 else 0, z.zellen, z.keys))
         d.neue_nr.append(z.nr)
     return d
+
+
+def _anker_neu(d: Diff, v: list[Zeile], tot: set[int]) -> None:
+    """Setzt die Anker der neuen Zeilen neu: Zeilen, die Soll ODER Ergebnis als entfernt/ausgeleert sehen (`tot`), zaehlen auf
+    beiden Seiten gleich nicht als Anker. So hat eine geleerte (statt geloeschte) Zeile keinen Einfluss auf den Ort (MA-3)."""
+    for k, vi in enumerate(d.neue_vi):
+        while vi >= 0 and v[vi].nr in tot:
+            vi -= 1
+        _alt, zellen, keys = d.neue[k]
+        d.neue[k] = (v[vi].nr if vi >= 0 else 0, zellen, keys)
 
 
 def _neu_abgleich(soll: list, ist: list) -> tuple[dict[int, int], dict[int, bool]]:
@@ -387,9 +399,13 @@ class _Auswertung:
         self._inhaltsspalte: dict[int, int | None] = {}
         self.S = [_diff(self.V[i], self.N[i]) for i in range(len(self.V))]     # 1. Lauf: nur fuer die Inhaltsspalte
         self.S = [_diff(self.V[i], self.N[i], self._leer_fn(i)) for i in range(len(self.V))]
+        self.I = [_diff(self.V[i], self.E[i], self._leer_fn(i)) for i in range(len(self.V))]
+        self._tot = [self.S[i].weg | self.S[i].geleert | self.I[i].weg | self.I[i].geleert for i in range(len(self.V))]
+        for i in range(len(self.V)):         # Anker neuer Zeilen: entfernte/ausgeleerte Zeilen zaehlen auf beiden Seiten nicht (MA-3)
+            _anker_neu(self.S[i], self.V[i], self._tot[i])
+            _anker_neu(self.I[i], self.V[i], self._tot[i])
         for bi, s in enumerate(self.S):
             self._soll_pdf_blind(bi, s)
-        self.I =[_diff(self.V[i], self.E[i], self._leer_fn(i)) for i in range(len(self.V))]
         self.bil_auto, self.bil_plan = bil_auto, bil_plan
         self.idempotent = idempotent
         self.fehler: dict[Any, Fehler] = {}
@@ -413,9 +429,13 @@ class _Auswertung:
 
         self._bauen()
         self.luecken_erwartet = luecken_erwartet
-        self.e_alle = (self._ist_liste([_diff(self.V[i], _zeilen(e_alle_blaetter[i]) if i < len(e_alle_blaetter) else [],
-                                              self._leer_fn(i)) for i in range(len(self.V))])
-                       if e_alle_blaetter is not None else None)
+        self.e_alle = None
+        if e_alle_blaetter is not None:
+            alle = [_diff(self.V[i], _zeilen(e_alle_blaetter[i]) if i < len(e_alle_blaetter) else [], self._leer_fn(i))
+                    for i in range(len(self.V))]
+            for i, d in enumerate(alle):
+                _anker_neu(d, self.V[i], self._tot[i] | d.weg | d.geleert)
+            self.e_alle = self._ist_liste(alle)
 
     # ------------------------------------------------------------------ Hilfen
     def _ziele(self, ae) -> list[Ziel]:
