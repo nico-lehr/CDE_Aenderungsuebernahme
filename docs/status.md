@@ -67,6 +67,7 @@ Ob es bei echten Dokumenten trägt, zeigt erst die Messung an deinen echten Paar
 | Zwei-Spalten/Tabellen/Bilder/Scan ohne `erwartet.json` | bei **echten Paaren** kann die Messung „Lücke nicht gemeldet“ nie prüfen (nur Scan-Seiten und große Bilder per PDF-Plausibilität) | Kriterium 1 steht bei echten Paaren auf „nicht gemessen“ |
 | Messung vertraut `bilanz()['stimmt']` des Tools | nicht unabhängig geprüft | Rest-Risiko |
 | Gruppen-Freigabe bei Section-Löschung | die Kopplung gilt beim Planen; gibt ein Mensch nur Überschrift oder nur einen Absatz frei, kann das den Rest trennen | bräuchte ein Gruppenfeld (Schema 3) |
+| Test-only-Familien nicht mehr ungesehen | „gedrehte Seite“ und „grüner Text“ (nur im Testkorpus) wurden als Red-Team-Fälle behandelt (RT-87, RT-93/94) | Endmessung belegt dort weniger Allgemeingültigkeit |
 | Generator ist von uns | echte Dokumente sind anders; Schwellen (Farbe, Zeilenabstand, Absatz) sind nicht an echten PDFs kalibriert | Nicos echte Paare nötig (`docs/kalibrierung.md`) |
 
 ## Wie ihr es selbst nachmessen könnt

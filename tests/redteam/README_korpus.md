@@ -3,7 +3,7 @@
 > **Hinweis (15.10.2026, nach den Reparaturen):** Diese Tabelle beschreibt den Stand **vor** den Reparaturen. Fast alle Fälle sind inzwischen behoben (Marker entfernt, Tests laufen als Schutz-Tests); RT-126/128 wurden synthetisch neu gebaut. Der heutige Stand steht in `docs/status.md`.
 
 Alles **erfunden** (Regel 16). `src/`, `config/` und `tests/fixtures/` sind unverändert; es wurde nur Neues unter `tests/redteam/` angelegt.
-Der Testkorpus (Seeds ab 1000) wurde **nicht** erzeugt oder gemessen (Regel 11); `_bau_korpus.paar()` bricht bei Seeds ≥ 1000 ab.
+Der Testkorpus (Seeds ab 1000) wurde von R3 **nicht** gemessen oder gelesen (Regel 11; er wurde vorher vom Orchestrator erzeugt, aber nie ausgewertet); `_bau_korpus.paar()` bricht bei Seeds ≥ 1000 ab.
 
 Ausgangslage: `python -m src.cli messen --korpus entwicklung --mit-vorschlaegen` (60 Paare, Seeds 1–60) meldet **43 stille Fehler**
 (24× „übernommen, aber falsch“ mit Nachkontrolle „ok“, 4× Kollateral, 15× erwartete Lücke nicht gemeldet).

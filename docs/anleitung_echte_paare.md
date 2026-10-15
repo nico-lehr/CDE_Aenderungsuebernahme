@@ -93,6 +93,7 @@ data\messung\NNN_entwicklung\bericht.json    ← dieselben Zahlen für Programme
 
 `NNN` zählt hoch (001, 002, …). Alte Berichte werden **nie überschrieben**, so kannst du Vorher und Nachher vergleichen.
 Der Bericht enthält **keine Texte aus deinen Dokumenten**, nur Zahlen, Paar-Namen, Blatt-Nummer, Zeile, Spalte, Änderungs-ID und Fehlerart. Du darfst die Zahlen daraus bedenkenlos weitergeben.
+**Aber Vorsicht:** Ordnernamen der Paare (deshalb `echt_01` statt Kundennamen!) und in den Warnungen im Dashboard/`plan.json` auch **Namen von Excel-Blättern** können echte Namen enthalten. Gib solche Warnungen oder `plan.json`-Dateien nicht weiter, ohne vorher nachzusehen.
 
 Oben im Bericht steht die **Ampel** (Tabelle „Kriterien“). Jede Zeile hat „ok“ oder „NICHT ok“ (oder „nicht gemessen“). Das bedeuten die Kriterien:
 

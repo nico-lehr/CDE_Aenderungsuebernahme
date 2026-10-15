@@ -25,8 +25,9 @@ Gemessen mit `python -m src.cli messen` (Paket 2) an Paaren aus **PDF + Excel vo
 
 **Korpus (erfunden, vom Generator erzeugt, Version in `KORPUS.json` festgehalten):**
 - Entwicklung: mindestens 60 Paare und 400 Soll-Zellen. Hier darf geprüft und eingestellt werden.
-- Test: mindestens 30 Paare und 200 Soll-Zellen, **eigene Seeds** und **2 Störer-Familien, die nur dort vorkommen**. Wird höchstens zweimal gemessen
-  (nach Welle 2 und zum Abschluss), nie zum Einstellen benutzt (Regel 11).
+- Test: mindestens 30 Paare und 200 Soll-Zellen, **eigene Seeds** und **2 Störer-Familien, die nur dort vorkommen**. Wird **genau einmal zum Abschluss** gemessen (ursprünglich waren zwei Messungen geplant; eine einzige hält den Korpus ungesehen)
+  und nie zum Einstellen benutzt (Regel 11). *Ehrlicher Hinweis:* Die beiden Familien „gedrehte Seite“ und „grüner Text“ wurden später als Red-Team-Fälle
+  mit handgebauten PDFs behandelt; sie sind also nicht mehr völlig unbekannt. Die Endmessung belegt für sie weniger Allgemeingültigkeit.
 - Mindestens 12 verschiedene Störer-Familien (Fußnoten, Silbentrennung, Spalten, Tabellen/Bilder, Scan, Farbtöne/Farbräume, Mischmarkierungen,
   Aufzählungen, Seitenumbruch im Absatz, doppelte Absätze, irreführende Excel-Spalten, mehrere Blätter, Formeln/verbundene Zellen, Sonderzeichen).
 
