@@ -522,3 +522,393 @@ def test_cli_analyse_und_lauf_unveraendert(tmp_path, capsys):
         cli.main(["unbekannt"])
     assert cli.main(["analyse", "--pdf", str(p / "aenderungen.pdf"), "--excel", str(excel), "--alle-vorschlaege"]) == 0
 
+
+
+# =======================================================================================
+# Reparatur des Messwerkzeugs (Phantom-Fehler entfernt, versteckte Fehler sichtbar)
+# Jeder Befund hat hier einen eigenen Selbsttest. Alles erfunden (Regel 16).
+# =======================================================================================
+from collections import Counter                      # noqa: E402
+
+from openpyxl import Workbook                        # noqa: E402
+from openpyxl.styles import Font, PatternFill        # noqa: E402
+from openpyxl.worksheet.datavalidation import DataValidation   # noqa: E402
+
+from tests.fixtures.pdf_writer import PdfDokument, scan_bild   # noqa: E402
+
+ZWEI_AENDERUNGEN = [("h", "1 Eins"),
+                    ("p", "Der Quokka frisst {-Gras-} {+Laub+} am Morgen und {-ruht-} {+schlaeft+} danach im Schatten."),
+                    ("h", "2 Zwei"), ("p", "Ein Flamingo steht im Teich.")]
+
+
+def zweite_aenderung_offen(monkeypatch):
+    original = messen.plane
+
+    def offen(pdf, xl, cfg=None):
+        plan = original(pdf, xl, cfg)
+        plan.aenderungen[-1].status, plan.aenderungen[-1].konfidenz = PRUEFEN, "mittel"
+        return plan
+    monkeypatch.setattr(messen, "plane", offen)
+
+
+# ---- strenger Zellvergleich (RT-135) ---------------------------------------------------------
+def test_strenger_zellvergleich_sieht_leerraum_und_zeichenformen():
+    assert messen._s("a  b") != messen._s("a b")
+    assert messen._s("a b") != messen._s("a b")
+    assert messen._s("Mess­protokoll") != messen._s("Messprotokoll")
+    assert messen._s("ﬁnden") != messen._s("finden")
+    assert messen._s("a\nb") != messen._s("a b")
+    assert messen._s("a\r\nb") == messen._s("a\nb")
+    assert messen._s("   ") == "" and messen._s("​") == ""                 # ohne sichtbaren Inhalt = leer
+
+
+def test_nur_leerraum_unterschied_ist_stiller_fehler_und_als_textform_ausgewiesen(tmp_path, monkeypatch):
+    p = baue_paar(tmp_path, "synth_1100")
+    sabotiere_ergebnis(monkeypatch, lambda ziel, aend, q: zellen_aendern(
+        ziel, {"C2": load_workbook(str(ziel))["CDE"]["C2"].value.replace("Laub am", "Laub  am")}))
+    res = messen.messe_paar(p)
+    assert res["stille_fehler"] == 1 and res["stille_fehler_nur_textform"] == 1
+    assert res["erreicht_auto"] == 2 and res["auto_richtig"] == 2 and res["auto_gesamt"] == 3
+
+
+def test_geschuetztes_leerzeichen_nur_im_soll_ist_nicht_darstellbar_im_ergebnis_ist_es_ein_fehler(tmp_path, monkeypatch):
+    """Das PDF traegt kein geschuetztes Leerzeichen: steht es nur im Soll (nachher), kann kein Tool es kennen -> ausgewiesen,
+    kein Fehler. Steht es im ERGEBNIS und nicht im Soll, ist es ein Fehler."""
+    p = baue_paar(tmp_path, "synth_1101")
+    zellen_aendern(p / "nachher.xlsx", {"C2": load_workbook(str(p / "nachher.xlsx"))["CDE"]["C2"].value.replace("am Morgen", "am Morgen")})
+    res = messen.messe_paar(p)
+    assert res["stille_fehler"] == 0 and res["erreicht_auto"] == res["soll_zellen"]
+    assert res["soll_zellen_pdf_blind"] == 1 and res["soll_zellen_pdf_blind_erreicht"] == 1
+    q = baue_paar(tmp_path, "synth_1102")
+    sabotiere_ergebnis(monkeypatch, lambda ziel, aend, quelle: zellen_aendern(
+        ziel, {"C2": load_workbook(str(ziel))["CDE"]["C2"].value.replace("am Morgen", "am Morgen")}))
+    res2 = messen.messe_paar(q)
+    assert res2["stille_fehler"] == 1 and res2["soll_zellen_pdf_blind"] == 0
+
+
+# ---- je Aenderung bewerten (MA-1) -------------------------------------------------------------
+def test_offene_aenderung_in_derselben_zelle_ist_kein_fehler_und_wird_je_aenderung_gezaehlt(tmp_path, monkeypatch):
+    p = baue_paar(tmp_path, "synth_1110", ZWEI_AENDERUNGEN)
+    zweite_aenderung_offen(monkeypatch)
+    res = messen.messe_paar(p, mit_vorschlaegen=True)
+    assert res["stille_fehler"] == 0 and res["fehler"] == []
+    assert res["zellen_warten_auf_freigabe"] == 1 and res["pruefen_zellen"] == 1 and res["erreicht_auto"] == 0
+    assert res["aenderungen_uebernommen_korrekt"] == 1 and res["aenderungen_uebernommen_falsch"] == 0
+    assert res["aenderungen_zu_pruefen"] == 1 and res["aenderungen_nicht_uebernommen"] == 0
+    assert res["vorschlaege_gesamt"] == res["vorschlaege_richtig"] == 1
+
+
+def test_falsche_angewendete_aenderung_neben_offener_wird_je_aenderung_gefunden(tmp_path, monkeypatch):
+    """Die angewendete Aenderung ist falsch (anderes Wort), die offene fehlt noch: Fehler, und zwar an der angewendeten."""
+    p = baue_paar(tmp_path, "synth_1111", ZWEI_AENDERUNGEN)
+    zweite_aenderung_offen(monkeypatch)
+    original = messen.uebernehmen
+
+    def falsch(aend, quelle, ziel, freigaben=None, cfg=None):
+        res = original(aend, quelle, ziel, freigaben, cfg)
+        if Path(ziel).name == "ergebnis_auto.xlsx":
+            zellen_aendern(Path(ziel), {"C2": load_workbook(str(ziel))["CDE"]["C2"].value.replace("Laub", "Kraut")})
+        return res
+    monkeypatch.setattr(messen, "uebernehmen", falsch)
+    res = messen.messe_paar(p)
+    assert res["stille_fehler"] == 1 and res["zellen_warten_auf_freigabe"] == 0
+    assert res["aenderungen_uebernommen_falsch"] == 1 and res["aenderungen_uebernommen_korrekt"] == 0
+    assert res["aenderungen_zu_pruefen"] == 1
+
+
+def test_unerklaert_nennt_nur_woerter_ausserhalb_der_offenen_aenderung():
+    erlaubt = Counter(["jaehrlich", "monatlich"])
+    ist, soll = "Die Wartung erfolgt jaehrlich durch uns.", "Die Wartung erfolgt monatlich durch uns."
+    assert not messen._Auswertung._unerklaert(ist, soll, erlaubt)
+    assert messen._Auswertung._unerklaert(ist, soll.replace("uns", "alle"), erlaubt)
+    assert messen._Auswertung._unerklaert(ist, soll.replace("erfolgt ", "erfolgt  "), erlaubt)       # zusaetzlicher Leerraum
+    nur_form = messen._Auswertung._unerklaert("Der Rest.\nEnde", "Der Rest. Ende", Counter())
+    assert "\x00format" in nur_form and "rest." not in nur_form and len(nur_form) >= 2          # Nachbarwoerter fuer die Zuordnung
+
+
+# ---- Zeilenpaarung / Anker (MA-2, MA-3) --------------------------------------------------------
+def test_teilweise_geleerte_zeile_wird_wiedergefunden():
+    v = _zeilen(("1", "Eins", "Absatz A.", "Status offen"),
+                ("2", "Zwei", "Satz eins ist hier. Satz zwei ist hier. Satz drei ist hier.\nAbsatz zwei ist hier.", "Status offen"),
+                ("3", "Drei", "Absatz C.", "Status offen"))
+    x = _zeilen(("1", "Eins", "Absatz A.", "Status offen"),
+                ("", "", "Satz eins ist hier. Satz zwei ist hier. Satz drei ist hier.", "Status offen"),
+                ("3", "Drei", "Absatz C.", "Status offen"))
+    d = messen._diff(v, x)
+    assert d.neue == [] and d.weg == set() and d.zuordnung == {1: 1, 2: 2, 3: 3}
+    assert set(d.zellen) == {(2, 1), (2, 2), (2, 3)}
+
+
+def test_anker_neuer_zeilen_ignoriert_geleerte_und_entfernte_zeilen():
+    leer = lambda z: not any(z.keys[:3])                                   # noqa: E731  (Bemerkung = 4. Spalte unverwaltet)
+    v = _zeilen(("1", "Eins", "A", "Rest"), ("2", "Zwei", "B", "Rest"), ("3", "Drei", "C", "Rest"))
+    soll = messen._diff(v, _zeilen(("1", "Eins", "A", "Rest"), ("7", "Neu", "ganz anderer Text hier", "Rest"),
+                                   ("3", "Drei", "C", "Rest")), leer)
+    x_ist = _zeilen(("1", "Eins", "A", "Rest"), ("", "", "", "Rest"), ("7", "Neu", "ganz anderer Text hier", "Rest"),
+                    ("3", "Drei", "C", "Rest"))
+    # a) Das Layout ist bekannt: die geleerte Zeile 2 gilt auf beiden Seiten als entfernt
+    ist = messen._diff(v, x_ist, leer)
+    assert ist.geleert == {2} and soll.weg == {2}
+    tot = soll.weg | soll.geleert | ist.weg | ist.geleert
+    messen._anker_neu(soll, v, tot)
+    messen._anker_neu(ist, v, tot)
+    assert [a for a, _, _ in soll.neue] == [a for a, _, _ in ist.neue] == [1]
+    assert messen._neu_abgleich(soll.neue, ist.neue) == ({0: 0}, {0: True})
+    # b) Das Layout ist unklar (keine Leer-Erkennung): die Zeile, die das SOLL entfernt, zaehlt trotzdem nicht als Anker
+    soll2 = messen._diff(v, _zeilen(("1", "Eins", "A", "Rest"), ("7", "Neu", "ganz anderer Text hier", "Rest"),
+                                    ("3", "Drei", "C", "Rest")))
+    ist2 = messen._diff(v, x_ist)
+    assert [a for a, _, _ in ist2.neue] == [2] and [a for a, _, _ in soll2.neue] == [1]        # ohne Abgleich: verschieden
+    tot2 = soll2.weg | ist2.weg
+    messen._anker_neu(soll2, v, tot2)
+    messen._anker_neu(ist2, v, tot2)
+    assert [a for a, _, _ in ist2.neue] == [a for a, _, _ in soll2.neue] == [1]
+
+
+# ---- Regel 27 (RT-137/138) ---------------------------------------------------------------------
+def test_regel27_pruefen_ohne_freigabe_angewendet_ist_stiller_fehler(tmp_path, monkeypatch):
+    p = baue_paar(tmp_path, "synth_1120", ZWEI_AENDERUNGEN)
+    zweite_aenderung_offen(monkeypatch)
+    original = messen.uebernehmen
+
+    def mit_heimlicher_freigabe(aend, quelle, ziel, freigaben=None, cfg=None):
+        if Path(ziel).name == "ergebnis_auto.xlsx":
+            freigaben = {a.id for a in aend if a.status == PRUEFEN}
+        return original(aend, quelle, ziel, freigaben, cfg)
+    monkeypatch.setattr(messen, "uebernehmen", mit_heimlicher_freigabe)
+    res = messen.messe_paar(p)
+    assert res["regel27_verstoesse"] == 1 and res["stille_fehler"] == 1
+    assert res["stille_fehler_nach_art"].get("regel27_verstoss") == 1
+    assert res["erreicht_auto"] == 0 and res["auto_richtig"] == 0                          # der Treffer zaehlt nicht
+    assert res["aenderungen_uebernommen_falsch"] == 1 and res["aenderungen_uebernommen_korrekt"] == 1
+    bericht = messen.fasse_zusammen([dict(res, name="synth_1120")], "entwicklung", "", False)
+    assert [k["ampel"] for k in bericht["kriterien"] if k["name"].startswith("Regel 27")] == ["NICHT ok"]
+
+
+def test_regel27_wird_auch_an_der_wirkung_erkannt_wenn_der_status_nichts_verraet(tmp_path, monkeypatch):
+    """Das Ergebnis enthaelt den Text der offenen Aenderung, obwohl ihr Status 'pruefen' geblieben ist."""
+    p = baue_paar(tmp_path, "synth_1121", ZWEI_AENDERUNGEN)
+    zweite_aenderung_offen(monkeypatch)
+    nachher_text = load_workbook(str(p / "nachher.xlsx"))["CDE"]["C2"].value
+    sabotiere_ergebnis(monkeypatch, lambda ziel, aend, q: zellen_aendern(ziel, {"C2": nachher_text}))
+    res = messen.messe_paar(p)
+    assert res["regel27_verstoesse"] == 1 and res["stille_fehler"] >= 1
+
+
+def test_ohne_verstoss_keine_regel27_meldung(tmp_path):
+    res = messen.messe_paar(baue_paar(tmp_path, "synth_1122"))
+    assert res["regel27_verstoesse"] == 0 and res["stille_fehler_nach_art"].get("regel27_verstoss", 0) == 0
+
+
+# ---- Struktur (RT-136), direkt mit gebauten Arbeitsmappen ---------------------------------------------
+def _mappe(pfad: Path, zeilen: list[list[str]], hidden=(), hoehe=None, merges=(), dv=None, fett=(), fmt=None, fuellung=()) -> Path:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CDE"
+    for z in zeilen:
+        ws.append(z)
+    for r in hidden:
+        ws.row_dimensions[r].hidden = True
+    if hoehe:
+        ws.row_dimensions[hoehe[0]].height = hoehe[1]
+    for m in merges:
+        ws.merge_cells(m)
+    if dv:
+        v = DataValidation(type="list", formula1='"a,b"')
+        v.add(dv)
+        ws.add_data_validation(v)
+    for adr in fett:
+        ws[adr].font = Font(bold=True)
+    for adr in fuellung:
+        ws[adr].fill = PatternFill("solid", fgColor="FFFF00")
+    if fmt:
+        ws[fmt[0]].number_format = fmt[1]
+    wb.save(str(pfad))
+    return pfad
+
+
+def _befund(tmp_path: Path, vz, ez, **kw) -> dict:
+    ev = {k[2:]: v for k, v in kw.items() if k.startswith("v_")}
+    ee = {k[2:]: v for k, v in kw.items() if k.startswith("e_")}
+    v = _mappe(tmp_path / "v.xlsx", vz, **ev)
+    e = _mappe(tmp_path / "e.xlsx", ez, **ee)
+    diff = messen._diff(messen._zeilen(messen._lese_excel(v)[0]), messen._zeilen(messen._lese_excel(e)[0]))
+    return messen._struktur_befund(v, e, [diff])
+
+
+KOPF4 = ["Nr", "Titel", "Inhalt", "Bem"]
+VZ = [KOPF4] + [[str(i), f"Titel {i}", f"Text zu Eintrag {i} steht hier", "x"] for i in range(1, 8)]
+EINGEFUEGT = VZ[:5] + [["4.1", "Neu A", "Ein ganz neuer Absatz steht jetzt hier", "x"],
+                       ["4.2", "Neu B", "Noch ein ganz neuer Absatz steht hier", "x"]] + VZ[5:]
+
+
+def test_struktur_einfuegen_verschiebt_hoehe_verbund_versteckt_und_validierung_legitim(tmp_path):
+    b = _befund(tmp_path, VZ, EINGEFUEGT, v_hidden=[6], v_hoehe=(7, 40), v_merges=["D6:D7"], v_dv="D6:D7",
+                e_hidden=[8], e_hoehe=(9, 40), e_merges=["D8:D9"], e_dv="D8:D9")
+    assert b["struktur_geaendert"] == 0, b
+
+
+def test_struktur_nicht_mitgewanderte_dinge_sind_befunde(tmp_path):
+    b = _befund(tmp_path, VZ, EINGEFUEGT, v_hidden=[6], v_merges=["D6:D7"], v_dv="D6:D7",
+                e_hidden=[6], e_merges=["D6:D7"], e_dv="D6:D7")
+    assert b["struktur_nach_art"]["zeile_versteckt"] >= 1 and b["struktur_nach_art"]["verbunden"] >= 1
+    assert b["struktur_nach_art"]["validierung"] >= 1
+
+
+def test_struktur_neue_zeile_darf_nicht_ausgeblendet_sein(tmp_path):
+    b = _befund(tmp_path, VZ, EINGEFUEGT, e_hidden=[6])
+    assert b["struktur_nach_art"]["zeile_versteckt"] == 1
+
+
+def test_struktur_zahlenformat_und_schrift_unveraenderter_zellen(tmp_path):
+    b = _befund(tmp_path, VZ, VZ, e_fmt=("A3", "0.00"), e_fett=["C4"])
+    assert b["struktur_nach_art"]["zahlenformat"] == 1 and b["struktur_nach_art"]["schrift"] == 1
+
+
+def test_struktur_geaenderte_zelle_darf_markiert_werden_aber_nicht_fett(tmp_path):
+    nachher = [z[:] for z in VZ]
+    nachher[2][2] = "Text zu Eintrag 2 wurde ganz neu gefasst"
+    b = _befund(tmp_path, VZ, nachher, e_fuellung=["C3"])                      # gelbe Markierung der Aenderung: erlaubt
+    assert b["struktur_geaendert"] == 0
+    b2 = _befund(tmp_path, VZ, nachher, e_fuellung=["C3"], e_fett=["C3"])      # aber nicht fett
+    assert b2["struktur_nach_art"]["schrift"] == 1
+
+
+def test_struktur_blatt_umbenannt_und_ausgeblendet(tmp_path):
+    v = _mappe(tmp_path / "v.xlsx", VZ)
+    wb = load_workbook(str(v))
+    wb.create_sheet("Zwei")
+    wb.save(str(v))
+    wb["CDE"].title = "Anders"
+    wb["Zwei"].sheet_state = "hidden"
+    e = tmp_path / "e.xlsx"
+    wb.save(str(e))
+    diff = messen._diff(messen._zeilen(messen._lese_excel(v)[0]), messen._zeilen(messen._lese_excel(e)[0]))
+    b = messen._struktur_befund(v, e, [diff, messen.Diff()])
+    assert b["struktur_nach_art"]["blatt"] == 1 and b["struktur_nach_art"]["sichtbarkeit"] == 1
+
+
+def test_sauberes_paar_hat_keine_strukturbefunde(tmp_path):
+    res = messen.messe_paar(baue_paar(tmp_path, "synth_1130", MIT_NEUER_SECTION))
+    assert res["struktur_geaendert"] == 0 and set(res["struktur_nach_art"]) == set(messen.STRUKTUR_ARTEN)
+
+
+# ---- Absturz im Wiederholungslauf (RT-139/140) --------------------------------------------------
+def test_absturz_im_wiederholungslauf_behaelt_die_funde_des_ersten_laufs(tmp_path, monkeypatch):
+    p = baue_paar(tmp_path, "synth_1140")
+    original = messen.uebernehmen
+    zaehler = {"n": 0}
+
+    def falsch_dann_absturz(aend, quelle, ziel, freigaben=None, cfg=None):
+        res = original(aend, quelle, ziel, freigaben, cfg)
+        zaehler["n"] += 1
+        if zaehler["n"] == 1:
+            zellen_aendern(Path(ziel), {"C2": "Etwas ganz anderes steht hier."})
+        if zaehler["n"] == 2:
+            raise ValueError("GEHEIMER-DOKUMENTTEXT-quokka")
+        return res
+    monkeypatch.setattr(messen, "uebernehmen", falsch_dann_absturz)
+    res = messen.messe_paar(p)
+    assert res["stille_fehler"] == 1 and res["idempotent"] is None
+    assert res["abgestuerzt"] == "ValueError" and res["teilweise_gemessen"] is True
+    assert res["ausgefallene_messteile"] == [{"teil": "idempotenz", "grund": "ValueError"}]
+    assert res["fehler"][-1]["art"] == "unklar" and res["fehler"][-1]["grund"] == "ValueError"
+    assert "GEHEIMER" not in json.dumps(res)
+
+
+def test_abgestuerztes_paar_setzt_keine_ampel_auf_ok():
+    sauber = {"name": "a", "stille_fehler": 0, "soll_zellen": 3, "erreicht_auto": 3, "auto_gesamt": 3, "auto_richtig": 3,
+              "bilanz_stimmt": True, "vollstaendig": True, "idempotent": True, "original_unveraendert": True,
+              "kollateral": 0, "fehler": [], "luecken_nicht_gemeldet": 0, "luecken_pruefbar": True, "soll_woerter": 10,
+              "lese_luecke_woerter": 0, "struktur_geaendert": 0, "plausibilitaet_hinweise": [], "plausibilitaet_ungemeldet": 0}
+    kaputt = messen._fehlgeschlagen("b", RuntimeError("x"))
+    b = messen.fasse_zusammen([sauber, kaputt], "entwicklung", "", False)
+    ampeln = {k["name"]: k["ampel"] for k in b["kriterien"]}
+    for name in ("Stille Fehler", "Kollateralschaden", "Bilanz stimmig"):
+        assert ampeln[name] == "nicht vollständig gemessen", name
+    ganz_ok = messen.fasse_zusammen([sauber], "entwicklung", "", False)
+    assert {k["name"]: k["ampel"] for k in ganz_ok["kriterien"]}["Stille Fehler"] == "ok"
+
+
+# ---- keine erwartet.json: Luecken nicht pruefbar, Plausibilitaet direkt am PDF (RT-141) -----------------
+def test_ohne_erwartet_json_ist_kriterium_1_nicht_gemessen(tmp_path, capsys):
+    baue_paar(korpus_dir(), "echt_9200")
+    assert messen.main(["--korpus", "entwicklung"]) == 0
+    out = capsys.readouterr().out
+    b = json.loads(next(config.pfad("messung_dir").glob("001_entwicklung/bericht.json")).read_text(encoding="utf-8"))
+    k1 = next(k for k in b["kriterien"] if k["name"] == "Bilanz stimmig")
+    assert k1["ampel"] == "nicht gemessen" and b["gesamt"]["luecken_nicht_pruefbar_paare"] == 1
+    assert "erwartet.json" in out and "nicht prüfbar" in out
+    md = next(config.pfad("messung_dir").glob("001_entwicklung/bericht.md")).read_text(encoding="utf-8")
+    assert "erwartet.json" in md
+
+
+def test_plausibilitaet_findet_scan_seite_aber_nicht_normale_seiten(tmp_path):
+    d = PdfDokument(variante="farbe")
+    d.ueberschrift("1 Eins")
+    d.block("Ein ganz normaler Absatz mit {+neuem Text+} hier.")
+    d.scan_seite(scan_bild([("h", "2 Scan"), ("p", "Hier steht {+Text+} nur als Pixel.")]))
+    d.speichern(tmp_path / "a.pdf")
+    hinweise, zeichen = messen._pdf_pruefung(tmp_path / "a.pdf")
+    assert "keine_textzeichen" in {h["art"] for h in hinweise} and all(h["seite"] >= 2 for h in hinweise)
+    assert "a" in zeichen and " " not in zeichen
+    d2 = PdfDokument(variante="farbe")
+    d2.ueberschrift("1 Eins")
+    d2.block("Nur Text ohne Bild.")
+    d2.speichern(tmp_path / "b.pdf")
+    assert messen._pdf_pruefung(tmp_path / "b.pdf")[0] == []
+    assert messen._pdf_pruefung(tmp_path / "nicht_da.pdf") == (None, None)
+
+
+def test_plausibilitaet_ist_nur_ein_hinweis_nie_ein_fehler(tmp_path):
+    ordner = tmp_path / "paar"
+    ordner.mkdir()
+    d = PdfDokument(variante="farbe")
+    d.ueberschrift("1 Eins")
+    d.block("Der Nachweis erfolgt durch ein Messprotokoll der Abnahme.")
+    d.scan_seite(scan_bild([("h", "2 Scan"), ("p", "Hier steht {+Text+} nur als Pixel.")]))
+    d.speichern(ordner / "aenderungen.pdf")
+    elemente = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme.")]
+    baue_excel(ordner / "vorher.xlsx", zustaende(elemente, False), "L1")
+    baue_excel(ordner / "nachher.xlsx", zustaende(elemente, True), "L1")
+    res = messen.messe_paar(ordner)
+    scan = [h for h in res["plausibilitaet_hinweise"] if h["art"] == "keine_textzeichen"]
+    assert scan and scan[0]["gemeldet"] == (res["luecken_gemeldet"] > 0)
+    assert res["stille_fehler"] == 0 and res["luecken_nicht_gemeldet"] == 0
+
+
+# ---- nicht verwaltete Soll-Zellen (RT-142) ----------------------------------------------------------
+def test_klassen_der_soll_zellen_formel_haupt_harmlos_sonstige(tmp_path):
+    p = baue_paar(tmp_path, "synth_1150")
+    wb = load_workbook(str(p / "nachher.xlsx"))
+    ws = wb["CDE"]
+    ws["E2"] = "=LEN(C2)"
+    ws["D3"] = "Neue Bemerkung mit mehr als drei Woertern hier"
+    wb.save(str(p / "nachher.xlsx"))
+    res = messen.messe_paar(p)
+    assert res["soll_zellen_formel"] == 1 and res["soll_zellen_formel_verfehlt"] == 1
+    assert res["soll_zellen_unverwaltet_sonstige"] == 1 and res["soll_zellen_unverwaltet_sonstige_verfehlt"] == 1
+    assert res["soll_zellen"] == 3 and res["erreicht_auto"] == 3
+    assert [(o["klasse"], o["zeile"], o["spalte"]) for o in res["nicht_verwaltet_verfehlt_orte"]] == \
+        [("formel", 2, 5), ("sonstige", 3, 4)]
+    assert res["lese_luecke_woerter"] == 0                                    # Formel-Woerter zaehlen nicht
+
+
+# ---- Zaehleinheiten und Bericht -----------------------------------------------------------------------
+def test_bericht_nennt_zaehleinheiten_und_neue_kennzahlen_ohne_inhalt(tmp_path, capsys):
+    baue_paar(korpus_dir(), "synth_9300", ZWEI_AENDERUNGEN)
+    assert messen.main(["--korpus", "entwicklung", "--mit-vorschlaegen"]) == 0
+    ordner = next(config.pfad("messung_dir").glob("001_entwicklung"))
+    b = json.loads((ordner / "bericht.json").read_text(encoding="utf-8"))
+    assert all(k.get("einheit") for k in b["kriterien"])
+    g = b["gesamt"]
+    for feld in ("aenderungen_uebernommen_korrekt", "aenderungen_uebernommen_falsch", "aenderungen_zu_pruefen",
+                 "aenderungen_nicht_uebernommen", "regel27_verstoesse", "struktur_geaendert", "soll_zellen_formel",
+                 "soll_zellen_unverwaltet_sonstige", "plausibilitaet_ungemeldet", "stille_fehler_zellen",
+                 "stille_fehler_paar_befunde", "luecken_nicht_pruefbar_paare", "zaehleinheiten"):
+        assert feld in g, feld
+    md = (ordner / "bericht.md").read_text(encoding="utf-8")
+    assert "| Einheit |" in md and "Einheit: Änderungen" in md
+    text = (capsys.readouterr().out + md + json.dumps(b)).lower()
+    for wort in MARKANT:
+        assert wort not in text, wort

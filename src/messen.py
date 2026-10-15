@@ -689,9 +689,15 @@ class _Auswertung:
         for tag, i1, i2, j1, j2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
             if tag == "equal":
                 continue
+            if any(t.isspace() and t not in (" ", "\n") for t in a[i1:i2] + b[j1:j2]):       # doppelter/geschuetzter Leerraum
+                out["\x00format"] += 1
             woerter = Counter(w for w in (_wort_norm(t) for t in a[i1:i2] + b[j1:j2] if not t.isspace()) if w)
             if not woerter:                                  # nur Leerraum/Zeichen verschieden: nie durch eine Aenderung erklaert
                 out["\x00format"] += 1
+                # die Nachbarwoerter nennen, damit die schuldige Aenderung gefunden wird
+                nachbarn = [a[i1 - 1]] if i1 > 0 else []
+                nachbarn += [a[i2]] if i2 < len(a) else []
+                out.update(w for w in (_wort_norm(t) for t in nachbarn if not t.isspace()) if w)
                 continue
             out.update(woerter - rest)
             rest -= woerter
@@ -714,6 +720,17 @@ class _Auswertung:
             soll = self.S[bi].neue[si][1]
             return c - 1 < len(soll) and _k(it["inhalt"]) == _k(soll[c - 1])
         return False
+
+    def _wirkung_vorhanden(self, ae: Any, vorher: str, ergebnis: str) -> bool:
+        """Ist die Wirkung dieser (offenen) Aenderung im Ergebnistext der Zelle schon zu sehen? (neue Woerter stehen da bzw.
+        gestrichene Woerter sind weg.) Nur sicher erkennbar, wenn die Aenderung Woerter bringt oder nimmt, die vorher anders waren."""
+        neu, alt = self.ae_woerter[ae.id]
+        vw, ew = Counter(_wort_liste(vorher)), Counter(_wort_liste(ergebnis))
+        gebraucht = neu - vw
+        if gebraucht:
+            return not (gebraucht - ew)
+        weg = alt & vw
+        return bool(weg) and not neu and not (weg & ew)
 
     def _offene_woerter(self, aend_liste: list) -> Counter:
         erlaubt: Counter = Counter()
@@ -843,16 +860,20 @@ class _Auswertung:
         # (1)(4)(5) je Ziel-Zelle der Aenderungen. Bewertet wird je AENDERUNG: weicht die Zelle vom Soll nur um die Woerter
         # einer offenen ("pruefen") Aenderung ab, wartet sie auf die Freigabe und ist kein Fehler (MA-1).
         wartet: set[Any] = set()
+        r27_wirkung: dict[str, tuple[int, int, int]] = {}
         for (bi, z, c), ids in sorted(ziel_zellen.items()):
             erw, tat = self._erwartet(bi, z, c), self._tatsaechlich(bi, z, c)
             key = ("z", bi, z, c)
+            for ae in offen_ziel.get((bi, z, c), []):          # Regel 27 an der Wirkung: die offene Aenderung steht schon im Text
+                if ae.id not in r27 and self._wirkung_vorhanden(ae, self._vorher(bi, z, c), tat):
+                    r27_wirkung.setdefault(ae.id, (bi, z, c))
             if _s(tat) != _s(erw):
                 offene = offen_ziel.get((bi, z, c), [])
-                unerkl = self._unerklaert(tat, erw, self._offene_woerter(offene)) if offene else Counter({"\x00": 1})
+                unerkl = self._unerklaert(tat, erw, self._offene_woerter(offene))
                 if offene and not unerkl:
                     wartet.add(key)
                 else:
-                    schuld = self._schuldige(ids, unerkl) if offene else ids
+                    schuld = self._schuldige(ids, unerkl)
                     stumm(key, bi, z, c, "uebernommen_aber_falsch", schuld)
                     if any(nach_id[i].nachkontrolle == "ok" for i in schuld):
                         stumm(key, bi, z, c, "nachkontrolle_ok_aber_falsch", schuld)
@@ -887,9 +908,8 @@ class _Auswertung:
 
         # Regel 27 (2), an der WIRKUNG erkannt: eine richtige Aenderung steht im Ergebnis, obwohl keine uebernommene Aenderung
         # darauf zielt, wohl aber eine offene -- auch wenn der Status das nicht verraet.
-        r27_wirkung: dict[str, tuple[int, int, int]] = {}
         for ae in self.aend:
-            if ae.status == UEBERNOMMEN or ae.id in r27:
+            if ae.status == UEBERNOMMEN or ae.id in r27 or ae.id in r27_wirkung:
                 continue
             for op in ae.ops:
                 bi = self.bi_von_name.get(op.blatt)
@@ -1616,7 +1636,7 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
                  f"(Formeln {gesamt['soll_zellen_formel_verfehlt']} von {gesamt['soll_zellen_formel']}, "
                  f"sonstige {gesamt['soll_zellen_unverwaltet_sonstige_verfehlt']} von {gesamt['soll_zellen_unverwaltet_sonstige']}; "
                  f"harmlose Füllung nicht gezählt: {unverw})",
-         "ziel": "0 verfehlt (das Tool schreibt dort nicht; jede Abweichung zum Soll ist eine offene Aufgabe)",
+         "ziel": "0 verfehlt (v1 passt Formeln und nicht verwaltete Spalten bewusst nicht an; jede Abweichung ist eine offene Aufgabe)",
          "einheit": "Zellen", "ampel": _ampel(nicht_verfehlt == 0, luecke=lue)},
         {"nr": 5, "name": "Lese-Lücke", "wert": _prozent(gesamt["lese_luecke_anteil"]), "ziel": "höchstens 2 %", "einheit": "Wörter",
          "ampel": _ampel(None if gesamt["lese_luecke_anteil"] is None else gesamt["lese_luecke_anteil"] <= 0.02, luecke=lue)},
