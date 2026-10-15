@@ -1365,3 +1365,47 @@ def test_ende_zu_ende_nicht_mitgezogenes_wird_in_der_vorschlags_excel_als_angeku
     assert res["struktur_vorschlaege_geaendert"] == 0                             # der Plan hatte jede Abweichung vorab gemeldet
     assert {a for a, n in res["struktur_vorschlaege_angekuendigt_nach_art"].items() if n} == \
         {"bedingte_formatierung", "autofilter", "benannter_bereich"}
+
+
+# ---- Ende zu Ende mit Sabotage am Ergebnis des Tools: jede neue Eigenschaft meldet sich im Paar-Ergebnis und in der Ampel ---------
+def _paar_mit_eigenschaften_oben(tmp_path: Path) -> Path:
+    ordner = _paar_zum_einfuegen(tmp_path, unten=False)
+    wb = load_workbook(str(ordner / "vorher.xlsx"))
+    ws = wb["CDE"]
+    ws.auto_filter.ref = "A1:D3"                                       # beide oberhalb der Einfuegestelle
+    wb.defined_names.add(DefinedName("Liste", attr_text="CDE!$C$2:$C$3"))
+    wb.save(str(ordner / "vorher.xlsx"))
+    return ordner
+
+
+SABOTAGE_STRUKTUR_NEU = {
+    "hyperlink": lambda ws: setattr(ws["B2"], "hyperlink", None),
+    "kommentar": lambda ws: setattr(ws["C3"], "comment", None),
+    "bedingte_formatierung": lambda ws: setattr(ws.conditional_formatting, "_cf_rules", {}),
+    "autofilter": lambda ws: setattr(ws.auto_filter, "ref", None),
+    "benannter_bereich": lambda ws: ws.parent.defined_names.pop("Liste"),
+    "fixierung": lambda ws: setattr(ws, "freeze_panes", None),
+    "spaltenbreite": lambda ws: setattr(ws.column_dimensions["C"], "width", 99),
+    "zeilenhoehe": lambda ws: setattr(ws.row_dimensions[3], "height", 77),
+}
+
+
+def test_ende_zu_ende_ausgangslage_fuer_die_sabotage_ist_ohne_befund(tmp_path):
+    res = messen.messe_paar(_paar_mit_eigenschaften_oben(tmp_path))
+    assert res["auto_gesamt"] >= 2 and res["struktur_geaendert"] == 0, res["struktur_nach_art"]
+
+
+@pytest.mark.parametrize("art", sorted(SABOTAGE_STRUKTUR_NEU))
+def test_ende_zu_ende_sabotage_wird_als_strukturbefund_der_richtigen_art_gemeldet(tmp_path, monkeypatch, art):
+    ordner = _paar_mit_eigenschaften_oben(tmp_path)
+
+    def wirkung(ziel, aend, quelle):
+        wb = load_workbook(str(ziel))
+        SABOTAGE_STRUKTUR_NEU[art](wb["CDE"])
+        wb.save(str(ziel))
+    sabotiere_ergebnis(monkeypatch, wirkung)
+    res = messen.messe_paar(ordner)
+    assert res["struktur_nach_art"][art] >= 1, (art, res["struktur_nach_art"])
+    b = messen.fasse_zusammen([dict(res, name="synth_6600")], "entwicklung", "1", False)
+    assert next(k for k in b["kriterien"] if k["name"].startswith("Struktur unverändert"))["ampel"] == "NICHT ok"
+    assert b["gesamt"]["kriterien_nicht_ok"] >= 1
