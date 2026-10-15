@@ -11,6 +11,15 @@ excel:
   section_spalte_min: 2       # mindestens so viele Nummern, damit eine Spalte "Section" ist
   modell_schwelle: 0.6        # Anteil Kopfzeilen mit Inhalt in der Zeile => "zeile_pro_section", sonst "zeile_pro_absatz"
   titel_max_zeichen: 160      # laengere Zellen gelten nicht als Titel
+  kopf_max_woerter: 12        # Zelle "1. Das System ..." mit mehr Woertern (oder Satzpunkt am Ende) ist eine Aufzaehlung, keine Section
+  titel_fliesstext_anteil: 0.5  # Spalte neben der Nummer, deren Zellen in Folgezeilen zu mehr als diesem Anteil lang sind, ist Fliesstext, kein Titel
+  inhalt_zweifel_anteil: 0.5  # zweite Textspalte mit mindestens so viel Text wie die erste => Aufbau unsicher
+  gemischt_anteil: 0.25       # Text steht zu mindestens so viel Anteil in Section-Zeilen UND in Folgezeilen => Aufbau unsicher
+  lfd_min: 3                  # Spalte 1, 2, 3 ... ohne Punkte gilt ab so vielen Zeilen als laufende Nummer
+  warn_ab_zellen: 6           # Blaetter ohne erkennbare Gliederung werden erst ab so vielen Textzellen gemeldet
+  lfd_kopfwoerter: [lfd, laufende, pos, position, index]               # Spaltenkoepfe, die eine laufende Nummer bedeuten
+  kommentar_kopfwoerter: [kommentar, bemerkung, anmerkung, notiz, hinweis, status, prio, priorität, comment, remark, note]
+  section_kopfwoerter: [nr, nummer, kapitel, section, abschnitt, gliederung, ziffer]
 
 einfuegen:
   neuer_absatz: auto          # auto | zelle | zeile
@@ -27,6 +36,8 @@ matcher:                      # Bewertung eines Treffers (src/matcher.py)
   section_bonus: 0.03         # Zuschlag, wenn die Section-Nummer passt
   untergrenze: 0.4            # darunter gibt es keinen Treffer, auch keinen Vorschlag
   max_kandidaten_section: 400 # so viele Kandidaten derselben Section werden zusaetzlich geprueft
+  excel_abdeckung_min: 0.75   # deckt der PDF-Text weniger als so viel vom Excel-Absatz ab (Rest >= rest_min_woerter), nur "mittel"
+  rest_min_woerter: 5         # so viele Woerter des Excel-Absatzes muessen unabgedeckt sein, damit der Anfangs-Treffer zaehlt
 anwenden:                     # Schreiben in die Excel (src/applier.py)
   markierung_farbe: FFF2CC    # Hintergrund, wenn markierung.geaenderte_zellen = gelb
   kommentar_autor: CDE-Tool   # Autor der Zellkommentare, wenn markierung.geaenderte_zellen = kommentar

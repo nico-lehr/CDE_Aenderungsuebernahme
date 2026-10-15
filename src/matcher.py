@@ -3,9 +3,15 @@
 Ablauf: Woerter normalisieren -> mit einem Wort-Index wenige Kandidaten vorwaehlen
 -> jeden Kandidaten mit SequenceMatcher Wort fuer Wort ausrichten -> besten waehlen.
 
-Bewertung:  score = 0.9 * Abdeckung + 0.1 * Dice
+Bewertung:  score = gewicht_abdeckung * Abdeckung + gewicht_dice * Dice   (Gewichte: config matcher.*)
   Abdeckung = Anteil der PDF-Woerter, die im Kandidaten in gleicher Reihenfolge stehen
   Dice      = bevorzugt knappe Kandidaten (Absatz statt ganzer Zelle)
+
+Sicherheit ("hoch" = automatisch, "mittel" = Mensch prueft). Hoechstens "mittel" gilt, wenn
+  * es mehrere gleich gute Stellen gibt (auch zwei gleiche Absaetze in DERSELBEN Zelle),
+  * der PDF-Text nur einen Teil (Anfang) eines laengeren Excel-Absatzes abdeckt,
+  * der Aufbau des Blatts unsicher erkannt wurde, die Stelle ausgeblendet ist oder
+    die Section-Nummer aus mehrdeutigen Zahlen stammt.
 """
 from __future__ import annotations
 
@@ -29,6 +35,17 @@ class Treffer:
     section_passt: bool | None = None
     stufe: str = MITTEL
     gruende: list[str] = field(default_factory=list)
+    excel_abdeckung: float = 1.0         # Anteil der Woerter des Kandidaten, die der PDF-Text abdeckt
+    anker_stufe: str = MITTEL            # Sicherheit, wenn an diese Stelle ein NEUER Absatz/eine neue Section gesetzt wird
+    anker_gruende: list[str] = field(default_factory=list)   # Gruende, falls anker_stufe schlechter als stufe ist
+
+
+def _konkurrent(k: Kandidat, kk: Kandidat) -> bool:
+    """Ist kk eine echte Konkurrenz zu k? Andere Zelle: ja. Dieselbe Zelle: nur ein anderer Absatz
+    (ein Absatz und die ganze Zelle sind keine Konkurrenz)."""
+    if (kk.blatt, kk.zeile, kk.spalte) != (k.blatt, k.zeile, k.spalte):
+        return True
+    return k.art == "absatz" and kk.art == "absatz" and (k.start, k.end) != (kk.start, kk.end)
 
 
 class Matcher:
@@ -41,6 +58,9 @@ class Matcher:
                 self.index.setdefault(n, []).append(k.id)
         self.n = max(len(xl.kandidaten), 1)
         self._cache: dict[tuple, Treffer | None] = {}
+        self._nach_section: dict[str, list[list[int]]] = {}      # Section -> je Blatt eine Liste von Kandidaten
+        for (_, sec), ids in xl.nach_blatt_section.items():
+            self._nach_section.setdefault(sec, []).append(ids)
 
     def _idf(self, wort: str) -> float:
         return math.log(1 + self.n / max(len(self.index.get(wort, ())), 1))
@@ -58,6 +78,7 @@ class Matcher:
 
     def _finde(self, a: list[tuple[int, str]], section: str | None, ist_kopf: bool) -> Treffer | None:
         schw = self.cfg["schwellen"]
+        mc = self.cfg["matcher"]
         normen = [n for _, n in a]
         punkte: Counter = Counter()
         for n in set(normen):
@@ -66,10 +87,15 @@ class Matcher:
                 punkte[kid] += w
         ids = [kid for kid, _ in punkte.most_common(self.cfg["kandidaten_pro_block"])]
         if section:
-            ids += [i for i in self.xl.nach_section.get(section, [])[:400] if i not in ids]
+            schon = set(ids)
+            for blatt_ids in self._nach_section.get(section, []):      # je Blatt getrennt gezaehlt
+                for i in blatt_ids[:mc["max_kandidaten_section"]]:
+                    if i not in schon:
+                        ids.append(i)
+                        schon.add(i)
         if not ids:
             return None
-        bewertet: list[tuple[float, float, Kandidat, dict[int, int], float]] = []
+        bewertet: list[tuple[float, float, Kandidat, dict[int, int], float, float]] = []
         for kid in ids:
             k = self.xl.kandidaten[kid]
             if k.art == "kopf" and not ist_kopf:
@@ -85,37 +111,64 @@ class Matcher:
                 continue
             cov = m / len(normen)
             dice = 2 * m / (len(normen) + len(k.norms))
-            score = 0.9 * cov + 0.1 * dice
-            rang = score + (0.03 if section and k.section == section else 0.0)
-            bewertet.append((rang, score, k, zuordnung, cov))
+            score = mc["gewicht_abdeckung"] * cov + mc["gewicht_dice"] * dice
+            bonus = mc["section_bonus"] if section and k.section == section and not k.section_unsicher else 0.0
+            bewertet.append((score + bonus, score, k, zuordnung, cov, m / len(k.norms)))
         if not bewertet:
             return None
         bewertet.sort(key=lambda t: -t[0])
-        rang, score, k, zuordnung, cov = bewertet[0]
-        # zweitbester Treffer in einer ANDEREN Zelle (Absatz und ganze Zelle sind keine Konkurrenz)
+        rang, score, k, zuordnung, cov, ecov = bewertet[0]
+        # zweitbester Treffer an einer ANDEREN Stelle (andere Zelle oder anderer Absatz derselben Zelle)
         zweiter, zweiter_k = 0.0, None
-        for r, s, kk, _, _ in bewertet[1:]:
-            if (kk.blatt, kk.zeile, kk.spalte) != (k.blatt, k.zeile, k.spalte):
+        for r, s, kk, _, _, _ in bewertet[1:]:
+            if _konkurrent(k, kk):
                 zweiter, zweiter_k = r, kk
                 break
         eindeutig = (rang - zweiter) >= schw["eindeutig_abstand"]
-        passt = None if not (section and k.section) else (k.section == section)
-        # Gleich gute Treffer in verschiedenen Sections: die passende Section entscheidet
-        if not eindeutig and passt and zweiter_k is not None and zweiter_k.section != section and (score - zweiter) >= -1e-9:
+        passt = None if not (section and k.section) or k.section_unsicher else (k.section == section)
+        # Gleich gute Treffer in verschiedenen Sections DESSELBEN Blatts: die passende Section entscheidet
+        if (not eindeutig and passt and zweiter_k is not None and zweiter_k.blatt == k.blatt
+                and zweiter_k.section != section and not zweiter_k.section_unsicher and (score - zweiter) >= -1e-9):
             eindeutig = True
         t = Treffer(kandidat=k, score=score, abdeckung=cov, zuordnung=zuordnung, zweiter=zweiter,
-                    eindeutig=eindeutig, section_passt=passt)
+                    eindeutig=eindeutig, section_passt=passt, excel_abdeckung=ecov)
         gruende = t.gruende
         if score < schw["mittel"]:
-            return t if score >= 0.4 else None
+            return t if score >= mc["untergrenze"] else None
         stufe = HOCH if score >= schw["hoch"] else MITTEL
         if score >= schw["hoch"] and not eindeutig:
             stufe = MITTEL
-            gruende.append("mehrere ähnlich gute Stellen in der Excel")
+            if zweiter_k is not None and (zweiter_k.blatt, zweiter_k.zeile, zweiter_k.spalte) == (k.blatt, k.zeile, k.spalte):
+                gruende.append("derselbe oder ein sehr ähnlicher Absatz steht mehrmals in derselben Zelle")
+            elif zweiter_k is not None and zweiter_k.blatt != k.blatt:
+                gruende.append(f"ähnlich gute Stelle auch im Blatt '{zweiter_k.blatt}'")
+            else:
+                gruende.append("mehrere ähnlich gute Stellen in der Excel")
         if len(normen) <= schw["kurz_tokens"] and stufe == HOCH and not (passt or eindeutig):
             stufe = MITTEL
             gruende.append("sehr kurzer Text, Stelle nicht sicher")
         if len(normen) <= schw["kurz_tokens"] and stufe == HOCH and passt is False and not eindeutig:
             stufe = MITTEL
+        if stufe == HOCH and k.section_unsicher:
+            stufe = MITTEL
+            gruende.append("die Section-Nummer steht als Zahl in der Excel und ist nicht eindeutig (2.1 oder 2.10?)")
+        if stufe == HOCH:
+            lay = self.xl.layouts.get(k.blatt)
+            if lay is not None and lay.sicherheit != "hoch":
+                stufe = MITTEL
+                gruende.append(f"der Aufbau des Blatts '{k.blatt}' wurde nur unsicher erkannt")
+        if stufe == HOCH and k.versteckt:
+            stufe = MITTEL
+            gruende.append({"blatt": f"das Blatt '{k.blatt}' ist ausgeblendet",
+                            "zeile": "die Zeile ist ausgeblendet",
+                            "spalte": "die Spalte ist ausgeblendet"}[k.versteckt])
         t.stufe = stufe
+        # Anfangs-Treffer: der PDF-Text deckt nur einen Teil des Excel-Absatzes ab (Seitenumbruch). Ein Wort in diesem
+        # Teil zu aendern ist sicher (stufe bleibt), aber einen NEUEN Absatz hier anzusetzen nicht (anker_stufe).
+        t.anker_stufe = stufe
+        offen = len(k.norms) - round(ecov * len(k.norms))
+        if stufe == HOCH and k.art != "kopf" and ecov < mc["excel_abdeckung_min"] and offen >= mc["rest_min_woerter"]:
+            t.anker_stufe = MITTEL
+            t.anker_gruende.append("der PDF-Text deckt nur den Anfang oder ein Stück des längeren Excel-Absatzes ab "
+                                   f"(Rest: {offen} Wörter, Seitenumbruch?); neuer Absatz könnte mitten im Satz landen")
         return t

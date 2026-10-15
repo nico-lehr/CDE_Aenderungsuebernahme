@@ -19,8 +19,6 @@ from tests.redteam._bau import (alle_texte, analysiere, aufbau, baue_alt, blatt,
 # RT-27 / RT-28: Zuordnung innerhalb einer Zelle
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-27 Gleicher Absatz zweimal in einer Zelle: der ERSTE wird 'hoch' geaendert, im PDF ist der ZWEITE gemeint; Besitzer K-XL")
 def test_rt27_gleicher_absatz_zweimal_in_derselben_zelle(tmp_path):
     el = [("h", "1 Eins"),
           ("p", "Die Anlage wird vor dem Versand einzeln geprüft."),
@@ -36,7 +34,7 @@ def test_rt27_gleicher_absatz_zweimal_in_derselben_zelle(tmp_path):
 
 @pytest.mark.redteam
 @pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-28 PDF-Block ist nur der Anfang eines langen Excel-Absatzes: 'hoch', neuer Absatz landet mitten im Satz; Besitzer K-XL")
+                   reason="RT-28 PDF-Block ist nur der Anfang eines langen Excel-Absatzes: neuer Absatz landet mitten im Satz. K-XL liefert jetzt Treffer.anker_stufe (mittel); offen, bis der Planer (K-PL, _anker) sie statt tr.stufe nutzt")
 def test_rt28_pdf_block_nur_anfang_des_excel_absatzes(tmp_path):
     el = [("h", "1 Eins"),
           ("p", "Die Anlage wird vor dem Versand einzeln geprüft und danach"),
@@ -78,8 +76,6 @@ def _zahlen_excel(pfad):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-29 Section als Zahl: 2.1 und 2.10 werden beide zu '2.1' (Zahlenformat wird ignoriert); Besitzer K-XL")
 def test_rt29_section_2_1_und_2_10_als_zahl_bleiben_verschieden(tmp_path):
     xl = ExcelModell(_zahlen_excel(tmp_path / "z.xlsx"))
     s3, s4 = xl.zeilen_section[("CDE", 3)], xl.zeilen_section[("CDE", 4)]
@@ -88,7 +84,7 @@ def test_rt29_section_2_1_und_2_10_als_zahl_bleiben_verschieden(tmp_path):
 
 @pytest.mark.redteam
 @pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-30 Section-Zahl 2.2 wird beim Ersetzen zu Text (Zelle war eine Zahl, Zahlenformat weg); Besitzer K-XL")
+                   reason="RT-30 Section-Zahl 2.2 wird beim Ersetzen zu Text (Zelle war eine Zahl, Zahlenformat weg). K-XL liefert Kandidat.zelle_ist_zahl / ExcelModell.ist_zahl; offen, bis der Applier (K-PL) die Zahl wieder als Zahl schreibt")
 def test_rt30_zahl_bleibt_beim_ersetzen_eine_zahl(tmp_path):
     p = _zahlen_excel(tmp_path / "z.xlsx")
     el = [("h", "1 Eins"), ("p", "Erster Abschnitt mit genug Text hier drin."),
@@ -119,8 +115,6 @@ def _aufbau_ok_oder_gewarnt(xl, blatt_name, **erwartet):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-31 Kommentarspalte mit mehr Text gilt als Inhaltsspalte: neuer Absatz landet im Kommentar, 'hoch'; Besitzer K-XL")
 def test_rt31_kommentarspalte_ist_nicht_die_inhaltsspalte(tmp_path):
     lang = "Das ist ein langer interner Kommentar des Bearbeiters zu diesem Punkt mit vielen Details und Hinweisen darin."
     p = schreibe_excel(tmp_path / "a.xlsx", [
@@ -138,8 +132,6 @@ def test_rt31_kommentarspalte_ist_nicht_die_inhaltsspalte(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-32 Spalte 'Lfd' (1..n) gilt als Section-Spalte statt der echten Nummern-Spalte, keine Warnung; Besitzer K-XL")
 def test_rt32_lfd_spalte_ist_nicht_die_section_spalte(tmp_path):
     zeilen = [["Lfd", "Nr.", "Titel", "Text"]]
     lfd = 0
@@ -154,8 +146,6 @@ def test_rt32_lfd_spalte_ist_nicht_die_section_spalte(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-33 Aufzaehlungen '1. Das System ...' im Text werden als Sections gelesen (Text- und Nummernspalte vertauscht); Besitzer K-XL")
 def test_rt33_aufzaehlung_im_text_ist_keine_section(tmp_path):
     p = schreibe_excel(tmp_path / "c.xlsx", [
         ["Nr", "Text", "Prio"],
@@ -201,8 +191,6 @@ SATZ = "Das System muss alle Daten speichern und sichern."
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-34 Gleicher Text in zwei Blaettern (Section 3 in Blatt A, Section 2 in Blatt B): Section-Nummer wird blattuebergreifend verglichen, 'hoch'; Besitzer K-XL")
 def test_rt34_section_nummer_gilt_nur_innerhalb_eines_blattes(tmp_path):
     a = ["Alpha text eins steht hier im Dokument.", "Anderer Inhalt zwei nur hier.", SATZ]
     b = ["Beta andere eins steht dort im Dokument.", SATZ, "Delta text drei steht dort im Dokument."]
@@ -215,8 +203,6 @@ def test_rt34_section_nummer_gilt_nur_innerhalb_eines_blattes(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-35 Aenderung wird automatisch in ein VERSTECKTES Tabellenblatt geschrieben; Besitzer K-XL")
 def test_rt35_verstecktes_blatt_wird_nicht_automatisch_geaendert(tmp_path):
     sichtbar = ["Sichtbar eins steht hier irgendwo.", "Sichtbar zwei steht hier irgendwo anders.",
                 "Sichtbar drei steht hier irgendwo noch anders."]
@@ -231,8 +217,6 @@ def test_rt35_verstecktes_blatt_wird_nicht_automatisch_geaendert(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-36 Aenderung wird automatisch in eine VERSTECKTE Zeile geschrieben; Besitzer K-XL")
 def test_rt36_versteckte_zeile_wird_nicht_automatisch_geaendert(tmp_path):
     alt = ["Alpha text eins steht hier im Dokument.", SATZ, "Gamma text drei steht hier im Dokument."]
     p = _mehrblatt(tmp_path / "hz.xlsx", {"CDE": _sections("V", alt)})
@@ -279,14 +263,10 @@ def messung_grosses_blatt(tmp_path_factory):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-37 Eine formatierte Zelle bei Zeile 60000/Spalte 40 macht das Einlesen extrem langsam (~10 s statt < 3 s); Besitzer K-XL")
 def test_rt37_leeres_riesiges_blatt_wird_schnell_gelesen(messung_grosses_blatt):
     assert messung_grosses_blatt["sek"] < 3, f"Einlesen dauerte {messung_grosses_blatt['sek']:.1f} s (Grenze 3 s)"
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-38 Eine formatierte Zelle bei Zeile 60000/Spalte 40 braucht ~500 MB Arbeitsspeicher beim Einlesen; Besitzer K-XL")
 def test_rt38_leeres_riesiges_blatt_braucht_wenig_speicher(messung_grosses_blatt):
     assert messung_grosses_blatt["mb"] < 250, f"Spitzenspeicher {messung_grosses_blatt['mb']:.0f} MB (Grenze 250 MB)"
