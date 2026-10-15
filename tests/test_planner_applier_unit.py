@@ -8,9 +8,9 @@ from __future__ import annotations
 import copy
 
 import pytest
-from openpyxl import Workbook, load_workbook
+from openpyxl import load_workbook
 
-from src import config
+from src import config, runs
 from src.applier import _wende_text_an, _wortgrenze, uebernehmen
 from src.models import (NICHT, PRUEFEN, UEBERNOMMEN, WIRKUNG_ABWEICHUNG, WIRKUNG_KEINE, WIRKUNG_OK, Aenderung, Operation,
                         luecke)
@@ -498,3 +498,24 @@ def test_kommentar_markierung_ueberlebt_steuerzeichen_im_alten_text(tmp_path):
     a = _ae("A1", [rep], alt="Sys\x07tem", neu="Gerät")
     uebernehmen([a], p, tmp_path / "out.xlsx", cfg=cfg)
     assert a.status == UEBERNOMMEN and "\x07" not in blatt(tmp_path / "out.xlsx").cell(2, 3).comment.text
+
+
+def test_lauf_schreibt_wirkung_und_hinweise_in_json_und_protokoll(tmp_path):
+    import json
+
+    from tests.fixtures.pdf_writer import baue_pdf
+    ordner = tmp_path / "fx"
+    ordner.mkdir()
+    el = [("h", "1 Eins"), ("p", "Erster Absatz."), ("p", "{+Teil (cid:12) hier unten.+}"), ("h", "2 Zwei"),
+          ("p", "Zweiter Absatz mit genug Text darin.")]
+    alt = baue_alt(ordner, el, "L3")
+    baue_pdf(ordner / "a.pdf", el, "farbe")
+    run_id = runs.neuer_lauf(ordner / "a.pdf", alt)
+    runs.analysiere(run_id)
+    res = runs.uebernehmen_lauf(run_id, [])
+    ae = res["aenderungen"][0]
+    assert ae["status"] == PRUEFEN and ae["hinweise"] and ae["wirkung"] == ""
+    erg = json.loads((runs.lauf_dir(run_id) / res["ordner"] / "ergebnis.json").read_text(encoding="utf-8"))
+    assert erg["aenderungen"][0]["hinweise"] == ae["hinweise"]
+    kopf = _zellen_text(runs.lauf_dir(run_id) / res["ordner"] / "aenderungsprotokoll.xlsx")["Änderungen"][0]
+    assert "Wirkung" in kopf and "Warnungen" in kopf
