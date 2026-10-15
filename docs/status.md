@@ -4,19 +4,22 @@ Autor: Nico Lehr · Stand: 15.10.2026 · Version 0.2.0 · **Alle Zahlen stammen 
 
 ## In einem Satz
 
-Das Tool ist von „kann still falsch sein“ zu „meldet fast alles ehrlich“ gekommen: Auf dem erfundenen Entwicklungskorpus sind die stillen Fehler
-von **64 auf 5** gesunken (Ziel war 0), und die Messung selbst wurde so gehärtet, dass sie Fehler nicht mehr versteckt. **Das Ziel 0 ist noch nicht erreicht.**
-Ob es bei echten Dokumenten trägt, zeigt erst die Messung an deinen echten Paaren (`docs/anleitung_echte_paare.md`).
+Das Tool ist von „kann still falsch sein“ zu „meldet fast alles ehrlich“ gekommen: Auf dem erfundenen **Entwicklungskorpus** (an dem wir gearbeitet haben)
+sind die stillen Fehler von **64 auf 7** gesunken (Ziel war 0). Auf dem **Testkorpus** (nie zum Einstellen benutzt, einmal am Ende gemessen) sind es dagegen
+**23 stille Fehler** bei 89,7 % Treffergenauigkeit. Der Abstand zeigt: Ein Teil der Reparaturen passt noch zu stark auf bekannte Fälle.
+**Das Ziel „0 stille Fehler“ ist nicht erreicht.** Das Tool ist ein Prototyp, der ehrlich warnt, aber noch nicht „blind vertrauenswürdig“ ist:
+Jede automatisch übernommene Änderung sollte stichprobenartig geprüft werden. Wie es bei echten Dokumenten abschneidet, zeigt erst die Messung an deinen
+echten Paaren (`docs/anleitung_echte_paare.md`).
 
 ## Messwerte (erfundener Entwicklungskorpus, 60 Paare, Generator-Version 1)
 
 | Nr | Kriterium (`docs/ziel_v1.md`) | Ziel | Baseline | Jetzt | Ampel |
 |---|---|---|---|---|---|
 | 1 | Bilanz stimmig / Lücken gemeldet | alle Paare | 60 von 60 stimmig, **17 Lücken nicht gemeldet** | 60 von 60, 0 ungemeldet | ok |
-| 2 | **Stille Fehler** | 0 | **64** | **5** (davon 4 nur Leerzeichen/Zeichenform) | NICHT ok |
+| 2 | **Stille Fehler** | 0 | **64** | **7** (4 nur Leerzeichen/Zeichenform, 2 Zahl-wird-Text, 1 sonstige; Stand nach strengerer Messung) | NICHT ok |
 | 2 | Regel 27: Vorschlag ohne Freigabe angewendet | 0 | nicht gemessen | 0 | ok |
-| 3 | Treffergenauigkeit automatisch (Zellen) | 100 % | 92,3 % | 98,5 % (601 von 610) | NICHT ok |
-| 3 | je Änderung (automatisch übernommen) | 100 % | nicht gemessen | 98,5 % (765 von 777) | NICHT ok |
+| 3 | Treffergenauigkeit automatisch (Zellen) | 100 % | 92,3 % | 98,2 % (599 von 610) | NICHT ok |
+| 3 | je Änderung (automatisch übernommen) | 100 % | nicht gemessen | 98,2 % (763 von 777) | NICHT ok |
 | 3 | Genauigkeit der Vorschläge nach Freigabe | ≥ 95 % | 60,9 % | 72,3 % | NICHT ok |
 | 4 | Abdeckung ohne Nachfrage (nur Haupt-Spalten, 681 von 995 Soll-Zellen; ohne Profil gilt jetzt auch die 90-%-Regel) | ≥ 70 % (Standard 90 %) | 77,1 % | 88,0 % (599 von 681; Standard-Paare 97,5 %) | ok |
 | 4 | **Abdeckung über ALLE Soll-Zellen** (Haupt-Spalten, Füllung, sonstige, Formeln; Stand K-MESS2) | ≥ 70 % | nicht gemessen | **60,2 %** (599 von 995: Füllung 0 von 226, sonstige 0 von 6, Formeln 0 von 82) | **NICHT ok** |
@@ -29,13 +32,13 @@ Ob es bei echten Dokumenten trägt, zeigt erst die Messung an deinen echten Paar
 | 6 | Originale unverändert | alle | 60 von 60 | 60 von 60 | ok |
 | – | Formelzellen in neuen/verschobenen Zeilen | – | nicht gemessen | 82 von 82 **nicht angepasst** (bewusst, siehe unten) | NICHT ok |
 | 7 | Geschwindigkeit | 20 000 Zeilen < 60 s | Einzelzelle weit unten: 6,7 s / 525 MB | 0,01 s / 27 MB; 20 000 Zeilen Analyse 2,4 s | ok |
-| 8 | Tests | alle grün | 26 | **914 grün**, 1 bekannter Fehlfall (xfail) | ok |
+| 8 | Tests | alle grün | 26 | **980 grün**, kein offener erwarteter Fehler | ok |
 
 **Wichtig beim Lesen:** Die Zahlen der Baseline und von „Jetzt“ stammen aus demselben Messwerkzeug-Prinzip, aber das Werkzeug wurde zwischendurch
 **strenger und genauer** gemacht (es zählte anfangs 16 Phantom-Fehler und versteckte echte). „Soll-Zellen“ sind deshalb nicht 1:1 vergleichbar
 (755 früher, 681 jetzt, weil Formelzellen und harmlose Füllspalten getrennt gezählt werden). Die Richtung stimmt trotzdem: weniger stille Fehler bei strengerer Messung.
 
-**Testkorpus (Seeds ≥ 1000, nie zum Einstellen benutzt, Regel 11):** wird zum Abschluss genau einmal gemessen. Ergebnis: siehe Abschnitt „Testkorpus“ unten.
+**Testkorpus (Seeds ≥ 1000, nie zum Einstellen benutzt, Regel 11):** am Ende genau einmal gemessen. Ergebnis: siehe Abschnitt „Testkorpus“ unten.
 
 ## Was geht (mit erfundenen Daten getestet)
 
@@ -62,7 +65,7 @@ Ob es bei echten Dokumenten trägt, zeigt erst die Messung an deinen echten Paar
 
 | Thema | Stand | Wirkung |
 |---|---|---|
-| 5 stille Fehler im Entwicklungskorpus | alle `plan_falsch`; 4 davon nur Leerzeichen/Zeilenumbruch-Form (ein Satz am Zeilenumbruch wird als eigener Absatz eingetragen; Leerzeichen vor geschütztem Leerzeichen) | Text ist inhaltlich richtig, Form stimmt nicht exakt |
+| 7 stille Fehler im Entwicklungskorpus | alle `plan_falsch`/Typ: 4 nur Leerzeichen/Zeilenumbruch-Form (ein Satz am Zeilenumbruch wird als eigener Absatz eingetragen; Leerzeichen vor geschütztem Leerzeichen), 2 neue Section-Nummern stehen im Soll als Zahl, das Tool schreibt Text | Text meist inhaltlich richtig, Form/Typ stimmt nicht exakt |
 | Idempotenz 57 von 60 (Seeds 1–60); ungesehene Seeds 61–120: 54 von 60 | Behoben (K-FINAL): Steht der alte Satz in einer **falschen** Section eindeutig, wurde er dort automatisch als „übernommen / hoch / Wirkung ok“ geschrieben (Prüfer hat das bewiesen); die richtige Section blieb unberührt. Passt jetzt die Section des PDF-Blocks (alte Nummer) nicht zur gefundenen Excel-Stelle, ist der Treffer höchstens „mittel“ (Vorschlag); Umnummerierung ist nicht betroffen. Messung vorher → nachher: Seeds 1–60 51 → 57 von 60, Seeds 61–120 49 → 54 von 60; Abdeckung ohne Nachfrage und stille Fehler unverändert. **Rest 3 bzw. 6 Paare:** derselbe Satz/dasselbe Wort steht **in derselben Section** (meist in derselben Zelle) mehrmals; der erste Lauf trifft die richtige Stelle, der zweite Lauf ändert die andere. | Ein zweiter Lauf mit demselben PDF auf dem **Ergebnis** kann automatisch eine andere Stelle ändern, die unverändert bleiben soll (nicht nur Doppel-Einträge). Ein Ergebnis nie ein zweites Mal mit demselben PDF bearbeiten; für eine neue Fassung die ursprüngliche Excel nehmen. Offen (Planer). |
 | Vorschlags-Genauigkeit 72 % | Vorschläge („prüfen“) sind nach Freigabe oft nicht exakt | Mensch muss prüfen — dafür sind sie Vorschläge |
 | `RT-88` | erledigt (K-FINAL): der Testaufbau war fehlerhaft (schwarzer Text statt Sonderfarbe) und ist repariert; der Test prüft jetzt die Separation-Farbe wirklich, der xfail-Marker ist entfernt | kein Tool-Fehler |
@@ -82,4 +85,25 @@ Bericht (nur Zahlen, nie Inhalte): `data/messung/NNN_entwicklung/bericht.md`. Ec
 
 ## Testkorpus (einmalige Endmessung, Regel 11)
 
-*(wird beim Abschluss eingetragen)*
+Erfundene Paare mit eigenen Seeds (1001–1030, 30 Paare, 312 Soll-Zellen in den Haupt-Spalten), nie zum Einstellen benutzt, **genau einmal** gemessen (Bericht lokal: `data/messung/007_test/`).
+Danach wurde am Tool **nichts** mehr geändert. Wer den Testkorpus noch einmal als „ungesehen“ verwenden will, muss einen neuen mit neuen Seeds (und neuer Generator-Version) erzeugen.
+
+| Kriterium | Ziel | Testkorpus | Entwicklungskorpus | Ampel (Test) |
+|---|---|---|---|---|
+| Bilanz stimmig | alle Paare | 30 von 30 | 60 von 60 | ok |
+| **Stille Fehler** | 0 | **23** (alle „übernommen, aber falsch“; 4 nur Leerzeichen/Zeichenform) | 7 | NICHT ok |
+| Treffergenauigkeit automatisch (Zellen / je Änderung) | 100 % | 89,7 % (252 von 281) / 89,2 % (330 von 370) | 98,2 % / 98,2 % | NICHT ok |
+| Genauigkeit der Vorschläge | ≥ 95 % | 62,1 % | 72,3 % | NICHT ok |
+| Abdeckung ohne Nachfrage (Haupt-Spalten) | ≥ 70 % (Standard 90 %) | 80,8 % | 88,0 % | NICHT ok (90-%-Regel) |
+| Abdeckung über alle Soll-Zellen | ≥ 70 % | 58,6 % (252 von 430) | 60,2 % | NICHT ok |
+| Lese-Lücke | ≤ 2 % | 7,0 % (237 von 3405 Wörtern) | 1,4 % | NICHT ok |
+| Zweiter Lauf ändert nichts | alle Paare | 30 von 30 | 57 von 60 | ok |
+| Regel 27 / Kollateral / Struktur / Originale | 0 / 0 / 0 / alle | 0 / 0 / 0 / 30 von 30 | 0 / 0 / 0 / 60 von 60 | ok |
+
+**Wie ist das zu lesen?** Der Testkorpus ist deutlich schlechter als der Entwicklungskorpus. Das ist der Zweck eines getrennten Testkorpus: Er zeigt, wie viel der Reparaturen nur auf
+bekannte Fälle passt. Die Fehler sind in Paaren mit grünem Text (eine Farbe, die nur im Testkorpus vorkommt), Silbentrennung, Kopf-/Fußzeilen und CMYK/Grau am häufigsten
+(Familien überlappen, die Zahlen sind nicht addierbar). Es gab **keine** nicht gemeldeten Lücken und **keinen** Verstoß gegen Regel 27 — die Warnungen funktionieren, die Genauigkeit der
+automatischen Übernahme tut es noch nicht in allen Fällen. Ich habe diese Ergebnisse bewusst **nicht** zum Nachbessern benutzt (Regel 11).
+
+**Empfehlung:** (1) Bis die Genauigkeit an echten Paaren gemessen ist, alle automatisch übernommenen Änderungen im Protokoll stichprobenartig prüfen. (2) Die Fälle des Testkorpus
+sind jetzt „gesehen“: als nächste Entwicklungsrunde nutzen und danach einen neuen, ungesehenen Testkorpus erzeugen. (3) Mit 3–5 echten Paaren messen und kalibrieren.

@@ -58,6 +58,8 @@ data/         Läufe (runs/), Paare (paare/), Messberichte (messung/), Profile (
 
 ## Wie gut ist es?
 
+**Kurz und ehrlich:** Auf erfundenen Entwicklungsbeispielen sind die stillen Fehler von 64 auf 7 gesunken, auf einem getrennten, ungesehenen Testkorpus sind es 23 (Ziel: 0). Das Tool warnt ehrlich, ist aber noch nicht „blind vertrauenswürdig“: automatisch übernommene Änderungen bitte stichprobenartig prüfen.
+
 Aktuelle Messwerte und ehrliche Grenzen stehen in **`docs/status.md`**. Die Ziele und Kriterien stehen in **`docs/ziel_v1.md`**.
 Alle Zahlen stammen von **erfundenen** Beispielen; sie sind kein Versprechen für echte Dokumente.
 

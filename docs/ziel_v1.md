@@ -90,3 +90,9 @@ vom 15.10.2026 (Dateinamen und Zeilen in `docs/status.md`).
 | Schema ändern? | Ja, Version 2, nur Felder mit Standardwert, alte Läufe bleiben lesbar | Regel 24 |
 | Schwellen im Code? | In `config/*.yaml`, Verhalten vorher/nachher durch Test identisch | Regel 28 |
 | Wie Red-Team-Tests ohne Dauer-Rot? | `xfail(strict=True)` mit Grund; Reparatur macht den Test rot, bis der Marker fällt | Standardlauf bleibt grün, nichts wird vergessen |
+
+## Ergebnis gegenüber diesem Ziel (Stand 15.10.2026)
+
+Das Ziel „0 stille Fehler“ wurde **nicht erreicht**: Entwicklungskorpus 7 (Start: 64), Testkorpus 23. Erreicht sind: Bilanz stimmig, Lücken werden gemeldet (keine ungemeldeten),
+keine Regel-27-Verstöße, keine Kollateralschäden, Originale unverändert, Lese-Lücke im Entwicklungskorpus 1,4 %, Geschwindigkeit. Nicht erreicht: Treffergenauigkeit 100 %,
+Vorschlags-Genauigkeit ≥ 95 %, Abdeckung über alle Soll-Zellen ≥ 70 % (Formeln und Füllspalten trägt das Tool bewusst nicht ein). Einzelheiten und Gründe: `docs/status.md`.
