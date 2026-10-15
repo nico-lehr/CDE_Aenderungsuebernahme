@@ -176,8 +176,10 @@ def test_rt87_gruener_text(tmp_path):
 
 @pytest.mark.redteam
 @pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-88 Spotfarbe (Separation) mit Tint 1,0: die naive Umrechnung macht daraus Weiss, der "
-                          "Text gilt als unmarkiert, keine Warnung, keine Luecke; Besitzer K-PDF")
+                   reason="RT-88 Reader repariert (Separation: Tint 1,0 = volle Farbe, geprueft in test_pdf_reader_unit.py), "
+                          "der TEST selbst ist fehlerhaft: zeile(...) setzt im Textobjekt '0 0 0 rg' und ueberschreibt die "
+                          "Sonderfarbe, der Text ist im PDF wirklich schwarz. Marker bleibt, bis der Test mit "
+                          "zeile(..., farbe='') gebaut wird; Besitzer K-PDF/R2")
 def test_rt88_spotfarbe_separation_tint_1(tmp_path):
     spot = ("/ColorSpace << /Cs1 [/Separation /FirmenBlau /DeviceCMYK "
             "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 0.8 0 0] /N 1 >>] >>")

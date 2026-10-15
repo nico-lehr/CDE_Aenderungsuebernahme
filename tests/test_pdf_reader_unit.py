@@ -506,3 +506,60 @@ def test_kommentar_ohne_text_darunter_wird_gewarnt_aber_link_und_notiz_nicht(tmp
     kommentar = [w for w in a.warnungen if "Kommentar" in w]
     assert len(kommentar) == 1 and "Ink" in kommentar[0] and "Seite 1" in kommentar[0]
     assert all(not t.hinweis for t in alle_tokens(a))
+
+
+# =================================================================================================
+# Farbraeume: CMYK, Sonderfarben (Separation)
+# =================================================================================================
+def _sonderfarbe(funktion: str, tinte: str, zusatz: str = "") -> bytes:
+    raeume = ("/ColorSpace << /Cs1 [/Separation /FirmenFarbe /DeviceCMYK " + funktion + "] " + zusatz + " >>")
+    inhalt = (zeile(56, 64, "Das ist ") + f"/Cs1 cs {tinte} scn\n" + zeile(92, 64, "neuer Text hier", farbe="")
+              + "0 g\n" + zeile(168, 64, " im Satz."))
+    return roh_pdf([RohSeite(inhalt=inhalt, ressourcen=raeume)])
+
+
+TYP2 = "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 0.8 0 0] /N 1 >>"
+
+
+def test_sonderfarbe_tinte_1_ist_die_volle_farbe_nicht_weiss(tmp_path):
+    a = lese(tmp_path, _sonderfarbe(TYP2, "1"))
+    assert [token(a, w).status for w in ("neuer", "Text", "hier", "Das")] == [ADD, ADD, ADD, KEEP]
+
+
+def test_sonderfarbe_tinte_0_ist_kein_farbauftrag(tmp_path):
+    a = lese(tmp_path, _sonderfarbe(TYP2, "0"))
+    assert not [t for t in alle_tokens(a) if t.status != KEEP] and a.luecken == []
+
+
+def test_sonderfarbe_rot_wird_zu_entfaellt(tmp_path):
+    rot = "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 1 1 0] /N 1 >>"
+    a = lese(tmp_path, _sonderfarbe(rot, "1"))
+    assert [token(a, w).status for w in ("neuer", "Text", "hier")] == [DEL, DEL, DEL]
+
+
+def test_sonderfarbe_mit_nicht_berechenbarer_funktion_ist_luecke(tmp_path):
+    zusammengesetzt = "<< /FunctionType 3 /Domain [0 1] /Functions [" + TYP2 + "] /Bounds [] /Encode [0 1] >>"
+    a = lese(tmp_path, _sonderfarbe(zusammengesetzt, "1"))
+    assert [token(a, w).status for w in ("neuer", "Text", "hier")] == [KEEP] * 3
+    assert _luecke(a, "unbekannte_farbe")["woerter"] == 3
+
+
+def test_sonderfarbe_bei_mehreren_unterschiedlichen_raeumen_ist_unklar(tmp_path):
+    orange = "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0.5 1 0] /N 1 >>"
+    a = lese(tmp_path, _sonderfarbe(TYP2, "1", "/Cs2 [/Separation /Andere /DeviceCMYK " + orange + "]"))
+    assert _luecke(a, "unbekannte_farbe")["woerter"] == 3
+
+
+@pytest.mark.parametrize("cmyk,erwartet", [("1 1 0 0", ADD), ("1 0.8 0 0", ADD), ("0 1 1 0", DEL), ("0 0 0 1", KEEP),
+                                           ("0 0 0 0.85", KEEP)])
+def test_cmyk_farben_werden_richtig_umgerechnet(tmp_path, cmyk, erwartet):
+    inhalt = zeile(56, 64, "Das ist ") + zeile(92, 64, "neuer Text hier", farbe=f"{cmyk} k") + zeile(168, 64, " im Satz.")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert [token(a, w).status for w in ("neuer", "Text", "hier")] == [erwartet] * 3
+    assert a.luecken == []
+
+
+def test_reines_cyan_in_cmyk_ist_unbekannte_farbe(tmp_path):
+    inhalt = zeile(56, 64, "Das ist ") + zeile(92, 64, "neuer Text hier", farbe="1 0 0 0 k") + zeile(168, 64, " im Satz.")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    assert _luecke(a, "unbekannte_farbe")["woerter"] == 3

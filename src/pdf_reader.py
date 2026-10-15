@@ -276,7 +276,57 @@ def _render_modi(page: Any) -> list[int] | None:
         return None
 
 
-def _zeichenfarbe(c: dict) -> tuple[tuple[float, float, float] | None, bool]:
+class _Sonderfarben:
+    """Rechnet Sonderfarben (Separation / DeviceN mit einer Tinte, z. B. Firmenfarben) in RGB um.
+
+    pdfplumber nennt nur den Tintenwert (1.0 = VOLLE Farbe, nicht Weiss!), nicht den Farbraum-Namen. Deshalb werden
+    die Sonderfarb-Raeume der Seite ausgewertet; ist das Ergebnis nicht eindeutig, bleibt die Farbe 'unklar'."""
+
+    def __init__(self, page: Any) -> None:
+        self.raeume: list[Any] = []
+        self._cache: dict[tuple, tuple[float, float, float] | None] = {}
+        try:
+            from pdfminer.pdftypes import resolve1
+            self._resolve = resolve1
+            res = resolve1(page.page_obj.resources) or {}
+            farbraeume = resolve1(res.get("ColorSpace")) or {}
+            for spez in farbraeume.values():
+                spez = resolve1(spez)
+                if isinstance(spez, list) and len(spez) >= 4 and getattr(resolve1(spez[0]), "name", "") in ("Separation", "DeviceN"):
+                    self.raeume.append(spez)
+        except Exception:
+            self.raeume = []
+
+    def __call__(self, werte: tuple[float, ...]) -> tuple[float, float, float] | None:
+        if werte not in self._cache:
+            ergebnisse = set()
+            for spez in self.raeume:
+                rgb = self._rgb(spez, werte)
+                if rgb is None:
+                    ergebnisse.add(None)
+                else:
+                    ergebnisse.add(tuple(round(v, 2) for v in rgb))
+            self._cache[werte] = ergebnisse.pop() if len(ergebnisse) == 1 else None
+        return self._cache[werte]
+
+    def _rgb(self, spez: list, werte: tuple[float, ...]) -> tuple[float, float, float] | None:
+        try:
+            r = self._resolve
+            if len(werte) != (1 if getattr(r(spez[0]), "name", "") == "Separation" else len(r(spez[1]))):
+                return None
+            fn = r(spez[3])
+            if not isinstance(fn, dict) or r(fn.get("FunctionType")) != 2 or len(werte) != 1:
+                return None                                  # nur die einfache Tintenfunktion (Typ 2) wird berechnet
+            c0 = [float(r(x)) for x in (r(fn.get("C0")) or [0.0])]
+            c1 = [float(r(x)) for x in (r(fn.get("C1")) or [1.0])]
+            n = float(r(fn.get("N")) if fn.get("N") is not None else 1.0)
+            t = max(0.0, min(1.0, werte[0]))
+            return _rgb(tuple(a + (t ** n) * (b - a) for a, b in zip(c0, c1)))
+        except Exception:
+            return None
+
+
+def _zeichenfarbe(c: dict, sonder: Any = None) -> tuple[tuple[float, float, float] | None, bool]:
     """(RGB oder None, unklar). 'unklar' = Farbe aus Muster/Sonderfarbraum, die nicht umgerechnet werden kann."""
     farbe = c.get("non_stroking_color")
     if farbe is None:
@@ -289,7 +339,10 @@ def _zeichenfarbe(c: dict) -> tuple[tuple[float, float, float] | None, bool]:
         return None, True
     raum = str(c.get("ncs") or "")
     if len(werte) == 1 and raum in ("Separation", "DeviceN", "Indexed", "Pattern", "Lab"):
-        return None, werte[0] > 0.05
+        rgb = sonder(werte) if (sonder is not None and raum in ("Separation", "DeviceN")) else None
+        if rgb is not None:
+            return rgb, False
+        return None, werte[0] > 0.05          # Tinte 0 = kein Farbauftrag; sonst Farbe, die wir nicht umrechnen koennen
     if len(werte) == 3 and raum == "Lab":
         return None, True
     return _rgb(werte), False
@@ -309,6 +362,7 @@ def _lese_seite(page: Any, nr: int, cfg: dict) -> _SeitenDaten:
         modi = None
     # Schreibrichtung: Steht der Text (fast) ueberall quer oder kopfueber, wird die Seite in Leserichtung gebracht.
     # Zeichen in einer anderen Richtung (Randvermerk, Wasserzeichen) werden nicht gelesen, aber gemeldet.
+    sonder = _Sonderfarben(page)
     richtungen = [_richtung(c) for c in roh]
     zaehl = Counter(r for r, c in zip(richtungen, roh) if (c.get("text") or "").strip())
     haupt = zaehl.most_common(1)[0][0] if zaehl else "h"
@@ -327,11 +381,11 @@ def _lese_seite(page: Any, nr: int, cfg: dict) -> _SeitenDaten:
                 if fremd_wort_ende:
                     sd.fremd_woerter += 1
                 fremd_wort_ende = False
-                rgb_f, _ = _zeichenfarbe(c)
+                rgb_f, _ = _zeichenfarbe(c, sonder)
                 if _bedeutung(klasse(rgb_f, cfg), cfg):
                     sd.fremd_farbig = True
             continue
-        rgb, unklar = _zeichenfarbe(c)
+        rgb, unklar = _zeichenfarbe(c, sonder)
         x0, top, x1, bot = rahmen.box(c["x0"], c["top"], c["x1"], c["bottom"])
         z = _Z(text=text, x0=x0, x1=x1, top=top, bottom=bot,
                size=float(c.get("size") or 10), font=str(c.get("fontname") or ""), leer=leer)
