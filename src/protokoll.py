@@ -30,7 +30,8 @@ _TYPEN = {
 }
 
 
-def bilanz(aenderungen: list[Aenderung], markierte_woerter: int, ignoriert: list[dict[str, Any]]) -> dict[str, Any]:
+def bilanz(aenderungen: list[Aenderung], markierte_woerter: int, ignoriert: list[dict[str, Any]],
+           luecken: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     zaehler = {UEBERNOMMEN: 0, PRUEFEN: 0, NICHT: 0}
     woerter = {UEBERNOMMEN: 0, PRUEFEN: 0, NICHT: 0}
     for a in aenderungen:
@@ -46,17 +47,27 @@ def bilanz(aenderungen: list[Aenderung], markierte_woerter: int, ignoriert: list
         "woerter_im_pdf": markierte_woerter,
         "stimmt": summe == markierte_woerter,
         "nachkontrolle_abweichungen": sum(1 for a in aenderungen if a.nachkontrolle == "abweichung"),
+        # Schema 2: "stimmt" prueft nur die Wortsumme. "vollstaendig" sagt, ob das Tool alles lesen konnte.
+        "luecken": len(luecken or []),
+        "vollstaendig": not luecken,
     }
 
 
 def aenderung_aus_dict(d: dict[str, Any]) -> Aenderung:
+    """Liest eine Aenderung aus plan.json. Fehlende Felder bekommen den Standardwert (Schema 1),
+    unbekannte Felder (neueres Schema) werden ignoriert."""
+    from dataclasses import fields
+
     from .models import Operation
     d = dict(d)
+    op_felder = {f.name for f in fields(Operation)}
+    ae_felder = {f.name for f in fields(Aenderung)}
     ops = []
     for o in d.pop("ops", []):
-        o = dict(o)
+        o = {k: v for k, v in dict(o).items() if k in op_felder}
         o["zellen"] = {int(k): v for k, v in (o.get("zellen") or {}).items()}
         ops.append(Operation(**o))
+    d = {k: v for k, v in d.items() if k in ae_felder}
     d["bbox"] = tuple(d["bbox"])
     return Aenderung(ops=ops, **d)
 

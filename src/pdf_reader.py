@@ -35,6 +35,7 @@ class PdfAnalyse:
     farben: list[dict[str, Any]] = field(default_factory=list)
     warnungen: list[str] = field(default_factory=list)
     seiten_masse: dict[int, tuple[float, float]] = field(default_factory=dict)
+    luecken: list[dict[str, Any]] = field(default_factory=list)   # Schema 2: models.luecke(...)
 
     @property
     def markierte_woerter(self) -> int:

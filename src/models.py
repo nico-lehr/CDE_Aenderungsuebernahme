@@ -2,13 +2,17 @@
 
 SCHEMA_VERSION wird in jedes Ergebnis geschrieben, damit alte Laeufe dem
 damals gueltigen Aufbau zugeordnet werden koennen.
+
+Schema 2 (ADR 0002): nur NEUE Felder mit Standardwert (hinweis/hinweise/wirkung) und
+das Luecken-Format. Schema-1-Laeufe bleiben lesbar.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+GELESENE_SCHEMAS = (1, 2)   # Versionen, die beim Laden akzeptiert werden
 
 # Status eines Wortes im PDF
 KEEP, DEL, ADD, MOD = "keep", "del", "add", "mod"
@@ -21,6 +25,23 @@ NICHT = "nicht_uebernommen"
 # Konfidenz
 HOCH, MITTEL, NIEDRIG = "hoch", "mittel", "niedrig"
 
+# Wirkung einer angewendeten Aenderung (hat die Excel sich WIRKLICH wie geplant geaendert?)
+WIRKUNG_OK = "ok"                    # Zelle/Zeile ist nachweislich wie geplant geaendert
+WIRKUNG_KEINE = "keine"              # Operation hatte keine Wirkung (z.B. nur Leerzeichen) -> nie "uebernommen"
+WIRKUNG_ABWEICHUNG = "abweichung"    # Ergebnis weicht vom Plan ab
+# "" = nicht angewendet
+
+# Luecken: Dinge, die das Tool nicht (sicher) lesen konnte. Jede Luecke macht die Bilanz "unvollstaendig".
+# Format (einfaches dict, JSON-tauglich, KEINE Dokumentinhalte, Regel 16):
+#   {"art": <LUECKEN_ARTEN>, "seite": int, "beschreibung": "einfacher deutscher Satz", "woerter": int}
+LUECKEN_ARTEN = ("scan_seite", "mehrspaltig", "tabelle", "bild", "unbekannte_farbe",
+                 "nicht_lesbarer_text", "sonstiges")
+
+
+def luecke(art: str, seite: int, beschreibung: str, woerter: int = 0) -> dict[str, Any]:
+    """Baut einen Luecken-Eintrag im vereinbarten Format (siehe oben)."""
+    return {"art": art, "seite": seite, "beschreibung": beschreibung, "woerter": woerter}
+
 
 @dataclass
 class PdfToken:
@@ -30,6 +51,7 @@ class PdfToken:
     status: str
     page: int
     bbox: tuple[float, float, float, float]  # x0, top, x1, bottom (PDF-Punkte)
+    hinweis: str = ""               # Schema 2: z.B. "gemischt_blau_strich", "verschmolzen" (leer = nichts auffaellig)
 
 
 @dataclass
@@ -42,6 +64,7 @@ class PdfBlock:
     section_alt: str | None = None  # Section-Nummer im alten Stand
     section_neu: str | None = None  # ... im neuen Stand
     ignoriert: str | None = None    # z.B. "kopf_fuss"
+    hinweise: list[str] = field(default_factory=list)   # Schema 2: Auffaelligkeiten des Blocks (einfaches Deutsch)
 
     @property
     def alt_tokens(self) -> list[PdfToken]:
@@ -109,6 +132,8 @@ class Aenderung:
     score: float = 0.0
     bestaetigt: bool = False           # Mensch hat einen Vorschlag (pruefen) freigegeben
     nachkontrolle: str = ""            # ok | abweichung (nach dem Speichern geprueft)
+    hinweise: list[str] = field(default_factory=list)   # Schema 2: Warnungen zu dieser Aenderung (einfaches Deutsch)
+    wirkung: str = ""                  # Schema 2: WIRKUNG_OK | WIRKUNG_KEINE | WIRKUNG_ABWEICHUNG | "" (nicht angewendet)
 
     def zu_dict(self) -> dict[str, Any]:
         from dataclasses import asdict

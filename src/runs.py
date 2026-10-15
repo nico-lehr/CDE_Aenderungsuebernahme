@@ -82,11 +82,12 @@ def analysiere(run_id: str) -> dict[str, Any]:
     pa = analysiere_pdf(pdf)
     xl = ExcelModell(excel)
     plan = plane(pa, xl)
-    bil = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert)
+    bil = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
     daten = {
         "run_id": run_id, "pdf_name": info["pdf"], "excel_name": info["excel"],
         "pdf_sha256": _sha(pdf), "excel_sha256": _sha(excel), "seiten": pa.seiten,
         "bilanz": bil, "layout": plan.layout, "warnungen": plan.warnungen, "ignoriert": plan.ignoriert,
+        "luecken": plan.luecken,
         "farben": pa.farben, "aenderungen": [a.zu_dict() for a in plan.aenderungen],
     }
     schreibe_json(d / "plan.json", daten)
@@ -134,7 +135,7 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[st
     ziel = ordner / f"{stamm}_aktualisiert{Path(info['excel']).suffix}"
     res = uebernehmen(aenderungen, quelle, ziel, freig)
     markierte = plan["bilanz"]["woerter_im_pdf"]
-    bil = bilanz(aenderungen, markierte, plan["ignoriert"])
+    bil = bilanz(aenderungen, markierte, plan["ignoriert"], plan.get("luecken", []))
     warn = list(plan["warnungen"]) + res.warnungen
     xinfo = {"pdf_name": info["pdf"], "excel_name": info["excel"], "ergebnis_name": ziel.name}
     schreibe_xlsx(ordner / "aenderungsprotokoll.xlsx", xinfo, aenderungen, bil, plan["layout"], warn, plan["farben"])

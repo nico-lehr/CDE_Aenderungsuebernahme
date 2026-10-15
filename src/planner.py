@@ -34,6 +34,7 @@ class Plan:
     warnungen: list[str] = field(default_factory=list)
     ignoriert: list[dict] = field(default_factory=list)
     markierte_woerter: int = 0
+    luecken: list[dict] = field(default_factory=list)   # Schema 2: Dinge, die nicht gelesen werden konnten
 
 
 def _bbox(tokens: list[PdfToken]) -> tuple[float, float, float, float]:
@@ -403,5 +404,6 @@ def plane(pdf: PdfAnalyse, xl: ExcelModell, cfg: dict | None = None) -> Plan:
                 op.erwartet = xl.text(op.blatt, op.zeile, op.spalte)[op.start:op.ende]
     warn = list(pdf.warnungen) + list(xl.warnungen)
     plan = Plan(aenderungen=p.out, layout=xl.beschreibung(), warnungen=warn,
-                ignoriert=pdf.ignoriert, markierte_woerter=pdf.markierte_woerter)
+                ignoriert=pdf.ignoriert, markierte_woerter=pdf.markierte_woerter,
+                luecken=list(pdf.luecken))
     return plan
