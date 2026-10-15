@@ -55,6 +55,7 @@ matcher:                      # Bewertung eines Treffers (src/matcher.py)
   untergrenze: 0.4            # darunter gibt es keinen Treffer, auch keinen Vorschlag
   max_kandidaten_section: 400 # so viele Kandidaten derselben Section werden zusaetzlich geprueft
   excel_abdeckung_min: 0.75   # deckt der PDF-Text weniger als so viel vom Excel-Absatz ab (Rest >= rest_min_woerter), nur "mittel"
+  section_unpassend_stufe: mittel   # Stufe, wenn PDF-Section (alte Nummer) und Excel-Section beide bekannt sind und nicht passen (hoch | mittel)
   rest_min_woerter: 5         # so viele Woerter des Excel-Absatzes muessen unabgedeckt sein, damit der Anfangs-Treffer zaehlt
 anwenden:                     # Schreiben in die Excel (src/applier.py)
   markierung_farbe: FFF2CC    # Hintergrund, wenn markierung.geaenderte_zellen = gelb

@@ -10,6 +10,8 @@ Bewertung:  score = gewicht_abdeckung * Abdeckung + gewicht_dice * Dice   (Gewic
 Sicherheit ("hoch" = automatisch, "mittel" = Mensch prueft). Hoechstens "mittel" gilt, wenn
   * es mehrere gleich gute Stellen gibt (auch zwei gleiche Absaetze in DERSELBEN Zelle),
   * der PDF-Text nur einen Teil (Anfang) eines laengeren Excel-Absatzes abdeckt,
+  * die Section des PDF-Blocks (alte Nummer) und die Section der gefundenen Excel-Stelle beide bekannt sind und
+    nicht zusammenpassen (Text steht zufaellig auch in einer anderen Section; Config matcher.section_unpassend_stufe),
   * der Aufbau des Blatts unsicher erkannt wurde, die Stelle ausgeblendet ist oder
     die Section-Nummer aus mehrdeutigen Zahlen stammt.
 """
@@ -149,6 +151,12 @@ class Matcher:
             gruende.append("sehr kurzer Text, Stelle nicht sicher")
         if len(normen) <= schw["kurz_tokens"] and stufe == HOCH and passt is False and not eindeutig:
             stufe = MITTEL
+        if stufe == HOCH and passt is False:
+            # PDF-Section (die ALTE Nummer, daher bleibt Umnummerierung unberuehrt) und Excel-Section sind beide bekannt
+            # und verschieden: der Text steht zufaellig auch woanders. Nie automatisch, ein Mensch schaut hin.
+            stufe = mc.get("section_unpassend_stufe", MITTEL)
+            if stufe != HOCH:
+                gruende.append("Section passt nicht zur gefundenen Stelle")
         if stufe == HOCH and k.section_unsicher:
             stufe = MITTEL
             gruende.append("die Section-Nummer steht als Zahl in der Excel und ist nicht eindeutig (2.1 oder 2.10?)")
