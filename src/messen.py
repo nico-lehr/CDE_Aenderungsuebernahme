@@ -17,6 +17,7 @@ Aufbau
 from __future__ import annotations
 
 import argparse
+import bisect
 import copy
 import hashlib
 import json
@@ -30,7 +31,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openpyxl import load_workbook
 from openpyxl.cell.rich_text import CellRichText
@@ -47,7 +48,13 @@ from .protokoll import bilanz
 BERICHT_FORMAT = 1
 FEHLERARTEN = ("pdf_falsch_gelesen", "layout_falsch", "zuordnung_falsch", "plan_falsch", "bilanz_kaputt", "unklar")
 STILLE_ARTEN = ("uebernommen_aber_falsch", "kollateral", "bilanz", "nachkontrolle_ok_aber_falsch",
-                "keine_wirkung", "luecke_nicht_gemeldet")
+                "keine_wirkung", "luecke_nicht_gemeldet", "regel27_verstoss")
+STRUKTUR_ARTEN = ("blatt", "sichtbarkeit", "zeile_versteckt", "spalte_versteckt", "verbunden", "validierung",
+                  "zahlenformat", "schrift")
+FUELL_MAX_WOERTER = 3       # Zelle einer neuen/entfernten Zeile in einer nicht verwalteten Spalte: bis hierhin "harmlose Fuellung"
+_LEER_SPEZIAL = frozenset("               　")
+_PDF_BLIND = _LEER_SPEZIAL | frozenset("­​‌‍⁠﻿")     # Zeichen, die ein PDF meist nicht traegt
+PLAUSI_BILD_ANTEIL = 0.05  # ein Bild zaehlt als Hinweis, wenn es mindestens so viel der Seitenflaeche deckt (kein Logo)
 ZEILEN_AEHNLICH = 0.6       # ab hier gelten zwei Zeilen als "dieselbe Zeile, veraendert"
 BLOCK_MAX = 4000            # groessere Austausch-Bloecke werden nur nach Position gepaart
 DATEIEN = ("aenderungen.pdf", "vorher.xlsx", "nachher.xlsx")
@@ -59,8 +66,16 @@ _UNSICHTBAR = dict.fromkeys(map(ord, "­​‌‍﻿"), None)
 # 1. Dateien lesen
 # ======================================================================================
 def _k(text: str) -> str:
-    """Vergleichsform einer Zelle: Unicode-normalisiert, ohne unsichtbare Zeichen, Leerraum zusammengefasst."""
+    """LOCKERE Vergleichsform einer Zelle: Unicode-normalisiert, ohne unsichtbare Zeichen, Leerraum zusammengefasst.
+    Nur noch fuer "ist die Zelle ueberhaupt leer?" und zur Fehlerart-Bestimmung. Der Zellvergleich selbst ist streng (`_s`)."""
     return " ".join(unicodedata.normalize("NFKC", text).translate(_UNSICHTBAR).split())
+
+
+def _s(text: str) -> str:
+    """STRENGE Vergleichsform einer Zelle (RT-135): jedes Zeichen zaehlt -- doppelte und geschuetzte Leerzeichen, weiche und
+    unsichtbare Zeichen, Ligaturen, Absatzgrenzen. Nur die Zeilenenden werden vereinheitlicht. Eine Zelle ohne sichtbaren
+    Inhalt gilt als leer. `textutil.norm` ist nur fuer Wort-Vergleiche da (Zuordnung Aenderung <-> Zelle)."""
+    return text.replace("\r\n", "\n").replace("\r", "\n") if _k(text) else ""
 
 
 def _zelltext(v: Any) -> str:
@@ -111,7 +126,7 @@ def _zeilen(rows: list[list[str]]) -> list[Zeile]:
     """Nur nicht-leere Zeilen (leere Zeilen zaehlen nicht; die Nummern bleiben die des Originals)."""
     out: list[Zeile] = []
     for i, row in enumerate(rows, 1):
-        keys = [_k(c) for c in row]
+        keys = [_s(c) for c in row]
         while keys and not keys[-1]:
             keys.pop()
         if keys:
@@ -127,32 +142,66 @@ class Diff:
     zellen: dict[tuple[int, int], str] = field(default_factory=dict)   # (Zeile, Spalte) -> neuer Rohtext ("" = leer)
     weg: set[int] = field(default_factory=set)                          # vorher-Zeilen ohne Gegenstueck
     neue: list[tuple[int, tuple[str, ...], tuple[str, ...]]] = field(default_factory=list)   # (Anker, Rohtexte, Keys)
-    # Anker = Nummer der letzten behaltenen vorher-Zeile VOR der neuen Zeile (0 = ganz oben)
+    neue_nr: list[int] = field(default_factory=list)                    # Zeilennummer jeder neuen Zeile in X (parallel zu `neue`)
+    blind: set = field(default_factory=set)                             # Soll-Zellen, die nur "PDF-blind" verglichen werden (siehe _blind)
+    neue_vi: list[int] = field(default_factory=list)                    # Index der vorher-Zeile direkt vor jeder neuen Zeile (roh)
+    # Anker = Nummer der letzten behaltenen vorher-Zeile VOR der neuen Zeile (0 = ganz oben).
+    # "Behalten" heisst: nicht weg UND nicht ausgeleert (eine Zeile, in der nur noch unverwaltete Spalten wie
+    # Bemerkung stehen, zaehlt wie eine geloeschte Zeile -- im Soll genauso wie im Ergebnis).
+    zuordnung: dict[int, int] = field(default_factory=dict)             # vorher-Zeile -> Zeile in X (alle gepaarten)
+    geleert: set[int] = field(default_factory=set)                      # gepaarte vorher-Zeilen, die in X ausgeleert sind
+
+
+def _woerter_zaehler(text: str) -> Counter:
+    return Counter(text.split())
+
+
+def _enthalten(klein: str, gross: str) -> bool:
+    """Steht der kuerzere Text (mindestens drei Woerter) im Wesentlichen im laengeren? (Teilstring oder Woerter-Teilmenge)"""
+    if len(klein.split()) < 3 or len(klein) >= len(gross):
+        return False
+    if klein in gross:
+        return True
+    return not (_woerter_zaehler(klein) - _woerter_zaehler(gross))
+
+
+def _zell_aehnlich(x: str, y: str) -> float:
+    """Aehnlichkeit zweier Zelltexte (0..1). Ein gekuerzter oder verlaengerter Text (der eine steckt im anderen) zaehlt
+    als dieselbe Zelle, veraendert -- so bleibt eine Zeile erkennbar, wenn ein Absatz hinzukommt oder wegfaellt."""
+    if x == y:
+        return 1.0
+    if not x or not y:
+        return 0.0
+    kurz, lang = (x, y) if len(x) <= len(y) else (y, x)
+    best = 0.8 if _enthalten(kurz, lang) else 0.0
+    sm = SequenceMatcher(None, x, y, autojunk=False)
+    if sm.real_quick_ratio() >= 0.5 and sm.quick_ratio() >= 0.5:
+        r = sm.ratio()
+        if r >= 0.5:
+            best = max(best, r)
+    return best
 
 
 def _aehnlich(a: tuple[str, ...], b: tuple[str, ...]) -> float:
-    """Aehnlichkeit zweier Zeilen (0..1): Anteil gleicher bzw. aehnlicher Zellen. Eine Zeile, die nur "ausgeleert" wurde, zaehlt als gleich."""
+    """Aehnlichkeit zweier Zeilen (0..1): Anteil gleicher bzw. aehnlicher Zellen. Eine Zeile, die nur "ausgeleert" wurde
+    (die belegten Zellen der einen Zeile stehen -- gleich oder gekuerzt -- in der anderen), zaehlt als dieselbe Zeile."""
     a_ne = {c: v for c, v in enumerate(a) if v}
     b_ne = {c: v for c, v in enumerate(b) if v}
-    if a_ne and b_ne and (all(b_ne.get(c) == v for c, v in a_ne.items()) or all(a_ne.get(c) == v for c, v in b_ne.items())):
-        return 1.0
+    teil = 0.0
+    for klein, gross in ((a_ne, b_ne), (b_ne, a_ne)):
+        if klein and klein.keys() <= gross.keys():
+            werte = [_zell_aehnlich(v, gross[c]) for c, v in klein.items()]
+            if all(w >= 0.5 for w in werte):
+                teil = max(teil, sum(werte) / len(werte))
     gewicht = summe = 0.0
     for c in range(max(len(a), len(b))):
         x = a[c] if c < len(a) else ""
         y = b[c] if c < len(b) else ""
         if not x and not y:
             continue
-        w = 1.0                                  # jede belegte Zelle zaehlt gleich (lange Texte erdruecken Nummer/Titel nicht)
-        gewicht += w
-        if x == y:
-            summe += w
-        elif x and y:
-            sm = SequenceMatcher(None, x, y, autojunk=False)
-            if sm.real_quick_ratio() >= 0.5 and sm.quick_ratio() >= 0.5:
-                r = sm.ratio()
-                if r >= 0.5:
-                    summe += w * r
-    return summe / gewicht if gewicht else 0.0
+        gewicht += 1.0                               # jede belegte Zelle zaehlt gleich (lange Texte erdruecken Nummer/Titel nicht)
+        summe += _zell_aehnlich(x, y)
+    return max(teil, summe / gewicht if gewicht else 0.0)
 
 
 def _paare(va: list[Zeile], xb: list[Zeile]) -> list[tuple[int, int]]:
@@ -183,10 +232,13 @@ def _paare(va: list[Zeile], xb: list[Zeile]) -> list[tuple[int, int]]:
     return out[::-1]
 
 
-def _diff(v: list[Zeile], x: list[Zeile]) -> Diff:
+def _diff(v: list[Zeile], x: list[Zeile], leer: Callable[[Zeile], bool] | None = None) -> Diff:
+    """Zellen-, Zeilen-Unterschiede vorher -> X. `leer(zeile)` sagt, ob eine Zeile in den verwalteten Spalten nichts mehr
+    enthaelt (dann ist sie als Anker so gut wie geloescht)."""
     d = Diff()
     sm = SequenceMatcher(None, [z.keys for z in v], [z.keys for z in x], autojunk=False)
     weg_idx: set[int] = set()
+    leer_idx: set[int] = set()
     roh_neu: list[tuple[int, Zeile]] = []
 
     def weg(i: int) -> None:
@@ -199,6 +251,8 @@ def _diff(v: list[Zeile], x: list[Zeile]) -> Diff:
 
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
+            for k in range(i2 - i1):
+                d.zuordnung[v[i1 + k].nr] = x[j1 + k].nr
             continue
         paare = _paare(v[i1:i2], x[j1:j2]) if tag == "replace" else []
         zu_x = {j1 + b: i1 + a for a, b in paare}
@@ -210,6 +264,10 @@ def _diff(v: list[Zeile], x: list[Zeile]) -> Diff:
                     weg(zeiger)
                     zeiger += 1
                 a, b = v[i], x[j]
+                d.zuordnung[a.nr] = b.nr
+                if leer is not None and leer(b):
+                    leer_idx.add(i)
+                    d.geleert.add(a.nr)
                 for c in range(max(len(a.keys), len(b.keys))):
                     ka = a.keys[c] if c < len(a.keys) else ""
                     kb = b.keys[c] if c < len(b.keys) else ""
@@ -222,10 +280,22 @@ def _diff(v: list[Zeile], x: list[Zeile]) -> Diff:
             weg(zeiger)
             zeiger += 1
     for vi, z in roh_neu:
-        while vi >= 0 and vi in weg_idx:
+        d.neue_vi.append(vi)
+        while vi >= 0 and (vi in weg_idx or vi in leer_idx):
             vi -= 1
         d.neue.append((v[vi].nr if vi >= 0 else 0, z.zellen, z.keys))
+        d.neue_nr.append(z.nr)
     return d
+
+
+def _anker_neu(d: Diff, v: list[Zeile], tot: set[int]) -> None:
+    """Setzt die Anker der neuen Zeilen neu: Zeilen, die Soll ODER Ergebnis als entfernt/ausgeleert sehen (`tot`), zaehlen auf
+    beiden Seiten gleich nicht als Anker. So hat eine geleerte (statt geloeschte) Zeile keinen Einfluss auf den Ort (MA-3)."""
+    for k, vi in enumerate(d.neue_vi):
+        while vi >= 0 and v[vi].nr in tot:
+            vi -= 1
+        _alt, zellen, keys = d.neue[k]
+        d.neue[k] = (v[vi].nr if vi >= 0 else 0, zellen, keys)
 
 
 def _neu_abgleich(soll: list, ist: list) -> tuple[dict[int, int], dict[int, bool]]:
@@ -262,9 +332,16 @@ def _neu_abgleich(soll: list, ist: list) -> tuple[dict[int, int], dict[int, bool
 # ======================================================================================
 # 3. Einheiten und Auswertung
 # ======================================================================================
-def _wort_liste(text: str) -> list[str]:
+_TOKEN = re.compile(r"\s+|\S+")
+
+
+def _wort_norm(wort: str) -> str:
     from .textutil import norm
-    return [w for w in (norm(x) for x in text.split()) if w]
+    return norm(wort)
+
+
+def _wort_liste(text: str) -> list[str]:
+    return [w for w in (_wort_norm(x) for x in text.split()) if w]
 
 
 def _wort_diff(alt: str, neu: str) -> tuple[list[str], list[str]]:
@@ -308,17 +385,28 @@ class _Auswertung:
     """Vergleicht Ergebnis (E_auto) mit nachher und sammelt alles, was der Bericht braucht."""
 
     def __init__(self, v_blaetter, n_blaetter, e_blaetter, e_alle_blaetter, namen: list[str], aenderungen, plan,
-                 pdf_analyse, bil_auto, bil_plan, idempotent: bool, luecken_erwartet: list[dict] | None) -> None:
+                 pdf_analyse, bil_auto, bil_plan, idempotent: bool | None, luecken_erwartet: list[dict] | None,
+                 vor_status: dict[str, str] | None = None, pdf_zeichen: set[str] | None = None) -> None:
         self.namen = namen
+        self.pdf_zeichen = pdf_zeichen            # alle Zeichen, die im PDF vorkommen (None = unbekannt -> streng)
+        self.vor_status = vor_status or {}      # Status laut Plan, VOR dem Anwenden (fuer Regel 27)
         self.bi_von_name = {n: i for i, n in enumerate(namen)}
         self.V = [_zeilen(b) for b in v_blaetter]
         self.N = [_zeilen(b) for b in n_blaetter] + [[] for _ in range(max(0, len(self.V) - len(n_blaetter)))]
         self.E = [_zeilen(b) for b in e_blaetter] + [[] for _ in range(max(0, len(self.V) - len(e_blaetter)))]
         self.vtext = [{z.nr: z.zellen for z in blatt} for blatt in self.V]
-        self.S = [_diff(self.V[i], self.N[i]) for i in range(len(self.V))]
-        self.I = [_diff(self.V[i], self.E[i]) for i in range(len(self.V))]
         self.aend = aenderungen
         self.plan = plan
+        self._inhaltsspalte: dict[int, int | None] = {}
+        self.S = [_diff(self.V[i], self.N[i]) for i in range(len(self.V))]     # 1. Lauf: nur fuer die Inhaltsspalte
+        self.S = [_diff(self.V[i], self.N[i], self._leer_fn(i)) for i in range(len(self.V))]
+        self.I = [_diff(self.V[i], self.E[i], self._leer_fn(i)) for i in range(len(self.V))]
+        self._tot = [self.S[i].weg | self.S[i].geleert | self.I[i].weg | self.I[i].geleert for i in range(len(self.V))]
+        for i in range(len(self.V)):         # Anker neuer Zeilen: entfernte/ausgeleerte Zeilen zaehlen auf beiden Seiten nicht (MA-3)
+            _anker_neu(self.S[i], self.V[i], self._tot[i])
+            _anker_neu(self.I[i], self.V[i], self._tot[i])
+        for bi, s in enumerate(self.S):
+            self._soll_pdf_blind(bi, s)
         self.bil_auto, self.bil_plan = bil_auto, bil_plan
         self.idempotent = idempotent
         self.fehler: dict[Any, Fehler] = {}
@@ -342,9 +430,13 @@ class _Auswertung:
 
         self._bauen()
         self.luecken_erwartet = luecken_erwartet
-        self.e_alle = (self._ist_liste([_diff(self.V[i], _zeilen(e_alle_blaetter[i]) if i < len(e_alle_blaetter) else [])
-                                        for i in range(len(self.V))])
-                       if e_alle_blaetter is not None else None)
+        self.e_alle = None
+        if e_alle_blaetter is not None:
+            alle = [_diff(self.V[i], _zeilen(e_alle_blaetter[i]) if i < len(e_alle_blaetter) else [], self._leer_fn(i))
+                    for i in range(len(self.V))]
+            for i, d in enumerate(alle):
+                _anker_neu(d, self.V[i], self._tot[i] | d.weg | d.geleert)
+            self.e_alle = self._ist_liste(alle)
 
     # ------------------------------------------------------------------ Hilfen
     def _ziele(self, ae) -> list[Ziel]:
@@ -393,11 +485,13 @@ class _Auswertung:
                 key = ("z", bi, z, c)
                 ist_da = (z, c) in self.I[bi].zellen
                 ist = self.I[bi].zellen.get((z, c))
-                erreicht = ist_da and _k(ist) == _k(inhalt)
+                erreicht = ist_da and _s(ist) == _s(inhalt)
                 v = self._vorher(bi, z, c)
+                art = "weg" if z in s.weg else "zelle"
                 self.einheiten.append({"key": key, "bi": bi, "zeile": z, "spalte": c, "soll": inhalt, "ist_da": ist_da,
-                                       "ist": ist, "erreicht": erreicht, "art": "weg" if z in s.weg else "zelle",
-                                       "vorher": v, "verwaltet": self._verwaltet(bi, c)})
+                                       "ist": ist, "erreicht": erreicht, "art": art,
+                                       "vorher": v, "verwaltet": self._verwaltet(bi, c),
+                                       "klasse": self._klasse(bi, c, art, v, inhalt), "blind": ("z", z, c) in s.blind})
                 self.soll_woerter[key] = _wort_diff(v, inhalt)
             for si, (anker, zellen, keys) in enumerate(s.neue):
                 for c, k in enumerate(keys, 1):
@@ -413,7 +507,9 @@ class _Auswertung:
                         erreicht = ort[si] and c - 1 < len(ik) and ik[c - 1] == k
                     self.einheiten.append({"key": key, "bi": bi, "zeile": anker, "spalte": c, "soll": zellen[c - 1],
                                            "ist_da": ii is not None, "ist": ist, "erreicht": erreicht, "art": "neu",
-                                           "vorher": "", "verwaltet": self._verwaltet(bi, c)})
+                                           "vorher": "", "verwaltet": self._verwaltet(bi, c),
+                                           "klasse": self._klasse(bi, c, "neu", "", zellen[c - 1]), "si": si,
+                                           "blind": ("n", si, c) in s.blind})
                     self.soll_woerter[key] = ([], _wort_liste(zellen[c - 1]))
 
         # Ist-Aenderungen (Auto): jede veraenderte Zelle bzw. neue Zeile
@@ -433,7 +529,7 @@ class _Auswertung:
             s = self.S[bi]
             for (z, c), inhalt in sorted(d.zellen.items()):
                 soll = s.zellen.get((z, c))
-                richtig = soll is not None and _k(soll) == _k(inhalt)
+                richtig = soll is not None and _s(soll) == _s(inhalt)
                 out.append({"key": ("z", bi, z, c), "bi": bi, "zeile": z, "spalte": c, "inhalt": inhalt,
                             "richtig": richtig, "art": "weg" if z in d.weg else "zelle"})
             paar, ort = _neu_abgleich(s.neue, d.neue)
@@ -500,7 +596,18 @@ class _Auswertung:
                 best, best_w = e, wert
         return (best["bi"], best["zeile"], best["spalte"]) if best else None
 
+    def _leer_fn(self, bi: int) -> Callable[[Zeile], bool]:
+        """Eine Zeile ist "leer", wenn in den verwalteten Spalten nichts steht (nur Bemerkung/Prio o. ae. uebrig)."""
+        def leer(z: Zeile) -> bool:
+            return not any(k for c, k in enumerate(z.keys, 1) if k and self._verwaltet(bi, c))
+        return leer
+
     def _soll_inhaltsspalte(self, bi: int) -> int | None:
+        if bi not in self._inhaltsspalte:
+            self._inhaltsspalte[bi] = self._soll_inhaltsspalte_berechnen(bi)
+        return self._inhaltsspalte[bi]
+
+    def _soll_inhaltsspalte_berechnen(self, bi: int) -> int | None:
         """Spalte mit den meisten veraenderten Zeichen laut Soll (Inhaltsspalte im Soll)."""
         gewicht: Counter[int] = Counter()
         s = self.S[bi]
@@ -526,6 +633,123 @@ class _Auswertung:
             return True
         spalten = {column_index_from_string(lay[k]) for k in ("section_spalte", "titel_spalte", "inhalt_spalte") if lay.get(k)}
         return spalte in spalten
+
+    def _blind(self, soll: str, vorher: str) -> str:
+        """Das Soll so, wie ein PDF-Leser es hoechstens sehen kann: geschuetzte Leerzeichen und unsichtbare Zeichen, die im
+        PDF GAR NICHT vorkommen, koennen in NEUEM Text nicht uebernommen werden (Text, der schon in `vorher` stand, bleibt).
+        Nur diese Richtung: steht so ein Zeichen im ERGEBNIS, aber nicht im Soll, bleibt es ein Fehler (RT-135)."""
+        if self.pdf_zeichen is None or not any(ch in _PDF_BLIND for ch in soll):
+            return soll
+        blind = {ch for ch in set(soll) if ch in _PDF_BLIND and ch not in self.pdf_zeichen}
+        if not blind:
+            return soll
+        out = []
+        for tag, _i1, _i2, j1, j2 in SequenceMatcher(None, vorher, soll, autojunk=False).get_opcodes():
+            stueck = soll[j1:j2]
+            if tag != "equal":
+                stueck = "".join((" " if ch in _LEER_SPEZIAL else "") if ch in blind else ch for ch in stueck)
+            out.append(stueck)
+        return "".join(out)
+
+    def _soll_pdf_blind(self, bi: int, s: "Diff") -> None:
+        for (z, c), t in list(s.zellen.items()):
+            p = self._blind(t, self._vorher(bi, z, c))
+            if p != t:
+                s.zellen[(z, c)] = p
+                s.blind.add(("z", z, c))
+        for si, (anker, zellen, keys) in enumerate(list(s.neue)):
+            neu = tuple(self._blind(t, "") for t in zellen)
+            if neu != tuple(zellen):
+                s.neue[si] = (anker, neu, tuple(_s(t) for t in neu))
+                s.blind.update(("n", si, c) for c, (a, b) in enumerate(zip(zellen, neu), 1) if a != b)
+
+    def _klasse(self, bi: int, spalte: int, art: str, vorher: str, soll: str) -> str:
+        """Einordnung einer Soll-Zelle (RT-142):
+        formel    = Formelzelle (steht nie im PDF; verschobene Formeln sind eine echte Gefahr),
+        haupt     = verwaltete Spalte (Nummer/Titel/Inhalt): zaehlt bei Abdeckung, Fehlern und Lese-Luecke,
+        harmlos   = nicht verwaltete Fuellung einer neuen/entfernten Zeile (kurze Bemerkung/Prio o. ae.),
+        sonstige  = alles andere in nicht verwalteten Spalten (z. B. neu nummerierte Spalte, lange Kommentare)."""
+        if soll.lstrip().startswith("=") or vorher.lstrip().startswith("="):
+            return "formel"
+        if self._verwaltet(bi, spalte):
+            return "haupt"
+        if art in ("neu", "weg") and max(len(soll.split()), len(vorher.split())) <= FUELL_MAX_WOERTER:
+            return "harmlos"
+        return "sonstige"
+
+    @staticmethod
+    def _unerklaert(ist: str, soll: str, erlaubt: Counter) -> Counter:
+        """Woerter, in denen sich `ist` und `soll` unterscheiden und die NICHT zu den erlaubten (offenen) Aenderungen gehoeren.
+        Leer = die Zelle weicht nur um offene Aenderungen ab. Ein Unterschied ohne Wortunterschied (Leerraum, unsichtbare
+        Zeichen, Satzzeichen am Rand) ist nie "erklaert"."""
+        if _s(ist) == _s(soll):
+            return Counter()
+        a, b = _TOKEN.findall(_s(ist)), _TOKEN.findall(_s(soll))      # Woerter UND Leerraum als eigene Stuecke
+        rest = Counter(erlaubt)
+        out: Counter = Counter()
+        for tag, i1, i2, j1, j2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+            if tag == "equal":
+                continue
+            if any(t.isspace() and t not in (" ", "\n") for t in a[i1:i2] + b[j1:j2]):       # doppelter/geschuetzter Leerraum
+                out["\x00format"] += 1
+            woerter = Counter(w for w in (_wort_norm(t) for t in a[i1:i2] + b[j1:j2] if not t.isspace()) if w)
+            if not woerter:                                  # nur Leerraum/Zeichen verschieden: nie durch eine Aenderung erklaert
+                out["\x00format"] += 1
+                # die Nachbarwoerter nennen, damit die schuldige Aenderung gefunden wird
+                nachbarn = [a[i1 - 1]] if i1 > 0 else []
+                nachbarn += [a[i2]] if i2 < len(a) else []
+                out.update(w for w in (_wort_norm(t) for t in nachbarn if not t.isspace()) if w)
+                continue
+            out.update(woerter - rest)
+            rest -= woerter
+        return out
+
+    def _nur_textform_key(self, key: Any) -> bool:
+        """Unterscheiden sich Ist und Soll NUR in Leerraum/unsichtbaren Zeichen/Absatzgrenzen (lockerer Vergleich waere gleich)?"""
+        if key[0] == "z":
+            _, bi, z, c = key
+            return _k(self._tatsaechlich(bi, z, c)) == _k(self._erwartet(bi, z, c))
+        if key[0] == "n" and len(key) == 5:
+            _, bi, _anker, _keys, c = key
+            it = next((i for i in self.ist if i["key"] == key), None)
+            if it is None:
+                return False
+            paar, _ort = _neu_abgleich(self.S[bi].neue, self.I[bi].neue)
+            si = {ii: s for s, ii in paar.items()}.get(it["ist_index"])
+            if si is None:
+                return False
+            soll = self.S[bi].neue[si][1]
+            return c - 1 < len(soll) and _k(it["inhalt"]) == _k(soll[c - 1])
+        return False
+
+    def _wirkung_vorhanden(self, ae: Any, vorher: str, ergebnis: str) -> bool:
+        """Ist die Wirkung dieser (offenen) Aenderung im Ergebnistext der Zelle schon zu sehen? (neue Woerter stehen da bzw.
+        gestrichene Woerter sind weg.) Nur sicher erkennbar, wenn die Aenderung Woerter bringt oder nimmt, die vorher anders waren."""
+        neu, alt = self.ae_woerter[ae.id]
+        vw, ew = Counter(_wort_liste(vorher)), Counter(_wort_liste(ergebnis))
+        gebraucht = neu - vw
+        if gebraucht:
+            return not (gebraucht - ew)
+        weg = alt & vw
+        return bool(weg) and not neu and not (weg & ew)
+
+    def _offene_woerter(self, aend_liste: list) -> Counter:
+        erlaubt: Counter = Counter()
+        for ae in aend_liste:
+            neu, alt = self.ae_woerter[ae.id]
+            erlaubt.update(neu)
+            erlaubt.update(alt)
+        return erlaubt
+
+    def lese_luecke_fehlend(self) -> Counter:
+        """Woerter, die laut Soll im PDF stehen muessten (nur Haupt-Zellen, keine Formeln), aber nicht erkannt wurden."""
+        fehlend: Counter = Counter()
+        for e in self.einheiten:
+            if e["klasse"] != "haupt":
+                continue
+            entf, dazu = self.soll_woerter[e["key"]]
+            fehlend.update((Counter(dazu) - self.pdf_neu) + (Counter(entf) - self.pdf_alt))
+        return fehlend
 
     def _layout_abweichung(self, bi: int, spalte: int) -> bool:
         """Erkannte Inhaltsspalte weicht von der Soll-Inhaltsspalte ab, und die Zelle liegt in der Soll-Inhaltsspalte."""
@@ -579,10 +803,32 @@ class _Auswertung:
         return "plan_falsch"
 
     # ------------------------------------------------------------------ Hauptauswertung
+    def _schuldige(self, ids: list[str], unerklaert: Counter) -> list[str]:
+        """Welche der angewendeten Aenderungen einer Zelle haengen an den unerklaerten Woertern? (Je Aenderung bewerten.)
+        Findet sich keine, bleiben alle verdaechtig."""
+        treffer = [i for i in ids if any(w in unerklaert for w in (*self.ae_woerter[i][0], *self.ae_woerter[i][1]))]
+        return treffer or list(ids)
+
     def auswerten(self) -> dict[str, Any]:
+        nach_id = {a.id: a for a in self.aend}
+        # --- offene Aenderungen (pruefen / nicht uebernommen) je Ziel-Zelle bzw. Zeile ----------------
+        offen_ziel: dict[tuple[int, int, int], list] = {}
+        offen_zeile: dict[tuple[int, int], list] = {}
+        for ae in self.aend:
+            if ae.status == UEBERNOMMEN:
+                continue
+            for z in self.ziele_von[ae.id]:
+                if z.zeile is None:
+                    continue
+                if z.spalte is not None:
+                    offen_ziel.setdefault((z.bi, z.zeile, z.spalte), []).append(ae)
+                else:
+                    offen_zeile.setdefault((z.bi, z.zeile), []).append(ae)
+
         # --- Ziele der "uebernommen"-Aenderungen (nach dem Anwenden) -------------------------------
         ziel_zellen: dict[tuple[int, int, int], list[str]] = {}
         neu_ops: list[tuple[str, int, dict[int, str], str]] = []     # (Aenderung, bi, Zellen, nachkontrolle)
+        zeilen_ziel_u: set[tuple[int, int]] = set()                  # Zeilen, auf die eine uebernommene Aenderung zielt
         uebernommen = [a for a in self.aend if a.status == UEBERNOMMEN]
         for ae in uebernommen:
             for op in ae.ops:
@@ -591,8 +837,11 @@ class _Auswertung:
                     continue
                 if op.art in ("ersetzen", "einfuegen", "zelle_leeren"):
                     ziel_zellen.setdefault((bi, op.zeile, op.spalte), []).append(ae.id)
+                    zeilen_ziel_u.add((bi, op.zeile))
                 elif op.art == "zeile_einfuegen":
                     neu_ops.append((ae.id, bi, dict(op.zellen), ae.nachkontrolle))
+                else:
+                    zeilen_ziel_u.add((bi, op.zeile))
 
         def stumm(key, bi, zeile, spalte, art, ids):
             f = self._fehler(key, bi, zeile, spalte, "auto")
@@ -602,22 +851,42 @@ class _Auswertung:
                 if i not in f.aenderungen:
                     f.aenderungen.append(i)
 
-        # (1)(4)(5) je Ziel-Zelle der Aenderungen
+        # Regel 27 (1): Der Plan hatte die Aenderung auf "pruefen"/"nicht uebernommen", ohne Freigabe steht sie danach auf "uebernommen"
+        r27: dict[str, tuple[int, int, int]] = {}
+        for ae in self.aend:
+            if self.vor_status.get(ae.id) in (PRUEFEN, NICHT) and ae.status == UEBERNOMMEN:
+                ort = next(((z.bi, z.zeile or 0, z.spalte or 0) for z in self.ziele_von[ae.id] if z.zeile is not None), (0, 0, 0))
+                r27[ae.id] = ort
+
+        # (1)(4)(5) je Ziel-Zelle der Aenderungen. Bewertet wird je AENDERUNG: weicht die Zelle vom Soll nur um die Woerter
+        # einer offenen ("pruefen") Aenderung ab, wartet sie auf die Freigabe und ist kein Fehler (MA-1).
+        wartet: set[Any] = set()
+        r27_wirkung: dict[str, tuple[int, int, int]] = {}
         for (bi, z, c), ids in sorted(ziel_zellen.items()):
             erw, tat = self._erwartet(bi, z, c), self._tatsaechlich(bi, z, c)
             key = ("z", bi, z, c)
-            if _k(tat) != _k(erw):
-                stumm(key, bi, z, c, "uebernommen_aber_falsch", ids)
-                if any(next(a for a in uebernommen if a.id == i).nachkontrolle == "ok" for i in ids):
-                    stumm(key, bi, z, c, "nachkontrolle_ok_aber_falsch", ids)
-            if _k(tat) == _k(self._vorher(bi, z, c)):
+            for ae in offen_ziel.get((bi, z, c), []):          # Regel 27 an der Wirkung: die offene Aenderung steht schon im Text
+                if ae.id not in r27 and self._wirkung_vorhanden(ae, self._vorher(bi, z, c), tat):
+                    r27_wirkung.setdefault(ae.id, (bi, z, c))
+            if _s(tat) != _s(erw):
+                offene = offen_ziel.get((bi, z, c), [])
+                unerkl = self._unerklaert(tat, erw, self._offene_woerter(offene))
+                if offene and not unerkl:
+                    wartet.add(key)
+                else:
+                    schuld = self._schuldige(ids, unerkl)
+                    stumm(key, bi, z, c, "uebernommen_aber_falsch", schuld)
+                    if any(nach_id[i].nachkontrolle == "ok" for i in schuld):
+                        stumm(key, bi, z, c, "nachkontrolle_ok_aber_falsch", schuld)
+            if _s(tat) == _s(self._vorher(bi, z, c)):
                 stumm(key, bi, z, c, "keine_wirkung", ids)
 
         # neue Zeilen: gibt es im Ergebnis eine Zeile mit dem Inhalt der Operation, und ist sie laut Soll richtig?
         ist_neu_zellen = [it for it in self.ist if it["art"] == "neu"]
         erklaert_neu: set[Any] = set()
+        r27_neu: set[tuple[int, int]] = set()                          # (Blatt, Index der neuen Zeile im Ergebnis)
         for aid, bi, zellen, nk in neu_ops:
-            gesucht = {c: _k(t) for c, t in zellen.items() if _k(t)}
+            gesucht = {c: _s(t) for c, t in zellen.items() if _s(t)}
             treffer = [it for it in ist_neu_zellen if it["bi"] == bi and it["key"][3] and
                        all(c - 1 < len(it["key"][3]) and it["key"][3][c - 1] == t for c, t in gesucht.items())]
             ref = (bi, min(zellen) if zellen else 0)
@@ -631,19 +900,48 @@ class _Auswertung:
                 continue
             for it in treffer:
                 erklaert_neu.add(it["key"])
+                if aid in r27:
+                    r27_neu.add((bi, it["ist_index"]))
                 if not it["richtig"]:
                     stumm(it["key"], bi, it["zeile"], it["spalte"], "uebernommen_aber_falsch", [aid])
                     if nk == "ok":
                         stumm(it["key"], bi, it["zeile"], it["spalte"], "nachkontrolle_ok_aber_falsch", [aid])
+
+        # Regel 27 (2), an der WIRKUNG erkannt: eine richtige Aenderung steht im Ergebnis, obwohl keine uebernommene Aenderung
+        # darauf zielt, wohl aber eine offene -- auch wenn der Status das nicht verraet.
+        for ae in self.aend:
+            if ae.status == UEBERNOMMEN or ae.id in r27 or ae.id in r27_wirkung:
+                continue
+            for op in ae.ops:
+                bi = self.bi_von_name.get(op.blatt)
+                if bi is None or op.art != "zeile_einfuegen":
+                    continue
+                gesucht = {c: _s(t) for c, t in op.zellen.items() if _s(t)}
+                if not gesucht:
+                    continue
+                for it in ist_neu_zellen:
+                    if it["bi"] == bi and it["key"] not in erklaert_neu and it["key"][3] and \
+                            all(c - 1 < len(it["key"][3]) and it["key"][3][c - 1] == t for c, t in gesucht.items()):
+                        r27_wirkung[ae.id] = (bi, it["zeile"], it["spalte"])
+                        r27_neu.add((bi, it["ist_index"]))
+                        erklaert_neu.add(it["key"])
 
         # (2) Kollateral: veraenderte Zelle, laut Soll falsch, und keine Aenderung zielt darauf
         zeilen_mit_ziel = {(bi, z) for (bi, z, _c) in ziel_zellen}
         kollateral = 0
         kollateral_keys: set[Any] = set()
         for it in self.ist:
-            if it["richtig"]:
-                continue
             key = it["key"]
+            if it["richtig"]:
+                if it["art"] != "neu":
+                    pos = (it["bi"], it["zeile"], it["spalte"])
+                    if pos not in ziel_zellen and (it["bi"], it["zeile"]) not in zeilen_ziel_u:
+                        for ae in offen_ziel.get(pos, []) + offen_zeile.get((it["bi"], it["zeile"]), []):
+                            if ae.id not in r27:
+                                r27_wirkung.setdefault(ae.id, pos)
+                continue
+            if key in wartet:
+                continue
             ids = ziel_zellen.get((it["bi"], it["zeile"], it["spalte"]), []) if it["art"] != "neu" else []
             if it["art"] == "neu":
                 if key in erklaert_neu:
@@ -657,14 +955,40 @@ class _Auswertung:
             kollateral += 1
             kollateral_keys.add(key)
 
-        # --- Soll-Zellen: erreicht / Grund ----------------------------------------------------
-        zaehl = [e for e in self.einheiten if e["verwaltet"]]
-        unverwaltet_n = len(self.einheiten) - len(zaehl)
-        soll_n = len(zaehl)
-        erreicht = sum(1 for e in zaehl if e["erreicht"])
+        # Regel-27-Verstoesse eintragen (zaehlen als stille Fehler, nie als Treffer)
+        r27_alle = {**r27_wirkung, **r27}
+        for aid, (bi, z, c) in r27_alle.items():
+            stumm(("r27", aid), bi, z, c, "regel27_verstoss", [aid])
+            self.fehler[("r27", aid)].art = "plan_falsch"
+        r27_zellen: set[tuple[int, int, int]] = set()
+        r27_zeilen: set[tuple[int, int]] = set()
+        for aid in r27_alle:
+            for zl in self.ziele_von[aid]:
+                if zl.zeile is None:
+                    continue
+                (r27_zellen.add((zl.bi, zl.zeile, zl.spalte)) if zl.spalte is not None else r27_zeilen.add((zl.bi, zl.zeile)))
+        for aid, pos in r27_wirkung.items():
+            r27_zellen.add(pos)
+
+        def ist_r27(bi: int, zeile: int, spalte: int) -> bool:
+            return (bi, zeile, spalte) in r27_zellen or (bi, zeile) in r27_zeilen
+
+        def einheit_r27(e: dict[str, Any]) -> bool:
+            if e["art"] == "neu":
+                ii = self.neu_abgleich[e["bi"]][0].get(e["si"])
+                return ii is not None and (e["bi"], ii) in r27_neu
+            return ist_r27(e["bi"], e["zeile"], e["spalte"])
+
+        # --- Soll-Zellen: erreicht / Grund (nur Haupt-Zellen) ----------------------------------------
+        haupt = [e for e in self.einheiten if e["klasse"] == "haupt"]
+        soll_n = len(haupt)
+        erreicht = 0
         pruefen_n = nicht_n = ohne_n = 0
-        for e in zaehl:
+        for e in haupt:
+            if einheit_r27(e):
+                continue                       # steht schon als Regel-27-Verstoss im Bericht; zaehlt nicht als "ohne Nachfrage erreicht"
             if e["erreicht"]:
+                erreicht += 1
                 continue
             entf, dazu = self.soll_woerter[e["key"]]
             W, R = Counter(dazu), Counter(entf)
@@ -680,6 +1004,20 @@ class _Auswertung:
             if UEBERNOMMEN not in stati and NICHT in stati:
                 nicht_n += 1
                 continue
+            if UEBERNOMMEN in stati:
+                # Neben einer angewendeten Aenderung steht eine offene in der Zelle: weicht die Zelle nur um deren Woerter ab,
+                # wartet sie auf die Freigabe (MA-1) und ist weder Fehler noch "erreicht".
+                offene = [a for a in verwandt.values() if a.status != UEBERNOMMEN]
+                if e["art"] != "neu":
+                    offene += [a for a in offen_ziel.get((e["bi"], e["zeile"], e["spalte"]), []) if a.id not in verwandt]
+                if offene:
+                    ist_text = e["ist"] if (e["ist_da"] and e["ist"] is not None) else e["vorher"]
+                    if not self._unerklaert(ist_text, e["soll"], self._offene_woerter(offene)):
+                        if any(a.status == PRUEFEN for a in offene):
+                            pruefen_n += 1
+                        else:
+                            nicht_n += 1
+                        continue
             if not verwandt:
                 ohne_n += 1
             f = self._fehler(key, e["bi"], e["zeile"], e["spalte"], "soll")
@@ -693,6 +1031,13 @@ class _Auswertung:
                 et = self._tatsaechlich(e["bi"], e["zeile"], e["spalte"])
                 art = self._art(e["bi"], e["zeile"], e["spalte"], W, R, et, en, e["ist_da"], key)
             f.art = f.art or art
+
+        # --- nicht verwaltete Soll-Zellen (RT-142): Formeln und Sonstiges mit eigener Fehlerzaehlung -----------------
+        formeln = [e for e in self.einheiten if e["klasse"] == "formel"]
+        sonstige = [e for e in self.einheiten if e["klasse"] == "sonstige"]
+        harmlose = [e for e in self.einheiten if e["klasse"] == "harmlos"]
+        verfehlt_orte = [{"blatt": e["bi"] + 1, "zeile": e["zeile"], "spalte": e["spalte"], "klasse": e["klasse"]}
+                         for e in formeln + sonstige if not e["erreicht"]][:200]
 
         # Fehlerart der Eintraege, die nur als "Ergebnis falsch" entstanden sind
         for key, f in self.fehler.items():
@@ -737,21 +1082,23 @@ class _Auswertung:
 
         # --- Treffergenauigkeit ---------------------------------------------------------------
         auto_gesamt = len(self.ist)
-        auto_richtig = sum(1 for i in self.ist if i["richtig"])
+
+        def item_r27(i: dict[str, Any]) -> bool:
+            if i["art"] == "neu":
+                return (i["bi"], i["ist_index"]) in r27_neu
+            return ist_r27(i["bi"], i["zeile"], i["spalte"])
+
+        auto_richtig = sum(1 for i in self.ist if i["richtig"] and not item_r27(i))
         v_gesamt = v_richtig = None
         if self.e_alle is not None:
-            vorhanden = {(i["key"], _k(i["inhalt"])) for i in self.ist}
-            neu = [i for i in self.e_alle if (i["key"], _k(i["inhalt"])) not in vorhanden]
+            vorhanden = {(i["key"], _s(i["inhalt"])) for i in self.ist}
+            neu = [i for i in self.e_alle if (i["key"], _s(i["inhalt"])) not in vorhanden]
             v_gesamt = len(neu)
             v_richtig = sum(1 for i in neu if i["richtig"])
 
         # --- Lese-Luecke (Woerter, die laut Soll im PDF stehen muessten, aber nicht erkannt wurden) ----
-        soll_woerter_n = sum(len(self.soll_woerter[e["key"]][0]) + len(self.soll_woerter[e["key"]][1]) for e in zaehl)
-        fehlend = Counter()
-        for e in zaehl:
-            entf, dazu = self.soll_woerter[e["key"]]
-            fehlend.update((Counter(dazu) - self.pdf_neu) + (Counter(entf) - self.pdf_alt))
-        lese_luecke = sum(fehlend.values())
+        soll_woerter_n = sum(len(self.soll_woerter[e["key"]][0]) + len(self.soll_woerter[e["key"]][1]) for e in haupt)
+        lese_luecke = sum(self.lese_luecke_fehlend().values())
         zaehlung = max(0, soll_woerter_n - self.bil_plan["woerter_im_pdf"])
 
         # --- Zusammenfassen -------------------------------------------------------------------
@@ -761,17 +1108,46 @@ class _Auswertung:
             for a in f.stille_arten:
                 art_zaehler[a] += 1
         nicht_ohne_grund = sum(1 for a in self.aend if a.status == NICHT and not a.grund)
+
+        # --- Kennzahlen je AENDERUNG (nicht je Zelle) ---------------------------------------------------
+        # "falsch" = die Aenderung steht an einem stillen Fehler (Tool sagt "uebernommen", Ergebnis stimmt nicht) oder verstiess gegen
+        # Regel 27. Eine Soll-Zelle, die nur nicht erreicht wurde (z. B. weil der Leser Woerter verpasste), macht eine angewendete
+        # Aenderung nicht falsch.
+        falsch_ids: set[str] = set(r27_alle)
+        for f in stille:
+            if f.quelle != "paar":
+                falsch_ids.update(i for i in f.aenderungen if nach_id.get(i) is not None and nach_id[i].status == UEBERNOMMEN)
+        uebernommen_ids = {a.id for a in uebernommen}
+        stille_ids = {i for f in stille for i in f.aenderungen if nach_id.get(i) is not None and nach_id[i].status == UEBERNOMMEN}
         return {
             "bilanz_stimmt": bilanz_ok,
             "vollstaendig": bool(self.bil_auto.get("vollstaendig")),
             "stille_fehler": len(stille),
+            "stille_fehler_zellen": sum(1 for f in stille if f.quelle != "paar"),
+            "stille_fehler_paar_befunde": sum(1 for f in stille if f.quelle == "paar"),
+            "stille_fehler_aenderungen": len(stille_ids),
             "stille_fehler_nach_art": dict(art_zaehler),
+            "regel27_verstoesse": len(r27_alle),
             "soll_zellen": soll_n,
             "erreicht_auto": erreicht,
             "pruefen_zellen": pruefen_n,
             "nicht_uebernommen_zellen": nicht_n,
             "ohne_aenderung_zellen": ohne_n,
-            "soll_zellen_unverwaltet": unverwaltet_n,
+            "zellen_warten_auf_freigabe": len(wartet),
+            "soll_zellen_pdf_blind": sum(1 for e in haupt if e["blind"]),
+            "soll_zellen_pdf_blind_erreicht": sum(1 for e in haupt if e["blind"] and e["erreicht"]),
+            "stille_fehler_nur_textform": sum(1 for key, f in self.fehler.items()
+                                              if f.stumm and "uebernommen_aber_falsch" in f.stille_arten
+                                              and self._nur_textform_key(key)),
+            "soll_zellen_unverwaltet": len(harmlose),
+            "soll_zellen_unverwaltet_aufschluesselung": {
+                "neue_zeile": sum(1 for e in harmlose if e["art"] == "neu"),
+                "entfernte_zeile": sum(1 for e in harmlose if e["art"] == "weg")},
+            "soll_zellen_formel": len(formeln),
+            "soll_zellen_formel_verfehlt": sum(1 for e in formeln if not e["erreicht"]),
+            "soll_zellen_unverwaltet_sonstige": len(sonstige),
+            "soll_zellen_unverwaltet_sonstige_verfehlt": sum(1 for e in sonstige if not e["erreicht"]),
+            "nicht_verwaltet_verfehlt_orte": verfehlt_orte,
             "auto_richtig": auto_richtig,
             "auto_gesamt": auto_gesamt,
             "vorschlaege_richtig": v_richtig,
@@ -785,6 +1161,10 @@ class _Auswertung:
             "luecken_nicht_gemeldet": luecke_fehlt,
             "luecken_gemeldet": len(self.plan.luecken),
             "aenderungen": len(self.aend),
+            "aenderungen_uebernommen_korrekt": len(uebernommen_ids - falsch_ids),
+            "aenderungen_uebernommen_falsch": len(uebernommen_ids & falsch_ids),
+            "aenderungen_zu_pruefen": sum(1 for a in self.aend if a.status == PRUEFEN),
+            "aenderungen_nicht_uebernommen": sum(1 for a in self.aend if a.status == NICHT),
             "bilanz": {k: v for k, v in self.bil_auto.items() if isinstance(v, (int, bool))},
             "aenderungen_nach_status": {s: sum(1 for a in self.aend if a.status == s) for s in (UEBERNOMMEN, PRUEFEN, NICHT)},
             "hinweise": self.hinweise,
@@ -814,8 +1194,164 @@ def _lade_erwartet(ordner: Path) -> dict[str, Any] | None:
         return None
 
 
+def _pdf_pruefung(pdf: Path) -> tuple[list[dict[str, Any]] | None, set[str] | None]:
+    """Unabhaengige Plausibilitaet (RT-141), direkt mit pdfplumber und NICHT mit dem Code des Tools: Seiten ohne Textzeichen
+    (Scan) und Seiten mit einem grossen eingebetteten Bild. Nur ein Hinweis, nie ein Fehler. Liefert ausserdem die Menge aller
+    Zeichen des PDF (fuer `_Auswertung._blind`). None = konnte nicht geprueft werden."""
+    try:
+        import pdfplumber
+        out: list[dict[str, Any]] = []
+        zeichen: set[str] = set()
+        with pdfplumber.open(str(pdf)) as doc:
+            for nr, seite in enumerate(doc.pages, 1):
+                if not seite.chars:
+                    out.append({"seite": nr, "art": "keine_textzeichen"})
+                for c in seite.chars:
+                    zeichen.update(c["text"])
+                flaeche = float(seite.width * seite.height) or 1.0
+                if any(abs((im["x1"] - im["x0"]) * (im["bottom"] - im["top"])) / flaeche >= PLAUSI_BILD_ANTEIL
+                       for im in seite.images):
+                    out.append({"seite": nr, "art": "bild"})
+        return out, zeichen
+    except Exception:
+        return None, None
+
+
+# ---- Struktur (RT-136): alles, was keine Zelle mit Text ist -----------------------------------------------------------
+def _zeilenabbildung(d: Diff, max_zeile: int) -> dict[int, int | None]:
+    """vorher-Zeile -> Zeile im Ergebnis (None = entfernt oder nicht eindeutig). Zeilen mit Inhalt kommen aus der Ausrichtung,
+    leere Zeilen dazwischen nur, wenn die Zeile davor und die Zeile danach dieselbe Verschiebung ergeben."""
+    abb: dict[int, int | None] = {}
+    gepaart = sorted(d.zuordnung)
+    for r in range(1, max_zeile + 1):
+        if r in d.zuordnung:
+            abb[r] = d.zuordnung[r]
+        elif r in d.weg:
+            abb[r] = None
+        else:
+            k = bisect.bisect_left(gepaart, r)                  # gepaart[k-1] < r < gepaart[k] (r selbst ist nicht gepaart)
+            a = d.zuordnung[gepaart[k - 1]] + (r - gepaart[k - 1]) if k > 0 else None
+            b = d.zuordnung[gepaart[k]] - (gepaart[k] - r) if k < len(gepaart) else None
+            if a is None and b is None:
+                abb[r] = r
+            elif a is not None and b is not None:
+                abb[r] = a if a == b else None
+            else:
+                abb[r] = a if a is not None else b
+    return abb
+
+
+def _farbe(c: Any) -> Any:
+    return None if c is None else (c.type, c.value)
+
+
+def _schrift(z: Any, nur_form: bool) -> tuple:
+    f = z.font
+    form = (bool(f.b), bool(f.i), f.sz, f.name)
+    return form if nur_form else form + (f.u, _farbe(f.color), z.fill.patternType, _farbe(z.fill.fgColor))
+
+
+def _spalten_versteckt(ws: Any, grenze: int) -> set[int]:
+    out: set[int] = set()
+    for buchstabe, dim in ws.column_dimensions.items():
+        if dim.hidden:
+            lo = dim.min or column_index_from_string(buchstabe)
+            out.update(range(lo, min(dim.max or lo, max(grenze, lo)) + 1))
+    return out
+
+
+def _validierungen(ws: Any, abb: dict[int, int | None] | None) -> tuple[set, int]:
+    """Datenvalidierungen als Menge; mit `abb` werden die Zeilen auf das Ergebnis abgebildet. -> (Menge, nicht abbildbare)"""
+    from openpyxl.worksheet.cell_range import CellRange
+    out: set = set()
+    offen = 0
+    for dv in ws.data_validations.dataValidation:
+        bereiche = []
+        ok = True
+        for rng in str(dv.sqref).split():
+            cr = CellRange(rng)
+            lo, hi = (cr.min_row, cr.max_row) if abb is None else (abb.get(cr.min_row), abb.get(cr.max_row))
+            if lo is None or hi is None:
+                ok = False
+                break
+            bereiche.append((cr.min_col, lo, cr.max_col, hi))
+        if not ok:
+            offen += 1
+            continue
+        out.add((dv.type, dv.operator, dv.formula1, dv.formula2, bool(dv.allow_blank), tuple(sorted(bereiche))))
+    return out, offen
+
+
+def _struktur_befund(vorher: Path, ergebnis: Path, diffs: list[Diff]) -> dict[str, Any]:
+    """Vergleicht Nicht-Zell-Eigenschaften vorher <-> Ergebnis: Blaetter (Name, Reihenfolge, Sichtbarkeit), ausgeblendete Zeilen
+    und Spalten, verbundene Zellen, Datenvalidierung, Zahlenformat und Schrift/Fuellung. Zeilen werden ueber die Ausrichtung
+    abgebildet (Einfuegen/Loeschen verschiebt legitim); nur UNERWARTETE Abweichungen zaehlen. Nie Text, nur Zaehler."""
+    n = Counter()
+    wv = load_workbook(str(vorher))
+    we = load_workbook(str(ergebnis))
+    try:
+        sv, se = wv.worksheets, we.worksheets
+        for i in range(max(len(sv), len(se))):
+            if i >= len(sv) or i >= len(se) or sv[i].title != se[i].title:
+                n["blatt"] += 1
+            elif sv[i].sheet_state != se[i].sheet_state:
+                n["sichtbarkeit"] += 1
+        for i in range(min(len(sv), len(se))):
+            v, e = sv[i], se[i]
+            d = diffs[i] if i < len(diffs) else Diff()
+            abb = _zeilenabbildung(d, max(v.max_row, 1))
+            geaendert = set(d.zellen)
+            bilder_e = {nr for nr in d.neue_nr}
+            # ausgeblendete Zeilen: gleiche Zeile -> gleicher Zustand; neue Zeilen nie ausgeblendet
+            for r, x in abb.items():
+                if x is None:
+                    continue
+                hv = bool(v.row_dimensions[r].hidden) if r in v.row_dimensions else False
+                he = bool(e.row_dimensions[x].hidden) if x in e.row_dimensions else False
+                n["zeile_versteckt"] += hv != he
+            for r in bilder_e:
+                n["zeile_versteckt"] += bool(e.row_dimensions[r].hidden) if r in e.row_dimensions else False
+            grenze = max(v.max_column, e.max_column)
+            n["spalte_versteckt"] += len(_spalten_versteckt(v, grenze) ^ _spalten_versteckt(e, grenze))
+            # verbundene Zellen
+            erwartet, offen_m = set(), 0
+            for rng in v.merged_cells.ranges:
+                lo, hi = abb.get(rng.min_row), abb.get(rng.max_row)
+                if lo is None or hi is None:
+                    offen_m += 1
+                else:
+                    erwartet.add((rng.min_col, lo, rng.max_col, hi))
+            da = {(rng.min_col, rng.min_row, rng.max_col, rng.max_row) for rng in e.merged_cells.ranges}
+            n["verbunden"] += max(len(erwartet - da), 0 if offen_m else len(da - erwartet))
+            # Datenvalidierung
+            dv_erw, dv_offen = _validierungen(v, abb)
+            dv_da, _ = _validierungen(e, None)
+            n["validierung"] += max(len(dv_erw - dv_da), 0 if dv_offen else len(dv_da - dv_erw))
+            # Zahlenformat und Schrift der Zellen
+            e_zellen = e._cells
+            for (r, c), zv in list(v._cells.items()):
+                x = abb.get(r)
+                if x is None:
+                    continue
+                ze = e_zellen.get((x, c))
+                if not zv.has_style and (ze is None or not ze.has_style):
+                    continue                                        # beide ohne eigenes Format: nichts zu vergleichen
+                if ze is None:
+                    ze = e.cell(x, c)
+                if zv.number_format != ze.number_format:
+                    n["zahlenformat"] += 1
+                if _schrift(zv, (r, c) in geaendert) != _schrift(ze, (r, c) in geaendert):
+                    n["schrift"] += 1
+    finally:
+        wv.close()
+        we.close()
+    return {"struktur_geaendert": sum(n.values()), "struktur_nach_art": {a: n.get(a, 0) for a in STRUKTUR_ARTEN}}
+
+
 def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Path | None = None) -> dict[str, Any]:
     """Misst ein Paar. Gibt die Kennzahlen (ohne Dokumentinhalt) zurueck; wirft bei kaputter Eingabe.
+    Faellt nur ein Teil der Messung aus (Wiederholungslauf, Vorschlaege, Struktur), bleiben die Funde des ersten Laufs erhalten:
+    das Paar gilt dann als "abgestuerzt" (teilweise gemessen), die Funde zaehlen weiter.
     ergebnis_kopie: nur fuer Tests -- kopiert die Ergebnis-Excel (nur Automatik) dorthin."""
     pdf, vorher, nachher = (ordner / n for n in DATEIEN)
     for p in (pdf, vorher, nachher):
@@ -823,6 +1359,7 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
             raise FileNotFoundError(p.name)
     erwartet = _lade_erwartet(ordner)
     hashes_vorher = {p.name: _sha(p) for p in (pdf, vorher, nachher)}
+    ausfaelle: list[tuple[str, str]] = []              # (Messteil, Name der Ausnahme-Klasse)
     t0 = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="cde_messen_") as tmp_name:
         tmp = Path(tmp_name)
@@ -831,6 +1368,7 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
         xl = ExcelModell(vorher)
         plan = plane(pa, xl)
         bil_plan = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
+        vor_status = {a.id: a.status for a in plan.aenderungen}
         aend_auto = copy.deepcopy(plan.aenderungen)
         e_auto = tmp / "ergebnis_auto.xlsx"
         uebernehmen(aend_auto, vorher, e_auto, None)
@@ -838,22 +1376,47 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
         # B: alle "pruefen" freigegeben (Qualitaet der Vorschlaege)
         e_alle = None
         if mit_vorschlaegen:
-            aend_alle = copy.deepcopy(plan.aenderungen)
-            e_alle = tmp / "ergebnis_alle.xlsx"
-            uebernehmen(aend_alle, vorher, e_alle, {a.id for a in aend_alle if a.status == PRUEFEN})
-        # Idempotenz: Ergebnis nochmals als "vorher" mit demselben PDF
-        e_auto2 = tmp / "ergebnis_auto2.xlsx"
-        plan2 = plane(analysiere_pdf(pdf), ExcelModell(e_auto))
-        uebernehmen(plan2.aenderungen, e_auto, e_auto2, None)
-        idempotent = _lese_excel(e_auto2) == _lese_excel(e_auto)
+            try:
+                aend_alle = copy.deepcopy(plan.aenderungen)
+                e_alle = tmp / "ergebnis_alle.xlsx"
+                uebernehmen(aend_alle, vorher, e_alle, {a.id for a in aend_alle if a.status == PRUEFEN})
+            except Exception as exc:
+                e_alle = None
+                ausfaelle.append(("vorschlaege", type(exc).__name__))
+        # Idempotenz: Ergebnis nochmals als "vorher" mit demselben PDF. Ein Absturz hier darf die Funde des ersten Laufs nicht loeschen.
+        idempotent: bool | None
+        try:
+            e_auto2 = tmp / "ergebnis_auto2.xlsx"
+            plan2 = plane(analysiere_pdf(pdf), ExcelModell(e_auto))
+            uebernehmen(plan2.aenderungen, e_auto, e_auto2, None)
+            idempotent = _lese_excel(e_auto2) == _lese_excel(e_auto)
+        except Exception as exc:
+            idempotent = None
+            ausfaelle.append(("idempotenz", type(exc).__name__))
 
         if ergebnis_kopie is not None:
             shutil.copy2(e_auto, ergebnis_kopie)
         v_bl, n_bl, e_bl = _lese_excel(vorher), _lese_excel(nachher), _lese_excel(e_auto)
         e_alle_bl = _lese_excel(e_alle) if e_alle else None
+        plausi, pdf_zeichen = _pdf_pruefung(pdf)
         auswertung = _Auswertung(v_bl, n_bl, e_bl, e_alle_bl, _blattnamen(vorher), aend_auto, plan, pa, bil_auto,
-                                 bil_plan, idempotent, (erwartet or {}).get("luecken"))
+                                 bil_plan, idempotent, (erwartet or {}).get("luecken"), vor_status, pdf_zeichen)
         res = auswertung.auswerten()
+        try:
+            res.update(_struktur_befund(vorher, e_auto, auswertung.I))
+        except Exception as exc:
+            res.update({"struktur_geaendert": None, "struktur_nach_art": {a: 0 for a in STRUKTUR_ARTEN}})
+            ausfaelle.append(("struktur", type(exc).__name__))
+
+    # Plausibilitaet direkt aus dem PDF (unabhaengig vom Tool); nur ein Hinweis
+    seiten_mit_luecke = {l.get("seite") for l in plan.luecken}
+    if plausi is None:
+        res["plausibilitaet_hinweise"] = None
+        res["plausibilitaet_ungemeldet"] = None
+    else:
+        res["plausibilitaet_hinweise"] = [dict(h, gemeldet=h["seite"] in seiten_mit_luecke) for h in plausi]
+        res["plausibilitaet_ungemeldet"] = sum(1 for h in plausi if h["seite"] not in seiten_mit_luecke)
+    res["luecken_pruefbar"] = bool(erwartet) and isinstance(erwartet.get("luecken"), list)
 
     res["original_unveraendert"] = all(_sha(p) == hashes_vorher[p.name] for p in (pdf, vorher, nachher))
     res["dauer_sekunden"] = round(time.monotonic() - t0, 2)
@@ -863,21 +1426,35 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
         wm = erwartet.get("woerter_markiert")
         if isinstance(wm, int):
             res["lese_luecke_erwartet"] = max(0, wm - bil_plan["woerter_im_pdf"])
+    if ausfaelle:                                       # teilweise gemessen: Funde bleiben, aber das Paar ist nicht vollstaendig gemessen
+        res["abgestuerzt"] = ausfaelle[0][1]
+        res["teilweise_gemessen"] = True
+        res["ausgefallene_messteile"] = [{"teil": t, "grund": g} for t, g in ausfaelle]
+        res["fehler"] = list(res["fehler"]) + [
+            {"blatt": 0, "zeile": 0, "spalte": 0, "aenderung": "", "art": "unklar", "stumm": False, "grund": g}
+            for _t, g in ausfaelle]
     return res
 
 
 def _fehlgeschlagen(name: str, exc: BaseException) -> dict[str, Any]:
     """Paar konnte nicht gemessen werden: Fehlerart "unklar", Grund nur als Name der Ausnahme-Klasse."""
     return {"name": name, "abgestuerzt": type(exc).__name__, "bilanz_stimmt": None, "vollstaendig": None,
-            "stille_fehler": 0, "stille_fehler_nach_art": {}, "soll_zellen": 0, "erreicht_auto": 0, "pruefen_zellen": 0,
-            "nicht_uebernommen_zellen": 0, "ohne_aenderung_zellen": 0, "soll_zellen_unverwaltet": 0, "auto_richtig": 0,
+            "stille_fehler": 0, "stille_fehler_zellen": 0, "stille_fehler_paar_befunde": 0, "stille_fehler_aenderungen": 0,
+            "stille_fehler_nach_art": {}, "regel27_verstoesse": 0, "soll_zellen": 0, "erreicht_auto": 0, "pruefen_zellen": 0,
+            "nicht_uebernommen_zellen": 0, "ohne_aenderung_zellen": 0, "zellen_warten_auf_freigabe": 0,
+            "soll_zellen_unverwaltet": 0, "soll_zellen_unverwaltet_aufschluesselung": {"neue_zeile": 0, "entfernte_zeile": 0},
+            "soll_zellen_formel": 0, "soll_zellen_formel_verfehlt": 0, "soll_zellen_unverwaltet_sonstige": 0,
+            "soll_zellen_unverwaltet_sonstige_verfehlt": 0, "nicht_verwaltet_verfehlt_orte": [], "auto_richtig": 0,
             "auto_gesamt": 0, "vorschlaege_richtig": None, "vorschlaege_gesamt": None, "kollateral": 0,
             "idempotent": None, "nicht_uebernommen_ohne_grund": 0, "soll_woerter": 0, "lese_luecke_woerter": 0,
             "lese_luecke_zaehlung": 0, "luecken_nicht_gemeldet": 0, "luecken_gemeldet": 0, "aenderungen": 0,
+            "aenderungen_uebernommen_korrekt": 0, "aenderungen_uebernommen_falsch": 0, "aenderungen_zu_pruefen": 0,
+            "aenderungen_nicht_uebernommen": 0, "struktur_geaendert": None,
+            "struktur_nach_art": {a: 0 for a in STRUKTUR_ARTEN}, "plausibilitaet_hinweise": None,
+            "plausibilitaet_ungemeldet": None, "luecken_pruefbar": False,
             "aenderungen_nach_status": {}, "hinweise": [], "original_unveraendert": None,
             "fehler": [{"blatt": 0, "zeile": 0, "spalte": 0, "aenderung": "", "art": "unklar", "stumm": False,
                         "grund": type(exc).__name__}]}
-
 
 # ======================================================================================
 # 5. Bericht
@@ -886,15 +1463,46 @@ def _anteil(zaehler: float, nenner: float) -> float | None:
     return round(zaehler / nenner, 4) if nenner else None
 
 
-def _ampel(ok: bool | None, leer: str = "nicht gemessen") -> str:
-    return leer if ok is None else ("ok" if ok else "NICHT ok")
+def _ampel(ok: bool | None, leer: str = "nicht gemessen", luecke: bool = False) -> str:
+    """ok=None: nicht messbar; ok=False: Fehler (zaehlt immer); ok=True: nur dann "ok", wenn alle Paare gemessen wurden
+    (`luecke` = es gab abgestuerzte Paare)."""
+    if ok is None:
+        return leer
+    if not ok:
+        return "NICHT ok"
+    return "nicht vollständig gemessen" if luecke else "ok"
+
+
+# Zaehleinheit je Kennzahl (damit "97 % Zellen" nicht groesser wirkt als es ist)
+ZAEHLEINHEITEN = {
+    "stille_fehler": "Zellen und Befunde (Zellen + Paar-Befunde + Regel-27-Verstöße)",
+    "stille_fehler_aenderungen": "Änderungen",
+    "regel27_verstoesse": "Änderungen",
+    "treffergenauigkeit_auto": "Zellen",
+    "vorschlags_genauigkeit": "Zellen",
+    "abdeckung_ohne_nachfrage": "Zellen",
+    "aenderungen_uebernommen_korrekt": "Änderungen",
+    "lese_luecke_anteil": "Wörter",
+    "kollateral": "Zellen",
+    "idempotent": "Paare",
+    "original_unveraendert": "Paare",
+    "bilanz_stimmig": "Paare",
+    "luecken_nicht_gemeldet": "Lücken (Paar-Befunde)",
+    "struktur_geaendert": "Befunde (Blätter, Zeilen, Spalten, Bereiche, Zellen)",
+    "plausibilitaet_ungemeldet": "Seiten",
+    "soll_zellen_formel": "Zellen",
+}
 
 
 def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: str, vorschlaege: bool) -> dict[str, Any]:
     gemessen = [p for p in paare if "abgestuerzt" not in p]
+    teilweise = [p for p in paare if p.get("teilweise_gemessen")]
 
     def s(k: str) -> int:
         return sum(p.get(k) or 0 for p in paare)
+
+    def s_dict(k: str, schluessel: tuple[str, ...]) -> dict[str, int]:
+        return {a: sum((p.get(k) or {}).get(a, 0) for p in paare) for a in schluessel}
 
     fehlerarten = {a: 0 for a in FEHLERARTEN}
     for p in paare:
@@ -904,13 +1512,24 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
     for p in paare:
         stille_art.update(p.get("stille_fehler_nach_art", {}))
     soll = s("soll_zellen")
+    pruefbar = sum(1 for p in paare if p.get("luecken_pruefbar"))
+    struktur_paare = [p for p in paare if p.get("struktur_geaendert") is not None]
+    plausi_paare = [p for p in paare if p.get("plausibilitaet_hinweise") is not None]
+    ae_korrekt, ae_falsch = s("aenderungen_uebernommen_korrekt"), s("aenderungen_uebernommen_falsch")
+    unverw = s("soll_zellen_unverwaltet")
     gesamt = {
         "paare": len(paare), "paare_gemessen": len(gemessen), "paare_abgestuerzt": len(paare) - len(gemessen),
+        "paare_teilweise_gemessen": len(teilweise),
         "soll_zellen": soll,
-        "bilanz_stimmig": sum(1 for p in gemessen if p["bilanz_stimmt"]),
+        "bilanz_stimmig": sum(1 for p in paare if p.get("bilanz_stimmt")),
         "vollstaendig": sum(1 for p in gemessen if p["vollstaendig"]),
         "stille_fehler": s("stille_fehler"),
+        "stille_fehler_zellen": s("stille_fehler_zellen"),
+        "stille_fehler_paar_befunde": s("stille_fehler_paar_befunde"),
+        "stille_fehler_aenderungen": s("stille_fehler_aenderungen"),
+        "stille_fehler_nur_textform": s("stille_fehler_nur_textform"),
         "stille_fehler_nach_art": {a: stille_art.get(a, 0) for a in STILLE_ARTEN},
+        "regel27_verstoesse": s("regel27_verstoesse"),
         "auto_richtig": s("auto_richtig"), "auto_gesamt": s("auto_gesamt"),
         "vorschlaege_gemessen": vorschlaege,
         "vorschlaege_richtig": s("vorschlaege_richtig") if vorschlaege else None,
@@ -921,7 +1540,25 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
         "anteil_pruefen": _anteil(s("pruefen_zellen"), soll),
         "anteil_nicht_uebernommen": _anteil(s("nicht_uebernommen_zellen"), soll),
         "ohne_aenderung_zellen": s("ohne_aenderung_zellen"),
-        "soll_zellen_unverwaltet": s("soll_zellen_unverwaltet"),
+        "zellen_warten_auf_freigabe": s("zellen_warten_auf_freigabe"),
+        # je Aenderung (statt je Zelle)
+        "aenderungen": s("aenderungen"),
+        "aenderungen_uebernommen_korrekt": ae_korrekt,
+        "aenderungen_uebernommen_falsch": ae_falsch,
+        "aenderungen_zu_pruefen": s("aenderungen_zu_pruefen"),
+        "aenderungen_nicht_uebernommen": s("aenderungen_nicht_uebernommen"),
+        "treffergenauigkeit_aenderungen": _anteil(ae_korrekt, ae_korrekt + ae_falsch),
+        # Soll-Zellen ausserhalb der Haupt-Spalten (RT-142)
+        "soll_zellen_unverwaltet": unverw,
+        "soll_zellen_unverwaltet_aufschluesselung": s_dict("soll_zellen_unverwaltet_aufschluesselung",
+                                                          ("neue_zeile", "entfernte_zeile")),
+        "soll_zellen_formel": s("soll_zellen_formel"),
+        "soll_zellen_formel_verfehlt": s("soll_zellen_formel_verfehlt"),
+        "soll_zellen_unverwaltet_sonstige": s("soll_zellen_unverwaltet_sonstige"),
+        "soll_zellen_unverwaltet_sonstige_verfehlt": s("soll_zellen_unverwaltet_sonstige_verfehlt"),
+        "soll_zellen_alle": soll + unverw + s("soll_zellen_formel") + s("soll_zellen_unverwaltet_sonstige"),
+        "soll_zellen_pdf_blind": s("soll_zellen_pdf_blind"),
+        "soll_zellen_pdf_blind_erreicht": s("soll_zellen_pdf_blind_erreicht"),
         "nicht_uebernommen_ohne_grund": s("nicht_uebernommen_ohne_grund"),
         "soll_woerter": s("soll_woerter"),
         "lese_luecke_woerter": s("lese_luecke_woerter"),
@@ -930,6 +1567,17 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
         "kollateral": s("kollateral"),
         "original_unveraendert": sum(1 for p in gemessen if p["original_unveraendert"]),
         "luecken_nicht_gemeldet": s("luecken_nicht_gemeldet"),
+        "luecken_pruefbar_paare": pruefbar,
+        "luecken_nicht_pruefbar_paare": len(paare) - pruefbar,
+        # Struktur (RT-136)
+        "struktur_geaendert": sum(p["struktur_geaendert"] for p in struktur_paare),
+        "struktur_nach_art": s_dict("struktur_nach_art", STRUKTUR_ARTEN),
+        "struktur_paare_geprueft": len(struktur_paare),
+        # Plausibilitaet direkt aus dem PDF (RT-141), nur Hinweis
+        "plausibilitaet_seiten": sum(len(p["plausibilitaet_hinweise"]) for p in plausi_paare),
+        "plausibilitaet_ungemeldet": sum(p["plausibilitaet_ungemeldet"] or 0 for p in plausi_paare),
+        "plausibilitaet_paare_geprueft": len(plausi_paare),
+        "zaehleinheiten": ZAEHLEINHEITEN,
     }
     je_stoerer: dict[str, dict[str, Any]] = {}
     for p in paare:
@@ -942,37 +1590,77 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
     for e in je_stoerer.values():
         e["abdeckung_ohne_nachfrage"] = _anteil(e.pop("erreicht_auto"), e.pop("soll_zellen"))
     n = len(paare)                       # alle Paare
-    m = len(gemessen)                    # davon messbar
+    m = len(gemessen)                    # davon voll messbar
     voll = n > 0 and not gesamt["paare_abgestuerzt"]
+    lue = not voll                       # es gab Paare, die nicht (vollstaendig) gemessen werden konnten
     standard = [p for p in gemessen if p.get("profil") == "standard"]
     standard_abdeckung = _anteil(sum(p["erreicht_auto"] for p in standard), sum(p["soll_zellen"] for p in standard))
+    nicht_verfehlt = gesamt["soll_zellen_formel_verfehlt"] + gesamt["soll_zellen_unverwaltet_sonstige_verfehlt"]
+
+    bilanz_fehl = any(p.get("bilanz_stimmt") is False for p in paare) or gesamt["luecken_nicht_gemeldet"] > 0
+    k1 = _ampel(None if not n else not bilanz_fehl, luecke=lue)
+    k1_wert = f"{gesamt['bilanz_stimmig']} von {n} Paaren"
+    if k1 == "ok" and gesamt["luecken_nicht_pruefbar_paare"]:
+        k1 = "nicht gemessen"            # RT-141: ohne erwartet.json kann "Luecke nicht gemeldet" nie auffallen
+    if gesamt["luecken_nicht_pruefbar_paare"]:
+        k1_wert += f"; Lücken: nur {pruefbar} von {n} prüfbar (erwartet.json)"
+    k_plausi_ampel = ("nicht gemessen" if not plausi_paare else
+                      ("ok" if not gesamt["plausibilitaet_ungemeldet"] else "Hinweis"))
     kriterien = [
-        {"nr": 1, "name": "Bilanz stimmig", "wert": f"{gesamt['bilanz_stimmig']} von {n} Paaren", "ziel": "alle Paare",
-         "ampel": _ampel(voll and gesamt["bilanz_stimmig"] == n and not gesamt["luecken_nicht_gemeldet"])},
-        {"nr": 2, "name": "Stille Fehler", "wert": str(gesamt["stille_fehler"]), "ziel": "0",
-         "ampel": _ampel(gesamt["stille_fehler"] == 0)},
+        {"nr": 1, "name": "Bilanz stimmig", "wert": k1_wert, "ziel": "alle Paare", "einheit": "Paare", "ampel": k1,
+         "detail": "Die Lückenprüfung (Scan, Zwei-Spalten, Tabelle, Bild nicht gemeldet) braucht erwartet.json"},
+        {"nr": 1, "name": "Plausibilität direkt aus dem PDF (nur Hinweis)",
+         "wert": f"{gesamt['plausibilitaet_ungemeldet']} von {gesamt['plausibilitaet_seiten']}",
+         "ziel": "0 ungemeldet", "einheit": "Seiten", "ampel": k_plausi_ampel,
+         "detail": "Seiten ohne Textzeichen oder mit großem Bild, zu denen das Tool keine Lücke meldet (Hinweis, kein Fehler)"},
+        {"nr": 2, "name": "Stille Fehler", "wert": str(gesamt["stille_fehler"]), "ziel": "0", "einheit": "Zellen und Befunde",
+         "detail": f"{gesamt['stille_fehler_zellen']} Zellen, {gesamt['stille_fehler_paar_befunde']} Paar-Befunde, "
+                   f"{gesamt['regel27_verstoesse']} Regel-27-Verstöße; {gesamt['stille_fehler_aenderungen']} Änderungen betroffen; "
+                   f"davon nur Leerraum/Zeichenform: {gesamt['stille_fehler_nur_textform']}",
+         "ampel": _ampel(gesamt["stille_fehler"] == 0, luecke=lue)},
+        {"nr": 2, "name": "Regel 27: Vorschlag ohne Freigabe angewendet", "wert": str(gesamt["regel27_verstoesse"]), "ziel": "0",
+         "einheit": "Änderungen", "ampel": _ampel(gesamt["regel27_verstoesse"] == 0, luecke=lue),
+         "detail": "Eine Änderung stand im Plan auf „prüfen“ und wurde ohne Freigabe angewendet"},
         {"nr": 3, "name": "Treffergenauigkeit automatisch",
-         "wert": _prozent(gesamt["treffergenauigkeit_auto"]), "ziel": "100 %",
-         "ampel": _ampel(None if not gesamt["auto_gesamt"] else gesamt["auto_richtig"] == gesamt["auto_gesamt"])},
+         "wert": _prozent(gesamt["treffergenauigkeit_auto"]), "ziel": "100 %", "einheit": "Zellen",
+         "ampel": _ampel(None if not gesamt["auto_gesamt"] else gesamt["auto_richtig"] == gesamt["auto_gesamt"], luecke=lue)},
+        {"nr": 3, "name": "Treffergenauigkeit je Änderung (automatisch übernommen)",
+         "wert": f"{_prozent(gesamt['treffergenauigkeit_aenderungen'])} ({ae_korrekt} von {ae_korrekt + ae_falsch})",
+         "ziel": "100 %", "einheit": "Änderungen",
+         "ampel": _ampel(None if not (ae_korrekt + ae_falsch) else ae_falsch == 0, luecke=lue)},
         {"nr": 3, "name": "Genauigkeit der Vorschläge (nach Freigabe)", "wert": _prozent(gesamt["vorschlags_genauigkeit"]),
-         "ziel": "mindestens 95 %",
+         "ziel": "mindestens 95 %", "einheit": "Zellen",
          "ampel": _ampel(None if gesamt["vorschlags_genauigkeit"] is None else gesamt["vorschlags_genauigkeit"] >= 0.95,
-                         "keine Vorschläge" if vorschlaege else "nicht gemessen")},
+                         "keine Vorschläge" if vorschlaege else "nicht gemessen", luecke=lue)},
         {"nr": 4, "name": "Abdeckung ohne Nachfrage", "wert": _prozent(gesamt["abdeckung_ohne_nachfrage"]),
-         "ziel": "mindestens 70 % (Standard-Aufbauten 90 %)",
+         "ziel": "mindestens 70 % (Standard-Aufbauten 90 %)", "einheit": "Zellen",
          "ampel": _ampel(None if gesamt["abdeckung_ohne_nachfrage"] is None else
-                         gesamt["abdeckung_ohne_nachfrage"] >= 0.7 and (standard_abdeckung is None or standard_abdeckung >= 0.9))},
+                         gesamt["abdeckung_ohne_nachfrage"] >= 0.7 and (standard_abdeckung is None or standard_abdeckung >= 0.9),
+                         luecke=lue)},
         {"nr": 4, "name": "Nicht-Übernahmen mit Grund", "wert": f"{gesamt['nicht_uebernommen_ohne_grund']} ohne Grund",
-         "ziel": "0 ohne Grund", "ampel": _ampel(gesamt["nicht_uebernommen_ohne_grund"] == 0)},
-        {"nr": 5, "name": "Lese-Lücke", "wert": _prozent(gesamt["lese_luecke_anteil"]), "ziel": "höchstens 2 %",
-         "ampel": _ampel(None if gesamt["lese_luecke_anteil"] is None else gesamt["lese_luecke_anteil"] <= 0.02)},
+         "ziel": "0 ohne Grund", "einheit": "Änderungen",
+         "ampel": _ampel(gesamt["nicht_uebernommen_ohne_grund"] == 0, luecke=lue)},
+        {"nr": 4, "name": "Nicht verwaltete Spalten: Formeln und Sonstiges",
+         "wert": f"{nicht_verfehlt} von {gesamt['soll_zellen_formel'] + gesamt['soll_zellen_unverwaltet_sonstige']} verfehlt",
+         "ziel": "0 verfehlt", "einheit": "Zellen", "ampel": _ampel(nicht_verfehlt == 0, luecke=lue),
+         "detail": f"Formeln {gesamt['soll_zellen_formel_verfehlt']} von {gesamt['soll_zellen_formel']}, "
+                   f"sonstige {gesamt['soll_zellen_unverwaltet_sonstige_verfehlt']} von {gesamt['soll_zellen_unverwaltet_sonstige']}; "
+                   f"harmlose Füllung nicht gezählt: {unverw}. v1 passt Formeln und nicht verwaltete Spalten bewusst nicht an; "
+                   f"jede Abweichung zum Soll ist eine offene Aufgabe"},
+        {"nr": 5, "name": "Lese-Lücke", "wert": _prozent(gesamt["lese_luecke_anteil"]), "ziel": "höchstens 2 %", "einheit": "Wörter",
+         "ampel": _ampel(None if gesamt["lese_luecke_anteil"] is None else gesamt["lese_luecke_anteil"] <= 0.02, luecke=lue)},
         {"nr": 6, "name": "Zweiter Lauf ändert nichts (Idempotenz)", "wert": f"{gesamt['idempotent']} von {m}",
-         "ziel": "alle Paare", "ampel": _ampel(None if not m else gesamt["idempotent"] == m)},
-        {"nr": 6, "name": "Kollateralschaden", "wert": str(gesamt["kollateral"]), "ziel": "0",
-         "ampel": _ampel(gesamt["kollateral"] == 0)},
+         "ziel": "alle Paare", "einheit": "Paare",
+         "ampel": _ampel(None if not m else gesamt["idempotent"] == m, luecke=lue)},
+        {"nr": 6, "name": "Kollateralschaden", "wert": str(gesamt["kollateral"]), "ziel": "0", "einheit": "Zellen",
+         "ampel": _ampel(gesamt["kollateral"] == 0, luecke=lue)},
+        {"nr": 6, "name": "Struktur unverändert", "wert": str(gesamt["struktur_geaendert"]), "ziel": "0", "einheit": "Befunde",
+         "ampel": _ampel(None if not struktur_paare else gesamt["struktur_geaendert"] == 0, luecke=lue),
+         "detail": "Blätter, versteckte Zeilen/Spalten, verbundene Zellen, Datenvalidierung, Zahlenformat, Schrift unveränderter Zellen"},
         {"nr": 6, "name": "Originale unverändert", "wert": f"{gesamt['original_unveraendert']} von {m}", "ziel": "alle Paare",
-         "ampel": _ampel(None if not m else gesamt["original_unveraendert"] == m)},
+         "einheit": "Paare", "ampel": _ampel(None if not m else gesamt["original_unveraendert"] == m, luecke=lue)},
     ]
+
     return {"format": BERICHT_FORMAT, "korpus": korpus, "generator_version": generator_version,
             "schema_version": SCHEMA_VERSION, "gesamt": gesamt, "fehlerarten": fehlerarten, "je_stoerer": je_stoerer,
             "kriterien": kriterien, "paare": paare}
@@ -985,33 +1673,65 @@ def _prozent(x: float | None) -> str:
 def _md(b: dict[str, Any]) -> str:
     g = b["gesamt"]
     z = [f"# Messbericht {b['korpus']}", "",
-         f"Paare: {g['paare']} (davon nicht messbar: {g['paare_abgestuerzt']}) · Soll-Zellen: {g['soll_zellen']} · "
-         f"Schema {b['schema_version']} · Generator-Version: {b['generator_version'] or 'unbekannt'}", "",
+         f"Paare: {g['paare']} (davon nicht oder nicht vollständig messbar: {g['paare_abgestuerzt']}) · Soll-Zellen (Haupt-Spalten): "
+         f"{g['soll_zellen']} · Schema {b['schema_version']} · Generator-Version: {b['generator_version'] or 'unbekannt'}", "",
          "Dieser Bericht enthält keine Texte aus Dokumenten, nur Zahlen, Positionen und Fehlerarten.", "",
-         "## Kriterien (docs/ziel_v1.md)", "", "| Nr | Kriterium | Wert | Ziel | Ergebnis |", "|---|---|---|---|---|"]
+         "## Kriterien (docs/ziel_v1.md)", "",
+         "Die Spalte „Einheit“ sagt, WAS gezählt wird (Zellen, Änderungen, Paare, Wörter ...): Zahlen verschiedener Einheiten "
+         "sind nicht miteinander vergleichbar.", "",
+         "| Nr | Kriterium | Wert | Einheit | Ziel | Ergebnis |", "|---|---|---|---|---|---|"]
     for k in b["kriterien"]:
-        z.append(f"| {k['nr']} | {k['name']} | {k['wert']} | {k['ziel']} | {k['ampel']} |")
-    z += ["", "## Zahlen", "",
-          f"- Automatisch richtig: {g['auto_richtig']} von {g['auto_gesamt']}",
+        z.append(f"| {k['nr']} | {k['name']} | {k['wert']} | {k.get('einheit', '')} | {k['ziel']} | {k['ampel']} |")
+    z += ["", "Erläuterungen:", ""] + [f"- {k['name']}: {k['detail']}" for k in b["kriterien"] if k.get("detail")]
+    ae_ges = g["aenderungen_uebernommen_korrekt"] + g["aenderungen_uebernommen_falsch"]
+    z += ["", "## Zahlen (mit Zähleinheit)", "",
+          f"- Automatisch richtig: {g['auto_richtig']} von {g['auto_gesamt']} (Einheit: Zellen)",
+          f"- Änderungen: {g['aenderungen']} insgesamt (Einheit: Änderungen) · übernommen und korrekt: "
+          f"{g['aenderungen_uebernommen_korrekt']} · übernommen und falsch: {g['aenderungen_uebernommen_falsch']} · "
+          f"zu prüfen: {g['aenderungen_zu_pruefen']} · nicht übernommen: {g['aenderungen_nicht_uebernommen']} "
+          f"(von den übernommenen sind {_prozent(g['treffergenauigkeit_aenderungen'])} korrekt, {ae_ges} übernommene)",
           f"- Anteil „zu prüfen“: {_prozent(g['anteil_pruefen'])} · Anteil „nicht übernommen“: {_prozent(g['anteil_nicht_uebernommen'])}"
-          f" · Soll-Zellen ohne passende Änderung: {g['ohne_aenderung_zellen']}",
-          f"- Soll-Zellen in nicht verwalteten Spalten (nicht mitgezählt): {g['soll_zellen_unverwaltet']}",
-          f"- Bilanz „vollständig“: {g['vollstaendig']} von {g['paare']} Paaren",
-          f"- Soll-Wörter: {g['soll_woerter']} · nicht erkannt (Lese-Lücke): {g['lese_luecke_woerter']}",
-          "", "## Stille Fehler nach Art", ""]
+          f" · Soll-Zellen ohne passende Änderung: {g['ohne_aenderung_zellen']} (Einheit: Zellen)",
+          f"- Zellen, die nur auf die Freigabe einer offenen Änderung warten (kein Fehler): {g['zellen_warten_auf_freigabe']} (Einheit: Zellen)",
+          f"- Soll-Zellen außerhalb der Haupt-Spalten (Einheit: Zellen): Formeln {g['soll_zellen_formel']} "
+          f"(verfehlt {g['soll_zellen_formel_verfehlt']}) · sonstige nicht verwaltete {g['soll_zellen_unverwaltet_sonstige']} "
+          f"(verfehlt {g['soll_zellen_unverwaltet_sonstige_verfehlt']}) · harmlose Füllung {g['soll_zellen_unverwaltet']} "
+          f"(neue Zeilen {g['soll_zellen_unverwaltet_aufschluesselung']['neue_zeile']}, "
+          f"entfernte Zeilen {g['soll_zellen_unverwaltet_aufschluesselung']['entfernte_zeile']}) · alle Soll-Zellen zusammen: "
+          f"{g['soll_zellen_alle']}",
+          f"- Soll-Zellen mit Zeichen, die ein PDF nicht tragen kann (geschützte Leerzeichen u. ä.; nur so verglichen): "
+          f"{g['soll_zellen_pdf_blind']}, davon erreicht {g['soll_zellen_pdf_blind_erreicht']} (Einheit: Zellen)",
+          f"- Bilanz „vollständig“: {g['vollstaendig']} von {g['paare']} Paaren (Einheit: Paare)",
+          f"- Soll-Wörter: {g['soll_woerter']} · nicht erkannt (Lese-Lücke): {g['lese_luecke_woerter']} (Einheit: Wörter)",
+          f"- Lücken-Prüfung (erwartet.json): bei {g['luecken_pruefbar_paare']} von {g['paare']} Paaren möglich; "
+          f"ohne erwartet.json kann eine nicht gemeldete Lücke NICHT auffallen",
+          f"- Struktur ({g['struktur_paare_geprueft']} Paare geprüft, Einheit: Befunde): {g['struktur_geaendert']} unerwartet verändert "
+          + ", ".join(f"{a} {n}" for a, n in g["struktur_nach_art"].items() if n),
+          "", "## Stille Fehler nach Art", "",
+          f"Zusammensetzung: {g['stille_fehler_zellen']} Zellen · {g['stille_fehler_paar_befunde']} Paar-Befunde · "
+          f"{g['regel27_verstoesse']} Regel-27-Verstöße (alle zusammen {g['stille_fehler']}); betroffene Änderungen: "
+          f"{g['stille_fehler_aenderungen']}; davon Zellen, die sich nur in Leerraum/Zeichenform/Absatzgrenzen unterscheiden: "
+          f"{g['stille_fehler_nur_textform']}", ""]
     z += [f"- {a}: {n}" for a, n in g["stille_fehler_nach_art"].items()]
     z += ["", "## Fehlerarten", ""] + [f"- {a}: {n}" for a, n in b["fehlerarten"].items()]
     if b["je_stoerer"]:
         z += ["", "## Je Störer-Familie", "", "| Störer | Paare | Stille Fehler | Abdeckung |", "|---|---|---|---|"]
         for name, e in sorted(b["je_stoerer"].items()):
             z.append(f"| {name} | {e['paare']} | {e['stille_fehler']} | {_prozent(e['abdeckung_ohne_nachfrage'])} |")
-    z += ["", "## Paare", "", "| Paar | Soll-Zellen | Abdeckung | Stille Fehler | Bilanz | Fehler |", "|---|---|---|---|---|---|"]
+    z += ["", "## Paare", "", "| Paar | Soll-Zellen | Abdeckung | Stille Fehler | Regel 27 | Struktur | Plausibilität | Bilanz | Fehler |",
+          "|---|---|---|---|---|---|---|---|---|"]
     for p in b["paare"]:
         ab = _prozent(_anteil(p["erreicht_auto"], p["soll_zellen"]))
         bil = "nicht messbar" if p["bilanz_stimmt"] is None else ("stimmt" if p["bilanz_stimmt"] else "NICHT")
+        if p.get("teilweise_gemessen"):
+            bil += " (teilweise gemessen)"
         fe = "; ".join(" ".join(x for x in (f"Blatt {f['blatt']} Z{f['zeile']} S{f['spalte']}", f["aenderung"], f["art"],
                                             f"({f['grund']})" if f.get("grund") else "") if x) for f in p["fehler"])
-        z.append(f"| {p['name']} | {p['soll_zellen']} | {ab} | {p['stille_fehler']} | {bil} | {fe or '-'} |")
+        struktur = "-" if p.get("struktur_geaendert") is None else str(p["struktur_geaendert"])
+        plausi = p.get("plausibilitaet_hinweise")
+        plausi_t = "-" if plausi is None else (str(p.get("plausibilitaet_ungemeldet")) + " von " + str(len(plausi)) if plausi else "0")
+        z.append(f"| {p['name']} | {p['soll_zellen']} | {ab} | {p['stille_fehler']} | {p.get('regel27_verstoesse', 0)} | "
+                 f"{struktur} | {plausi_t} | {bil} | {fe or '-'} |")
     return "\n".join(z) + "\n"
 
 
@@ -1037,21 +1757,40 @@ def schreibe_bericht(bericht: dict[str, Any], korpus: str) -> Path:
 
 def _konsole(b: dict[str, Any], ziel: Path, vorschlaege: bool) -> None:
     g = b["gesamt"]
-    print(f"Messung {b['korpus']}: {g['paare']} Paare, {g['soll_zellen']} Soll-Zellen")
+    print(f"Messung {b['korpus']}: {g['paare']} Paare, {g['soll_zellen']} Soll-Zellen (Haupt-Spalten)")
     if g["paare_abgestuerzt"]:
-        print(f"Achtung: {g['paare_abgestuerzt']} Paar(e) konnten nicht gemessen werden (Fehlerart: unklar).")
+        print(f"Achtung: {g['paare_abgestuerzt']} Paar(e) konnten nicht (vollständig) gemessen werden "
+              f"({g['paare_teilweise_gemessen']} davon teilweise: ihre Funde zählen mit). Die Ampeln stehen dann nicht auf „ok“.")
     print("")
     breite = max(len(k["name"]) for k in b["kriterien"])
     for k in b["kriterien"]:
-        print(f"  [{k['nr']}] {k['name']:<{breite}}  {k['wert']:<16} Ziel: {k['ziel']:<40} {k['ampel']}")
+        print(f"  [{k['nr']}] {k['name']:<{breite}}  {k['wert']}  ({k.get('einheit', '')})  Ziel: {k['ziel']}  ->  {k['ampel']}")
     print("")
-    print(f"  Automatisch richtig: {g['auto_richtig']} von {g['auto_gesamt']}")
+    print(f"  Automatisch richtig: {g['auto_richtig']} von {g['auto_gesamt']} Zellen  |  Änderungen: "
+          f"{g['aenderungen_uebernommen_korrekt']} übernommen & korrekt, {g['aenderungen_uebernommen_falsch']} übernommen & falsch, "
+          f"{g['aenderungen_zu_pruefen']} zu prüfen, {g['aenderungen_nicht_uebernommen']} nicht übernommen")
     print(f"  Anteil zu prüfen: {_prozent(g['anteil_pruefen'])}  |  nicht übernommen: {_prozent(g['anteil_nicht_uebernommen'])}"
-          f"  |  ohne passende Änderung: {g['ohne_aenderung_zellen']}")
+          f"  |  ohne passende Änderung: {g['ohne_aenderung_zellen']}  |  warten nur auf Freigabe: {g['zellen_warten_auf_freigabe']}")
+    print(f"  Nicht verwaltet: Formeln {g['soll_zellen_formel']} (verfehlt {g['soll_zellen_formel_verfehlt']}), "
+          f"sonstige {g['soll_zellen_unverwaltet_sonstige']} (verfehlt {g['soll_zellen_unverwaltet_sonstige_verfehlt']}), "
+          f"harmlose Füllung {g['soll_zellen_unverwaltet']}")
     print("  Fehlerarten: " + ", ".join(f"{a} {n}" for a, n in b["fehlerarten"].items()))
+    if g["luecken_nicht_pruefbar_paare"]:
+        print("")
+        print(f"HINWEIS Kriterium 1: Bei {g['luecken_nicht_pruefbar_paare']} von {g['paare']} Paaren fehlt erwartet.json. "
+              "Ohne sie kann eine nicht gemeldete Lücke (Scan, Zwei-Spalten, Tabelle, Bild) NICHT auffallen: "
+              "Kriterium 1 ist dort nicht prüfbar (Ampel „nicht gemessen“).")
+    if g["plausibilitaet_ungemeldet"]:
+        print(f"HINWEIS Plausibilität (direkt aus dem PDF, nur Hinweis): {g['plausibilitaet_ungemeldet']} auffällige Seite(n) "
+              f"(ohne Textzeichen oder mit großem Bild) ohne gemeldete Lücke. Bitte von Hand ansehen.")
+    if g["struktur_geaendert"]:
+        print(f"ACHTUNG Struktur: {g['struktur_geaendert']} unerwartet veränderte Eigenschaft(en) "
+              + ", ".join(f"{a} {n}" for a, n in g["struktur_nach_art"].items() if n))
     if g["stille_fehler"]:
         print("")
-        print(f"ACHTUNG: {g['stille_fehler']} stille(r) Fehler. Das Tool hat etwas als erledigt gemeldet, das nicht stimmt.")
+        print(f"ACHTUNG: {g['stille_fehler']} stille(r) Fehler ({g['stille_fehler_zellen']} Zellen, "
+              f"{g['stille_fehler_paar_befunde']} Paar-Befunde, {g['regel27_verstoesse']} Regel-27-Verstöße). "
+              "Das Tool hat etwas als erledigt gemeldet, das nicht stimmt.")
         print("  Einzelheiten stehen im Bericht (Paar-Name, Blatt, Zeile, Spalte, Änderungs-ID).")
     if not vorschlaege:
         print("")
@@ -1060,7 +1799,6 @@ def _konsole(b: dict[str, Any], ziel: Path, vorschlaege: bool) -> None:
         print("Hinweis (Regel 11): Den Test-Korpus nie zum Einstellen des Tools benutzen.")
     print("")
     print(f"Bericht: {ziel / 'bericht.md'}")
-
 
 # ======================================================================================
 # 6. Einstieg
@@ -1104,7 +1842,8 @@ def main(argv: list[str] | None = None) -> int:
             p = _fehlgeschlagen(d.name, exc)
         p["name"] = d.name
         paare.append(p)
-        print(f"  Paar {d.name}: {'nicht messbar' if 'abgestuerzt' in p else 'gemessen'}", flush=True)
+        stand = ("teilweise gemessen" if p.get("teilweise_gemessen") else "nicht messbar") if "abgestuerzt" in p else "gemessen"
+        print(f"  Paar {d.name}: {stand}", flush=True)
     bericht = fasse_zusammen(paare, a.korpus, _lade_korpus_info(eltern), a.mit_vorschlaegen)
     ziel = schreibe_bericht(bericht, a.korpus)
     _konsole(bericht, ziel, a.mit_vorschlaegen)

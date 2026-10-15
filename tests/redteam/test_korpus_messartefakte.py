@@ -37,10 +37,6 @@ _MA1 = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-125 MESSARTEFAKT: Zelle mit zwei Aenderungen, eine sicher (angewendet, richtig), eine offen "
-                          "('pruefen'): die Messung meldet die richtige, angewendete Aenderung als 'uebernommen, aber falsch' "
-                          "und 'Nachkontrolle ok aber falsch'; Besitzer Mess-Bauer (messen.py, Abschnitt 'je Ziel-Zelle')")
 def test_rt125_offene_aenderung_in_derselben_zelle_ist_kein_stiller_fehler(tmp_path):
     baue_pdf(tmp_path / "aenderungen.pdf", _MA1, "farbe")
     baue_excel(tmp_path / "vorher.xlsx", zustaende(_MA1, False), "L1", True)
@@ -69,16 +65,59 @@ def test_rt125_offene_aenderung_in_derselben_zelle_ist_kein_stiller_fehler(tmp_p
                   f"{res['auto_richtig']} von {res['auto_gesamt']})")
 
 
-# (Seed, Profil, Blatt 0-basiert, Zeile, Spalte)
-MA1_ZELLEN = [(11, "standard", 2, 3, 2), (22, "standard", 0, 2, 2), (22, "standard", 0, 4, 2), (37, "standard", 1, 7, 3),
-              (42, "schwer", 1, 16, 3), (49, "standard", 1, 8, 2), (57, "schwer", 1, 11, 3), (58, "standard", 2, 2, 2)]
+# --- RT-126: derselbe Fall mit anderen Arten der offenen Aenderung (synthetisch, unabhaengig vom Zustand des Korpus) ---------
+def _offene_variante(ende: str) -> list:
+    return [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."),
+            ("h", "2 Zwei"), ("p", "Die Reaktionszeit darf 150 ms nicht ueberschreiten."),
+            ("h", "3 Drei"), ("p", "Die Wartung erfolgt {-jaehrlich-} {+monatlich+} durch den Betreiber. " + ende),
+            ("h", "4 Vier"), ("p", "Alle Steckverbindungen sind eindeutig beschriftet.")]
+
+
+VARIANTEN_OFFEN = {
+    "ersetzt": "Es gilt {-der-} {+jeder+} Standort.",
+    "eingefuegt": "{+Die Pruefung findet jaehrlich statt.+}",
+    "geloescht": "{-Ersatzteile werden fuenf Jahre vorgehalten.-}",
+}
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-126 MESSARTEFAKT, Korpus: 8 Zellen (Seeds 11, 22 (2), 37, 42, 49, 57, 58) weichen vom Soll NUR um "
-                          "die Woerter einer offenen 'pruefen'-Aenderung ab und werden trotzdem als stille Fehler gezaehlt; "
-                          "Besitzer Mess-Bauer")
+@pytest.mark.parametrize("art", sorted(VARIANTEN_OFFEN))
+def test_rt126_synthetisch_offene_aenderung_in_derselben_zelle(tmp_path, art):
+    """Wie RT-125, mit der offenen Aenderung als Ersetzung, Einfuegung oder Streichung (je Aenderung bewerten)."""
+    elemente = _offene_variante(VARIANTEN_OFFEN[art])
+    baue_pdf(tmp_path / "aenderungen.pdf", elemente, "farbe")
+    baue_excel(tmp_path / "vorher.xlsx", zustaende(elemente, False), "L1", True)
+    baue_excel(tmp_path / "nachher.xlsx", zustaende(elemente, True), "L1", True)
+    sauber = messen.messe_paar(tmp_path, False)
+    aufbau(sauber["stille_fehler"] == 0 and sauber["auto_richtig"] == sauber["auto_gesamt"] == 1,
+           f"Ausgangslage nicht sauber: {sauber['stille_fehler']} stille Fehler, {sauber['auto_richtig']}/{sauber['auto_gesamt']}")
+    echt = messen.plane
+
+    def plane_mit_offener(pdf, xl, *a, **k):
+        p = echt(pdf, xl, *a, **k)
+        p.aenderungen[-1].status, p.aenderungen[-1].konfidenz = PRUEFEN, "mittel"
+        return p
+
+    with mock.patch.object(messen, "plane", plane_mit_offener):
+        res = messen.messe_paar(tmp_path, True)
+    aufbau(res["aenderungen_nach_status"].get(PRUEFEN, 0) == 1 and res["aenderungen_nach_status"].get(UEBERNOMMEN, 0) >= 1,
+           "Erwartet: mindestens eine uebernommene und genau eine offene Aenderung")
+    aufbau(res["vorschlaege_gesamt"] == 1 and res["vorschlaege_richtig"] == 1,
+           "Mit Freigabe der offenen Aenderung muss die Zelle dem Soll entsprechen")
+    if res["stille_fehler"] or res.get("aenderungen_uebernommen_falsch"):
+        scheitern(f"{res['stille_fehler']} stille Fehler {res['stille_fehler_nach_art']}, {res.get('aenderungen_uebernommen_falsch')} "
+                  f"Aenderung(en) 'falsch', obwohl die angewendete Aenderung richtig ist ({art}) und die offene sichtbar auf "
+                  f"'pruefen' steht")
+    aufbau(res.get("zellen_warten_auf_freigabe") == 1 and res["pruefen_zellen"] == 1,
+           "Die Zelle muss als 'wartet auf Freigabe' und 'zu pruefen' gezaehlt werden")
+
+
+# (Seed, Profil, Blatt 0-basiert, Zeile, Spalte). Die frueheren Faelle Seed 22 (2x), 37 und 42 treten im heutigen Korpus nicht
+# mehr so auf (PDF-Reparaturen bzw. zusaetzlicher Leerraum-Fehler, siehe README_korpus.md); dafuer gilt der synthetische Test oben.
+MA1_ZELLEN = [(11, "standard", 2, 3, 2), (49, "standard", 1, 8, 2), (57, "schwer", 1, 11, 3), (58, "standard", 2, 2, 2)]
+
+
+@pytest.mark.redteam
 @pytest.mark.parametrize("seed,profil,blatt,zeile,spalte", MA1_ZELLEN,
                          ids=[f"seed{s}_B{b + 1}Z{z}S{c}" for s, _, b, z, c in MA1_ZELLEN])
 def test_rt126_korpus_zelle_weicht_nur_um_offene_aenderung_ab(seed, profil, blatt, zeile, spalte):
@@ -94,17 +133,12 @@ def test_rt126_korpus_zelle_weicht_nur_um_offene_aenderung_ab(seed, profil, blat
         scheitern(f"Seed {seed}, Zelle B{blatt + 1}Z{zeile}S{spalte} zaehlt als stiller Fehler ({gezaehlt[0]['aenderung']}), "
                   f"obwohl nur {', '.join(a.id for a in offene)} ({'/'.join(sorted({a.status for a in offene}))}) fehlt")
 
-
 # ==================================================================================================
 # MA-2 (4 Eintraege, "Kollateral"): Eine Zeile wird nur TEILWEISE geleert (Nummer/Titel weg, ein Absatz bleibt). Die
 #      Zeilen-Ausrichtung der Messung (ZEILEN_AEHNLICH = 0,6) erkennt die Zeile nicht wieder und meldet eine "neue Zeile
 #      aus dem Nichts" = Kollateralschaden an Zellen, die gar nicht angefasst wurden.
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-127 MESSARTEFAKT: Zeile teilweise geleert (Nummer und Titel weg, ein Absatz bleibt, Bemerkung "
-                          "bleibt): die Zeilen-Ausrichtung findet die Zeile nicht wieder und meldet 2 Kollateralschaeden fuer "
-                          "eine 'neue Zeile', die nur der Rest der alten ist; Besitzer Mess-Bauer (messen.py, _aehnlich/_diff)")
 def test_rt127_teilweise_geleerte_zeile_ist_kein_kollateral(tmp_path):
     satz = "Satz eins ist hier. Satz zwei ist hier. Satz drei ist hier."
     vorher = [KOPF, ["1", "Eins", "Absatz A.", "Status offen"], ["2", "Zwei", satz + "\nAbsatz zwei ist hier.", "Status offen"],
@@ -114,33 +148,64 @@ def test_rt127_teilweise_geleerte_zeile_ist_kein_kollateral(tmp_path):
                 ["3", "Drei", "Absatz C.", "Status offen"]]
     res = messe_mit_fertigem_ergebnis(tmp_path, vorher, nachher, ergebnis)
     aufbau(res["aenderungen"] == 0, "Das Tool darf hier keine Aenderung erkennen (leeres PDF)")
-    # Die Zellen von Zeile 1 und 3 sind unberuehrt: wer sie als Kollateral zaehlt, zaehlt falsch.
-    if res["kollateral"]:
-        scheitern(f"{res['kollateral']} Kollateralschaeden an Zeilen, die das Ergebnis gar nicht neu angelegt hat "
-                  f"(Positionen: {[(f['blatt'], f['zeile'], f['spalte']) for f in res['fehler'] if f['stumm']]})")
+    # Die Zellen der Zeilen 2 und 4 (Absatz A / Absatz C) sind in Vorher, Soll und Ergebnis gleich: wer sie als Kollateral zaehlt
+    # (Phantom einer "neuen Zeile aus dem Nichts"), zaehlt falsch. Die teilweise geleerte Zeile 3 selbst hat dieses Ergebnis
+    # tatsaechlich ohne Aenderung verkuerzt (handgebaut) und darf als Kollateral gelten.
+    phantom = [(f["blatt"], f["zeile"], f["spalte"]) for f in res["fehler"] if f["stumm"] and f["zeile"] != 3]
+    if phantom:
+        scheitern(f"{len(phantom)} Phantom-Kollateralschaeden an unveraenderten Zellen (Positionen: {phantom})")
+    if res["kollateral"] > 1:
+        scheitern(f"{res['kollateral']} Kollateralschaeden, erlaubt ist hoechstens die verkuerzte Zelle der Zeile 3")
 
 
-MA2_ZELLEN = [(2, "standard", 1, 7, 3), (2, "standard", 1, 7, 4), (37, "standard", 1, 4, 3), (37, "standard", 1, 4, 4)]
+# --- RT-128: Phantom-Kollateral an UNVERAENDERTEN Zellen, synthetisch aus dem logischen Modell aufgebaut ---------------------
+# Die Situation wird nicht mehr vom Zustand des Korpus abhaengig gemacht: Das Tool arbeitet echt, nur der Status der
+# Absatz-Loeschungen wird (wie bei unsicheren Treffern) gesetzt. Eine Section wird geloescht (Nummer/Titel laufen automatisch),
+# ein Absatz ihres Inhalts bleibt offen ("pruefen"), die anderen werden gestrichen: zurueck bleibt eine TEILWEISE geleerte Zeile
+# (Nummer und Titel weg, ein Absatz und die Bemerkung bleiben). Das Soll hat die ganze Zeile entfernt. Die Faelle Seed 2 und 37
+# (je Zeile mit Zelle 3 und 4) waren die urspruenglichen Funde.
+def _elemente_geloeschte_section(absaetze: int) -> list:
+    inhalt = [("p", "{-%s-}" % t) for t in ("Die Reaktionszeit darf 150 ms nicht ueberschreiten.",
+                                           "Die Pruefung erfolgt einmal je Jahr durch den Betreiber.",
+                                           "Das Protokoll wird zehn Jahre aufbewahrt.")[:absaetze]]
+    return ([("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll der Abnahme."), ("h", "{-2 Zwei-}")] + inhalt +
+            [("h", "3 Drei"), ("p", "Alle Steckverbindungen sind eindeutig beschriftet."),
+             ("h", "4 Vier"), ("p", "Die Lieferung umfasst alles Zubehoer fuer die Montage.")])
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-128 MESSARTEFAKT, Korpus: 4 'Kollateral'-Eintraege (Seeds 2 und 37, je Zeile mit Zelle 3 und 4) "
-                          "liegen an Zellen, die im Ergebnis, im Soll und im Vorher GLEICH sind; Besitzer Mess-Bauer")
-@pytest.mark.parametrize("seed,profil,blatt,zeile,spalte", MA2_ZELLEN,
-                         ids=[f"seed{s}_B{b + 1}Z{z}S{c}" for s, _, b, z, c in MA2_ZELLEN])
-def test_rt128_korpus_phantom_kollateral_an_unveraenderter_zelle(seed, profil, blatt, zeile, spalte):
-    lf = auto_lauf(seed, profil)
-    vorher, soll, ist = zelle_vorher_soll_ist(lf.ordner, lf.ergebnis, blatt, zeile, spalte)
-    aufbau(vorher == soll == ist, "Die Zelle ist nicht in allen drei Staenden gleich")
-    rest = zeile_im_ergebnis(lf.ergebnis, blatt, zeile + 1)
-    aufbau(len(rest) >= 3 and rest[0] == "" and rest[1] == "" and rest[2] != "",
-           "Die Zeile unter dem Anker ist nicht die teilweise geleerte Zeile (Nummer/Titel leer, Inhalt da)")
-    gezaehlt = stumm_bei(messung(seed, profil), blatt + 1, zeile, spalte)
-    if gezaehlt:
-        scheitern(f"Seed {seed}: Zelle B{blatt + 1}Z{zeile}S{spalte} ist unveraendert und zaehlt trotzdem als "
-                  f"'{messung(seed, profil)['stille_fehler_nach_art']}'")
+@pytest.mark.parametrize("absaetze,offen", [(2, 1), (2, 0), (3, 1), (3, 2)],
+                         ids=["2_Absaetze_zweiter_offen", "2_Absaetze_erster_offen", "3_Absaetze_mittlerer_offen",
+                              "3_Absaetze_letzter_offen"])
+def test_rt128_synthetisch_phantom_kollateral_an_unveraenderter_zelle(tmp_path, absaetze, offen):
+    elemente = _elemente_geloeschte_section(absaetze)
+    baue_pdf(tmp_path / "aenderungen.pdf", elemente, "farbe")
+    baue_excel(tmp_path / "vorher.xlsx", zustaende(elemente, False), "L1", True)
+    baue_excel(tmp_path / "nachher.xlsx", zustaende(elemente, True), "L1", True)
+    echt = messen.plane
 
+    def plane_ein_absatz_offen(pdf, xl, *a, **k):
+        p = echt(pdf, xl, *a, **k)
+        absatz = [a_ for a_ in p.aenderungen if a_.typ == "absatz_geloescht"]
+        for a_ in p.aenderungen:
+            if a_.typ == "section_geloescht":
+                a_.status, a_.konfidenz = UEBERNOMMEN, "hoch"             # laeuft automatisch ...
+        for i, a_ in enumerate(absatz):                                   # ... genau ein Absatz bleibt offen
+            a_.status, a_.konfidenz = (PRUEFEN, "mittel") if i == offen else (UEBERNOMMEN, "hoch")
+        return p
+
+    with mock.patch.object(messen, "plane", plane_ein_absatz_offen):
+        res = messen.messe_paar(tmp_path, False, tmp_path / "ergebnis.xlsx")
+    ist = messen._lese_excel(tmp_path / "ergebnis.xlsx")[1]
+    # Aufbau: eine Zeile ist teilweise geleert (Nummer/Titel leer, Inhalt steht noch, Bemerkung steht noch)
+    rest = [z for z in ist if not (z[0] or z[1]) and z[2] and len(z) > 3 and z[3]]
+    aufbau(len(rest) == 1, f"Erwartet: genau eine teilweise geleerte Zeile, gefunden {len(rest)}")
+    aufbau(res["aenderungen_nach_status"].get(UEBERNOMMEN, 0) >= 2 and res["aenderungen_nach_status"].get(PRUEFEN, 0) == 1,
+           "Erwartet: uebernommene Aenderungen und genau eine offene")
+    if res["kollateral"] or res["stille_fehler"]:
+        scheitern(f"Phantom: {res['kollateral']} Kollateral / {res['stille_fehler']} stille Fehler "
+                  f"{res['stille_fehler_nach_art']} an Zellen, die in Vorher, Soll und Ergebnis gleich sind "
+                  f"(Positionen: {[(f['blatt'], f['zeile'], f['spalte']) for f in res['fehler'] if f['stumm']]})")
 
 # ==================================================================================================
 # MA-3 (4 Zellen, "uebernommen, aber falsch" an NEUEN Zeilen): Das Tool leert eine geloeschte Section (Nummer/Titel/Inhalt),
@@ -148,10 +213,6 @@ def test_rt128_korpus_phantom_kollateral_an_unveraenderter_zelle(seed, profil, b
 #      und die neue davor angesetzt. Inhalt und Reihenfolge sind gleich, aber der "Anker" ist ein anderer.
 # ==================================================================================================
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-129 MESSARTEFAKT: Alte Zeile wird geleert statt geloescht (Bemerkung bleibt), die neue Zeile steht "
-                          "direkt dahinter: gleiche Inhalte in gleicher Reihenfolge, aber der Anker der neuen Zeile weicht ab "
-                          "und die Messung meldet jede Zelle der neuen Zeile als falsch; Besitzer Mess-Bauer (messen.py, _neu_abgleich)")
 def test_rt129_geleerte_statt_geloeschte_zeile_verschiebt_den_anker(tmp_path):
     vorher = [KOPF, ["1", "Eins", "Absatz A.", "Status offen"], ["2", "Zwei", "Absatz B ist hier.", "Status offen"],
               ["3", "Drei", "Absatz C.", "Status offen"]]
@@ -171,10 +232,6 @@ MA3_ZELLEN = [(43, "standard", 2, 4, 3), (57, "schwer", 1, 9, 1), (57, "schwer",
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-130 MESSARTEFAKT, Korpus: 3 Zellen (Seed 43 Zeile 4, Seed 57 Zeile 9 Spalte 1 und 2) gelten als "
-                          "'uebernommen, aber falsch', weil die geleerte Zeile mit Bemerkung stehen bleibt; Inhalt und "
-                          "Reihenfolge sind richtig (Seed 43 hat 2 solche Eintraege in Zelle 4/3); Besitzer Mess-Bauer")
 @pytest.mark.parametrize("seed,profil,blatt,zeile,spalte", MA3_ZELLEN,
                          ids=[f"seed{s}_B{b + 1}Z{z}S{c}" for s, _, b, z, c in MA3_ZELLEN])
 def test_rt130_korpus_anker_nach_geleerter_zeile(seed, profil, blatt, zeile, spalte):
@@ -201,11 +258,6 @@ _EL_L3 = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokoll d
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-131 MESSARTEFAKT: Layout 'eine Zeile je Absatz': ein kurzer Absatz, an den ein langer Satz "
-                          "angehaengt wird, gilt als 'Zeile geloescht + neue Zeile' (Zellaehnlichkeit < 0,5); die unveraenderten "
-                          "Woerter der alten Zeile zaehlen dann als 'vom Leser nicht erkannt' (hier 8 Woerter, Leser fehlerfrei); "
-                          "Besitzer Mess-Bauer (messen.py, _aehnlich)")
 def test_rt131_kurzer_absatz_mit_langem_zusatz_ist_keine_lese_luecke(tmp_path):
     baue_basis_paar(tmp_path / "l3", "L3", _EL_L3)
     baue_basis_paar(tmp_path / "l1", "L1", _EL_L3)
@@ -221,16 +273,12 @@ def test_rt131_kurzer_absatz_mit_langem_zusatz_ist_keine_lese_luecke(tmp_path):
 
 
 def _fehlende_soll_woerter(ordner) -> Counter:
-    """Die Woerter, die die Messung als 'im PDF nicht erkannt' zaehlt (gleiche Rechnung wie messen.py, Abschnitt Lese-Luecke)."""
+    """Die Woerter, die die Messung als 'im PDF nicht erkannt' zaehlt (die Rechnung selbst: `_Auswertung.lese_luecke_fehlend`)."""
     gesammelt: dict[str, Counter] = {}
     original = messen._Auswertung.auswerten
 
     def haken(self):
-        fehlend: Counter = Counter()
-        for e in (x for x in self.einheiten if x["verwaltet"]):
-            entf, dazu = self.soll_woerter[e["key"]]
-            fehlend.update((Counter(dazu) - self.pdf_neu) + (Counter(entf) - self.pdf_alt))
-        gesammelt["f"] = fehlend
+        gesammelt["f"] = self.lese_luecke_fehlend()
         return original(self)
 
     with mock.patch.object(messen._Auswertung, "auswerten", haken):
@@ -239,10 +287,6 @@ def _fehlende_soll_woerter(ordner) -> Counter:
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-132 MESSARTEFAKT, Korpus Seed 60: Formel-Woerter ('=LEN(C5)' ...) zaehlen als Soll-Woerter, die "
-                          "der PDF-Leser nicht erkannt haben soll (29 von 57 fehlenden Woertern); Formelzellen stehen nie "
-                          "im PDF (bei unsicher erkanntem Layout zaehlen alle Spalten als verwaltet); Besitzer Mess-Bauer")
 def test_rt132_korpus_formelzellen_sind_keine_pdf_woerter_seed60():
     fehlend = _fehlende_soll_woerter(paar(60, "schwer"))
     formeln = {w: n for w, n in fehlend.items() if w.startswith("=")}
