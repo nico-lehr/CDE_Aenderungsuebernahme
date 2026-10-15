@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.cell.rich_text import CellRichText
 from openpyxl.comments import Comment
 from openpyxl.styles import PatternFill
@@ -85,6 +86,7 @@ def _setze_wert(zelle, text: str) -> None:
 
 def _kommentar(zelle, text: str, autor: str) -> None:
     """Kommentar anhaengen; ein vorhandener Kommentar wird nie ueberschrieben."""
+    text = ILLEGAL_CHARACTERS_RE.sub("\ufffd", text)          # Steuerzeichen aus dem PDF duerfen das Speichern nicht abbrechen
     alt = zelle.comment
     if alt is not None and (alt.text or "").strip():
         text = f"{alt.text}\n---\n{text}"
@@ -456,13 +458,15 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                 grund_abw[op.aenderung] = "Die neue Zeile in der gespeicherten Datei weicht vom Plan ab."
     # Folgeabsaetze einer neuen Section: Wirkung = die Section-Zeile stimmt UND ihr Absatz steht in der Zelle
     for kopf_id, folgen in gruppen.items():
+        kopf_op = next((o for o in nach_id[kopf_id].ops if o.art == "zeile_einfuegen" and not o.abgedeckt), None) \
+            if kopf_id in nach_id else None
         for f in folgen:
-            if f.id not in nach_id:
+            if f.id not in nach_id or kopf_op is None:
                 continue
-            marker = next((o for o in f.ops if o.art == "zeile_einfuegen" and o.abgedeckt), None)
-            if kopf_id in neue_zeilen and marker is not None and marker.spalte:
+            spalten = [c for c, t in kopf_op.zellen.items() if _ws(f.neu) in [_ws(x) for x in t.split("\n")]]
+            if kopf_id in neue_zeilen and spalten:
                 blatt, r = neue_zeilen[kopf_id]
-                zeilen = [_ws(x) for x in _text(kontrolle[blatt].cell(r, marker.spalte)).split("\n")]
+                zeilen = [_ws(x) for x in _text(kontrolle[blatt].cell(r, spalten[0])).split("\n")]
                 if _ws(f.neu) in zeilen:
                     ok[f.id] += 1
                 else:

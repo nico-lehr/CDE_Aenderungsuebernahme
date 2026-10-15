@@ -524,7 +524,7 @@ class _Planer:
                 for kb in koerper:
                     self.verbraucht.add(kb.idx)
                     self._nicht(self._basis(kb, "absatz_neu", kb.tokens, "", kb.neu_text),
-                                "Gehört zu einer neuen Section, die schon in der Excel steht.", schon.ziel)
+                                "Die zugehörige neue Section steht schon in der Excel.", schon.ziel)
                 return
             if len([w for w in b.neu_text.split() if norm(w)]) >= _planer_cfg(self.cfg).get("doppelt_min_woerter", 3):
                 self._nicht(ae, f"Der Absatz steht schon in der Excel ({schon.ziel}); die Änderung ist offenbar schon eingetragen.",
