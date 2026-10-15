@@ -175,15 +175,11 @@ def test_rt87_gruener_text(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-88 Reader repariert (Separation: Tint 1,0 = volle Farbe, geprueft in test_pdf_reader_unit.py), "
-                          "der TEST selbst ist fehlerhaft: zeile(...) setzt im Textobjekt '0 0 0 rg' und ueberschreibt die "
-                          "Sonderfarbe, der Text ist im PDF wirklich schwarz. Marker bleibt, bis der Test mit "
-                          "zeile(..., farbe='') gebaut wird; Besitzer K-PDF/R2")
 def test_rt88_spotfarbe_separation_tint_1(tmp_path):
     spot = ("/ColorSpace << /Cs1 [/Separation /FirmenBlau /DeviceCMYK "
             "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 0.8 0 0] /N 1 >>] >>")
-    inhalt = (zeile(56, 64, "Das ist ") + "/Cs1 cs 1 scn\n" + zeile(92, 64, "neuer Text hier") + "0 g\n"
+    # farbe="": zeile() setzt KEIN "0 0 0 rg", die Sonderfarbe (cs/scn) bleibt gueltig
+    inhalt = (zeile(56, 64, "Das ist ") + "/Cs1 cs 1 scn\n" + zeile(92, 64, "neuer Text hier", farbe="") + "0 g\n"
               + zeile(168, 64, " im Satz."))
     a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt, ressourcen=spot)]))
     _erkannt_oder_luecke(a, "Spotfarbe (Separation, Tint 1,0)")
