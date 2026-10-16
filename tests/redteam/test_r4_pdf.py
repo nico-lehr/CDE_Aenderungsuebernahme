@@ -23,8 +23,6 @@ def _elemente(markup):
 # RT-200 / RT-201: farbiges Wort + schwarzer Punkt direkt dahinter
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-200 blaues Wort + schwarzer Punkt: Punkt wird mit eingefuegt ('Anlage. insgesamt.'); Besitzer PDF/PLAN")
 def test_rt200_blaues_wort_vor_schwarzem_punkt(tmp_path):
     vorher = "Die Steuerung überwacht die Anlage."
     alt = _excel(tmp_path, [vorher])
@@ -34,8 +32,6 @@ def test_rt200_blaues_wort_vor_schwarzem_punkt(tmp_path):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-201 rotes Wort + schwarzer Punkt: der Punkt wird mit geloescht; Besitzer PDF/PLAN")
 def test_rt201_rotes_wort_vor_schwarzem_punkt(tmp_path):
     vorher = "Die Steuerung überwacht die Anlage insgesamt."
     alt = _excel(tmp_path, [vorher])
@@ -78,9 +74,6 @@ NEU7 = "Zusätzlich wird jede einzelne Prüfung im System vermerkt und vom Betre
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-206 neuer Satz ueber Seitenumbruch: zwei 'hoch'-Aenderungen, Zeilenumbruch mitten im Satz; "
-                          "Besitzer PDF/PLAN")
 def test_rt206_neuer_satz_ueber_seitenumbruch(tmp_path):
     d = PdfDokument(variante="farbe", kopf_fuss=False)
     d.ueberschrift("1 Eins")

@@ -42,9 +42,21 @@ planer:                       # Planen und Anwenden (src/planner.py, src/applier
   # Tabellen-Text mit senkrechten Strichen als Spaltentrenner ("Pos. | Bauteil | Menge"): nie automatisch uebernehmen
   tabellen_muster: ['(?:^|\s)\|(?:\s|$)']
   tabellen_min_treffer: 1     # so viele Spaltentrenner im Neutext genuegen
-  # Hinweis-Codes der PDF-Woerter (src/pdf_reader.py), bei denen die Aenderung nie automatisch uebernommen wird: der Bereich
-  # wurde nicht sicher gelesen (Spalten nebeneinander: ein Satz kann zerrissen sein). Weitere moegliche Codes: tabelle
-  unsichere_hinweise: [mehrspaltig]
+  # Absatz-Sperre (ADR 0004, geschlossene Liste): steht einer dieser Hinweis-Codes an IRGENDEINEM Wort des Absatzes (nicht nur
+  # an den geaenderten), wird keine Aenderung dieses Absatzes automatisch eingetragen ("pruefen", Code "sperre:<code>").
+  # "kommentar" gilt fuer alle kommentar_* (PDF-Kommentare). fortsetzung_unklar setzt der Planer selbst (Seitenumbruch).
+  unsichere_hinweise: [unbekannte_farbe, teilweise_markiert, gemischt_blau_strich, gemischt_widerspruch, linie_unklar,
+                       kommentar, tabelle, mehrspaltig, design_flaeche, farbe_uneinig, tinte_unerklaert,
+                       fortsetzung_unklar, absatzgrenze_unklar, trennung_unklar, rand_unklar, hochzahl_markiert,
+                       linienfarbe_unklar]
+  # Nur Hinweis (keine Sperre): der Satz zum Code steht bei den Aenderungen des Absatzes
+  hinweis_codes: [link, unterstrichen, design_blau, ligatur]
+  # Ohne Angabe des PDF-Lesers (PdfBlock.fortsetzung) raten, ob ein Absatz ueber den Seitenumbruch weitergeht: letzter Block
+  # einer Seite ohne Satzende + erster Block der naechsten Seite = "moeglich" (verbunden nur, wenn A1 es bestaetigt; ganz
+  # neuer Text danach -> fortsetzung_unklar, nie automatisch). Wird nur benutzt, wenn KEIN Block eine Angabe hat. Aus, seit der
+  # PDF-Leser die Angabe selbst macht ("sicher" | "moeglich"); nur fuer aeltere Leser gedacht.
+  fortsetzung_raten: false
+  satzende_zeichen: ".!?:;"
   doppelt_min_woerter: 3      # Ab so vielen Woertern gilt "gleicher Absatz steht schon" als sicher (nicht uebernommen); kuerzer = nur Vorschlag
 
 # --- Schema 2: bisher im Code fest eingebaute Werte (Verhalten unveraendert; werden von K-XL / K-PL verdrahtet) ---
@@ -57,6 +69,7 @@ matcher:                      # Bewertung eines Treffers (src/matcher.py)
   excel_abdeckung_min: 0.75   # deckt der PDF-Text weniger als so viel vom Excel-Absatz ab (Rest >= rest_min_woerter), nur "mittel"
   section_unpassend_stufe: mittel   # Stufe, wenn PDF-Section (alte Nummer) und Excel-Section beide bekannt sind und nicht passen (hoch | mittel)
   rest_min_woerter: 5         # so viele Woerter des Excel-Absatzes muessen unabgedeckt sein, damit der Anfangs-Treffer zaehlt
+  teil_min_woerter: 3         # ExaktIndex: Teilstueck eines laengeren Excel-Absatzes (Seitenumbruch) erst ab so vielen Woertern
 anwenden:                     # Schreiben in die Excel (src/applier.py)
   markierung_farbe: FFF2CC    # Hintergrund, wenn markierung.geaenderte_zellen = gelb
   kommentar_autor: CDE-Tool   # Autor der Zellkommentare, wenn markierung.geaenderte_zellen = kommentar

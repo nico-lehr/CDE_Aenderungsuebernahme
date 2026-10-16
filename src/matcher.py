@@ -22,6 +22,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
+from .abgleich import _rang
 from .excel_model import ExcelModell, Kandidat
 from .models import HOCH, MITTEL
 
@@ -67,18 +68,38 @@ class Matcher:
     def _idf(self, wort: str) -> float:
         return math.log(1 + self.n / max(len(self.index.get(wort, ())), 1))
 
-    def finde(self, a: list[tuple[int, str]], section: str | None, ist_kopf: bool = False) -> Treffer | None:
-        """a = [(Block-Token-Index, Normform)], leere Normformen sind schon entfernt."""
+    def schluessel(self, k: Kandidat) -> tuple:
+        """Ordnung des Kandidaten in Dokument-Reihenfolge (wie abgleich.ordnungs_schluessel)."""
+        if not hasattr(self, "_blatt_nr"):
+            self._blatt_nr = {b: i for i, b in enumerate(self.xl.layouts)}
+        return (self._blatt_nr.get(k.blatt, 999), k.zeile, _rang(self.xl.layouts.get(k.blatt), k.spalte), k.spalte, k.start)
+
+    def finde(self, a: list[tuple[int, str]], section: str | None, ist_kopf: bool = False,
+              fenster: tuple[tuple | None, tuple | None] | None = None) -> Treffer | None:
+        """a = [(Block-Token-Index, Normform)], leere Normformen sind schon entfernt.
+
+        fenster = (unten, oben): nur Kandidaten, deren Ordnungs-Schluessel echt dazwischen liegt (Reissverschluss: zwischen
+        den Ankern davor und danach). None = ueberall."""
         if not a:
             return None
-        key = (tuple(a), section, ist_kopf)
+        if fenster is not None and fenster == (None, None):
+            fenster = None
+        key = (tuple(a), section, ist_kopf, fenster)
         if key in self._cache:
             return self._cache[key]
-        ergebnis = self._finde(a, section, ist_kopf)
+        ergebnis = self._finde(a, section, ist_kopf, fenster)
         self._cache[key] = ergebnis
         return ergebnis
 
-    def _finde(self, a: list[tuple[int, str]], section: str | None, ist_kopf: bool) -> Treffer | None:
+    def _im_fenster(self, k: Kandidat, fenster: tuple[tuple | None, tuple | None] | None) -> bool:
+        if fenster is None:
+            return True
+        s = self.schluessel(k)
+        lo, hi = fenster
+        return (lo is None or s > lo) and (hi is None or s < hi)
+
+    def _finde(self, a: list[tuple[int, str]], section: str | None, ist_kopf: bool,
+               fenster: tuple[tuple | None, tuple | None] | None = None) -> Treffer | None:
         schw = self.cfg["schwellen"]
         mc = self.cfg["matcher"]
         normen = [n for _, n in a]
@@ -101,6 +122,8 @@ class Matcher:
         for kid in ids:
             k = self.xl.kandidaten[kid]
             if k.art == "kopf" and not ist_kopf:
+                continue
+            if not self._im_fenster(k, fenster):
                 continue
             sm = SequenceMatcher(None, normen, k.norms, autojunk=False)
             zuordnung: dict[int, int] = {}

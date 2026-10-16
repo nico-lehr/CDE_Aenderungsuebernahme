@@ -142,7 +142,12 @@ def test_rt115_korpus_zerrissenes_wort_in_der_excel(seed, profil, blatt, zeile, 
     lf = auto_lauf(seed, profil)
     _, soll, ist = zelle_vorher_soll_ist(lf.ordner, lf.ergebnis, blatt, zeile, spalte)
     aenderungen = lf.aenderungen_bei(blatt, zeile, spalte)
-    aufbau(any(a.status == UEBERNOMMEN for a in aenderungen), "In dieser Zelle ist keine Aenderung uebernommen")
+    aufbau(bool(aenderungen), "In dieser Zelle ist keine Aenderung geplant")
+    if not any(a.status == UEBERNOMMEN for a in aenderungen):
+        # Welle 1 (ADR 0004): eine unklare Silbentrennung im Absatz sperrt ihn ("sperre:trennung_unklar") -> sichtbar unsicher,
+        # nie still falsch. Die Excel-Zelle bleibt dann unveraendert.
+        assert all(a.grund and a.pruefcodes for a in aenderungen), [(a.status, a.pruefcodes) for a in aenderungen]
+        return
     stuecke = _trennstuecke(ist, soll)
     if stuecke:
         a = next((a for a in aenderungen if a.status == UEBERNOMMEN and any(s.split()[0] in a.neu for s in stuecke)),
