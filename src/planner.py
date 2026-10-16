@@ -470,11 +470,14 @@ class _Planer:
     def _filtern(sp: Spur, cands: list[tuple[Fundstelle, str]]) -> list[tuple[Fundstelle, str]]:
         """Fundstellen, die zaehlen: Ueberschriften nur fuer Ueberschriften; Blaetter ohne Gliederung (z. B. "Historie") nur, wenn
         es im gegliederten Blatt keine gibt; Nummern-/Titelspalte fuer Fliesstext nur, wenn es sonst keine gibt; sichtbare
-        Stellen schlagen versteckte."""
+        Stellen schlagen versteckte; ganze Absaetze schlagen Teilstuecke."""
         if sp.kind != "ueberschrift":
             cands = [c for c in cands if c[0].art != "kopf"]
             if any(not c[0].kopf_spalte for c in cands):
                 cands = [c for c in cands if not c[0].kopf_spalte]
+        # ein ganzer Excel-Absatz schlaegt Stuecke laengerer Absaetze (gleicher Satz zufaellig mitten in einem anderen Absatz)
+        if any(c[0].art != "teil" for c in cands):
+            cands = [c for c in cands if c[0].art != "teil"]
         if any(c[0].gliederung for c in cands):
             cands = [c for c in cands if c[0].gliederung]
         if any(not c[0].versteckt for c in cands):

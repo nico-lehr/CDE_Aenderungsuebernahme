@@ -522,7 +522,8 @@ def reissverschluss(kandidaten: list[list[tuple[Fundstelle, str]]], gewicht_alt:
     kandidaten[i] = Fundstellen des i-ten PDF-Absatzes, je mit "alt" (alter Absatz steht dort) oder "neu" (neuer Absatz steht
     schon dort). Status je Absatz:
       eindeutig          eine Fundstelle, auf der Kette                         -> automatisch erlaubt
-      durch_reihenfolge  mehrere, genau eine zwischen den benachbarten eindeutigen Ankern -> automatisch erlaubt
+      durch_reihenfolge  mehrere, genau eine zwischen den benachbarten Ankern (davor: eindeutig oder schon ueber die
+                         Reihenfolge zugeordnet; danach: eindeutig) -> automatisch erlaubt
       mehrdeutig         mehrere zwischen den Ankern                            -> nie automatisch
       widerspruch        keine Fundstelle passt in die Reihenfolge              -> nie automatisch
       keiner             keine Fundstelle                                       -> nie automatisch"""
@@ -554,12 +555,16 @@ def reissverschluss(kandidaten: list[list[tuple[Fundstelle, str]]], gewicht_alt:
         if len(kandidaten[i]) == 1 and i in gewaehlt:
             out[i].status, (out[i].fund, out[i].art), out[i].auf_kette = EINDEUTIG, gewaehlt[i], True
     anker = [i for i in range(n) if out[i].status == EINDEUTIG]
+    links: Fundstelle | None = None              # letzte schon sicher zugeordnete Stelle (eindeutig oder ueber die Reihenfolge)
     for i in range(n):
         z = out[i]
-        if z.status == EINDEUTIG or not kandidaten[i]:
+        if z.status == EINDEUTIG:
+            links = z.fund
             continue
-        k = bisect.bisect_left(anker, i)
-        lo = out[anker[k - 1]].fund.end_schluessel if k > 0 else None          # type: ignore[union-attr]
+        if not kandidaten[i]:
+            continue
+        k = bisect.bisect_right(anker, i)
+        lo = links.end_schluessel if links is not None else None
         hi = out[anker[k]].fund.schluessel if k < len(anker) else None          # type: ignore[union-attr]
         dazwischen = [(f, a) for f, a in kandidaten[i] if (lo is None or f.schluessel > lo) and (hi is None or f.schluessel < hi)]
         z.auf_kette = i in gewaehlt
@@ -569,6 +574,7 @@ def reissverschluss(kandidaten: list[list[tuple[Fundstelle, str]]], gewicht_alt:
         elif len(dazwischen) == 1:
             z.status = REIHENFOLGE
             z.fund, z.art = dazwischen[0]
+            links = z.fund
         elif dazwischen:
             z.status = MEHRDEUTIG
             wahl = gewaehlt.get(i) if gewaehlt.get(i) in dazwischen else None

@@ -266,7 +266,10 @@ def test_rt137_pruefen_ohne_freigabe_angewendet_wird_gemeldet(tmp_path):
 def test_rt138_korpus_pruefen_ohne_freigabe_angewendet(seed):
     ordner = paar(seed, "standard")
     offen = [a for a in auto_lauf(seed, "standard").plan.aenderungen if a.status == PRUEFEN]
-    aufbau(bool(offen), "Das Paar hat keine offene Aenderung")
+    if not offen:
+        # Welle 1 (ADR 0004): das Paar hat keine offene Aenderung mehr (alle Stellen exakt gefunden); der Fall ist mit
+        # dem synthetischen Test darueber weiter abgedeckt
+        pytest.skip("Paar hat seit Welle 1 keine offene Aenderung mehr")
     with _alle_pruefen_ohne_freigabe_anwenden():
         bruch = messen.messe_paar(ordner, False)
     if bruch["stille_fehler"] == 0 or bruch["regel27_verstoesse"] < 1:
