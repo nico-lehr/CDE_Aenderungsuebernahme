@@ -352,3 +352,29 @@ def test_zusammengefuegte_zeichen_laeufe_bleiben_erhalten(tmp_path):
         t = next(t for t in alle_tokens(a) if t.new.startswith(wort))
         assert t.status == ADD and 0 < t.trennstelle < len(t.new)
         assert not t.teile or "".join(x for _, x in t.teile) == t.new
+
+
+# =================================================================================================
+# Nacharbeit: gedrehte Seiten (Schriftgroesse) und Fussnoten am Seitenende
+# =================================================================================================
+def test_quer_stehender_text_hat_die_richtige_schriftgroesse_und_bleibt_ein_absatz(tmp_path):
+    """Seite mit /Rotate 90 und quer gesetztem Text: pdfminer meldet als Groesse die Zeichenbreite (~6 statt 11).
+    Damit galt der Zeilenabstand als 'weit' und jede kuerzere Zeile beendete den Absatz."""
+    text = " ".join(WOERTER[:24]) + " und " + " ".join(WOERTER[:10]) + "."
+    d = dok()
+    d.block(text)
+    d.block("Zweiter Absatz mit etwas Text hier.")
+    d.seite_rotieren(90)
+    a = lese(tmp_path, d)
+    assert [len(b.tokens) for b in a.blocks] == [len(text.split()), 6]
+
+
+def test_fussnote_am_seitenende_verhindert_die_fortsetzung_nicht(tmp_path):
+    s1 = "".join(_rechtsbuendig(64 + 15 * i, _volle_zeile(3 * i)) for i in range(3))
+    s1 += _rechtsbuendig(109, _volle_zeile(20, ende="und"))
+    s1 += zeile(56, 780, "1 Eine erfundene Fussnote zur Erlaeuterung.", 8.0)
+    s2 = _rechtsbuendig(64, _volle_zeile(7, "weiter")) + _rechtsbuendig(79, _volle_zeile(12) + ".")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=s1), RohSeite(inhalt=s2)]))
+    assert [b.page for b in a.blocks] == [1, 2, 1] and [b.idx for b in a.blocks] == [0, 1, 2]
+    assert a.blocks[0].fortsetzung == "sicher" and a.blocks[1].tokens[0].old == "weiter"
+    assert "Fussnote" in a.blocks[2].alt_text and a.blocks[2].fortsetzung == ""
