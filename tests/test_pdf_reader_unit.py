@@ -537,17 +537,36 @@ def test_sonderfarbe_rot_wird_zu_entfaellt(tmp_path):
     assert [token(a, w).status for w in ("neuer", "Text", "hier")] == [DEL, DEL, DEL]
 
 
+def _ohne_sicht(tmp_path, pdf: bytes):
+    """Nur der Textleser (SICHT aus): so verhaelt sich pdf_reader allein."""
+    import copy
+
+    from src import config
+    from src.pdf_reader import analysiere_pdf
+    cfg = copy.deepcopy(config.lade("farben"))
+    cfg["sicht"]["aktiv"] = False
+    p = tmp_path / "ohne_sicht.pdf"
+    p.write_bytes(pdf)
+    return analysiere_pdf(p, cfg)
+
+
 def test_sonderfarbe_mit_nicht_berechenbarer_funktion_ist_luecke(tmp_path):
     zusammengesetzt = "<< /FunctionType 3 /Domain [0 1] /Functions [" + TYP2 + "] /Bounds [] /Encode [0 1] >>"
-    a = lese(tmp_path, _sonderfarbe(zusammengesetzt, "1"))
+    a = _ohne_sicht(tmp_path, _sonderfarbe(zusammengesetzt, "1"))
     assert [token(a, w).status for w in ("neuer", "Text", "hier")] == [KEEP] * 3
     assert _luecke(a, "unbekannte_farbe")["woerter"] == 3
+    # SICHT (zweiter Leser, pdfium) rechnet die Funktion aus: das Blau wird richtig als "neu" gelesen
+    a = lese(tmp_path, _sonderfarbe(zusammengesetzt, "1"))
+    assert [token(a, w).status for w in ("neuer", "Text", "hier")] == [ADD] * 3
 
 
 def test_sonderfarbe_bei_mehreren_unterschiedlichen_raeumen_ist_unklar(tmp_path):
     orange = "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0.5 1 0] /N 1 >>"
-    a = lese(tmp_path, _sonderfarbe(TYP2, "1", "/Cs2 [/Separation /Andere /DeviceCMYK " + orange + "]"))
-    assert _luecke(a, "unbekannte_farbe")["woerter"] == 3
+    pdf = _sonderfarbe(TYP2, "1", "/Cs2 [/Separation /Andere /DeviceCMYK " + orange + "]")
+    assert _luecke(_ohne_sicht(tmp_path, pdf), "unbekannte_farbe")["woerter"] == 3
+    # SICHT weiss, welcher Raum benutzt wird (Cs1 = Blau)
+    a = lese(tmp_path, pdf)
+    assert [token(a, w).status for w in ("neuer", "Text", "hier")] == [ADD] * 3
 
 
 @pytest.mark.parametrize("cmyk,erwartet", [("1 1 0 0", ADD), ("1 0.8 0 0", ADD), ("0 1 1 0", DEL), ("0 0 0 1", KEEP),
