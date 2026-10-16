@@ -78,8 +78,6 @@ def _zahlen(wb):
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-212 neue Section-Nummer wird als Text '2.3' geschrieben statt als Zahl; Besitzer APPLY")
 def test_rt212_neue_section_nummer_bleibt_zahl(tmp_path):
     alt = excel_sections(tmp_path, S13, "L1", _zahlen)
     aufbau(zelle(alt, 4, 1) == 2.2, "Section 2.2 muss als Zahl in A4 stehen")
@@ -121,9 +119,6 @@ def _laeufe() -> list[Lauf]:
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-216 falscher Plan (ersetzt 'Werte' statt 'alte') bleibt 'uebernommen/ok', A3 greift nicht; "
-                          "Besitzer APPLY")
 def test_rt216_falscher_plan_besteht_die_gegenprobe_nicht(tmp_path):
     alt = excel_sections(tmp_path, [("1", "Eins", [TEXT]), ("2", "Zwei", ["Zweiter " + A])])
     laeufe = _laeufe()

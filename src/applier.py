@@ -16,9 +16,10 @@ Grundsaetze
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from copy import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -31,6 +32,7 @@ from openpyxl.utils import get_column_letter
 from . import config
 from .fehler import DateiVorhanden
 from .excel_model import ExcelModell, zahl_als_text
+from .gegenprobe import pruefe_absatz
 from .models import (MITTEL, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN, WIRKUNG_ABWEICHUNG, WIRKUNG_KEINE, WIRKUNG_OK,
                      Absatz, Aenderung, Operation)
 from .planner import neutext_probleme, zahl_aus_text
@@ -70,6 +72,12 @@ def _hinweise(ae: Aenderung, *texte: str) -> None:
     for t in texte:
         if t and t not in ae.hinweise:
             ae.hinweise.append(t)
+
+
+def _code(ae: Aenderung, code: str) -> None:
+    """Maschinenlesbaren Pruefcode anhaengen (Schema 3), ohne Doppelte."""
+    if code and code not in ae.pruefcodes:
+        ae.pruefcodes.append(code)
 
 
 def _konflikt(ae: Aenderung, grund: str, *hinweise: str) -> None:
@@ -133,6 +141,47 @@ def _folge_gruppen(aenderungen: list[Aenderung]) -> dict[str, list[Aenderung]]:
     return gruppen
 
 
+def _gekoppelt(aenderungen: list[Aenderung], gruppen: dict[str, list[Aenderung]]) -> dict[str, set[str]]:
+    """Je Aenderung alle Aenderungen, die nur gemeinsam gelten (gleiche `gruppe`, Schema 3, oder neue Section + Folgeabsaetze)."""
+    nachbarn: dict[str, set[str]] = {a.id: {a.id} for a in aenderungen}
+    je_gruppe: dict[str, list[str]] = {}
+    for a in aenderungen:
+        if a.gruppe:
+            je_gruppe.setdefault(a.gruppe, []).append(a.id)
+    kanten = list(je_gruppe.values()) + [[k] + [f.id for f in fl] for k, fl in gruppen.items()]
+    for ids in kanten:
+        for i in ids:
+            if i in nachbarn:
+                nachbarn[i].update(x for x in ids if x in nachbarn)
+    out: dict[str, set[str]] = {}
+    for start in nachbarn:                       # Huelle (Gruppen koennen sich ueber gemeinsame Mitglieder verketten)
+        gesehen, offen = {start}, [start]
+        while offen:
+            for n in nachbarn[offen.pop()]:
+                if n not in gesehen:
+                    gesehen.add(n)
+                    offen.append(n)
+        out[start] = gesehen
+    return out
+
+
+_FESTE_STELLEN = re.compile(r"^0\.(0+)$")      # Zahlenformat "0.0", "0.00", ... (wie im Excel-Modell)
+
+
+def _section_zahl(text: str, zahlenformat: str) -> int | float | None:
+    """Neue Section-Nummer als Zahl, wenn sie mit diesem Zahlenformat buchstabengleich angezeigt wird (RT-212), sonst None.
+    Nur einfache Formate ("General", "0", "0.0", "0.00", ...), deren Anzeige sicher bekannt ist."""
+    fmt = zahlenformat or "General"
+    if fmt != "General" and fmt != "0" and not _FESTE_STELLEN.match(fmt):
+        return None
+    wert = zahl_aus_text(text, fmt)
+    if wert is None:
+        return None
+    if fmt == "0" and not float(wert).is_integer():           # "0" zeigt keine Nachkommastellen: 2.3 sähe aus wie "2"
+        return None
+    return wert
+
+
 def _nur_loeschen(o: Operation) -> bool:
     return o.art == "ersetzen" and o.text == ""
 
@@ -169,8 +218,11 @@ def _ueberlappen(ops: list[Operation], text: str | None = None) -> set[str]:
     return verlierer
 
 
-def _wende_text_an(orig: str, ops: list[Operation]) -> str:
+def _roh_anwenden(orig: str, ops: list[Operation]) -> tuple[str, list[Operation]]:
+    """Operationen ohne Aufraeumen anwenden. Rueckgabe: Text und die WIRKLICH angewendeten Operationen (eine Loeschung,
+    die ein gemeinsames Leerzeichen mit einer spaeteren teilt, endet frueher) -- fuer die Gegenprobe A3."""
     text = orig
+    wirklich: list[Operation] = []
     grenze = len(orig)        # kleinster Start der schon angewendeten Operationen: dahinter hat sich der Text geaendert
     # Von hinten nach vorn. Bei gleichem Start wird erst ersetzt und dann eingefuegt: der eingefuegte Text steht vor dem
     # ersetzten (Reihenfolge unabhaengig von `seq`, sonst wird der Text zerstueckelt).
@@ -180,9 +232,16 @@ def _wende_text_an(orig: str, ops: list[Operation]) -> str:
             if _nur_loeschen(o) and ende > grenze:       # gemeinsames Leerzeichen mit einer spaeteren Loeschung: nur einmal weg
                 ende = max(o.start, grenze)
             text = text[:o.start] + o.text + text[ende:]
+            wirklich.append(o if ende == o.ende else replace(o, ende=ende))
         else:   # einfuegen
             text = text[:o.start] + o.text + text[o.start:]
+            wirklich.append(o)
         grenze = min(grenze, o.start)
+    return text, wirklich
+
+
+def _wende_text_an(orig: str, ops: list[Operation]) -> str:
+    text = _roh_anwenden(orig, ops)[0]
     if any(o.absatz_weg for o in ops) and "\n\n" not in orig and not orig.startswith("\n") and not orig.endswith("\n"):
         text = "\n".join(z for z in text.split("\n") if z.strip())
     if not orig.endswith("\n"):
@@ -192,6 +251,23 @@ def _wende_text_an(orig: str, ops: list[Operation]) -> str:
     if not orig.endswith(" "):
         text = text.rstrip(" ")
     return text
+
+
+def _a3_zelle(orig: str, gespeichert: str, info: dict | None, blatt: str, zeile: int,
+              spalte: int) -> tuple[str, str, list[Operation]]:
+    """Daten einer Zelle fuer die Gegenprobe A3: (Originaltext, gespeicherter Text, wirklich angewendete Operationen).
+
+    Steht genau das in der Zelle, was der Applier schreiben wollte, wird der Text VOR dem Aufraeumen (leere Zeilen,
+    Rand-Umbrueche) verglichen: Das Aufraeumen entfernt nur Leerraum, verschiebt aber die Zeichenpositionen."""
+    if info is None:
+        return orig, gespeichert, []
+    ops = [o for o in info["ops"] if not o.abgedeckt]
+    leeren = next((o for o in ops if o.art == "zelle_leeren"), None)
+    if leeren is not None:                     # geleerte Zelle: wie EIN Ersetzen des ganzen Texts
+        return orig, gespeichert, [Operation("ersetzen", blatt, zeile, spalte, 0, len(orig), info["neu"],
+                                             aenderung=leeren.aenderung)]
+    roh, wirklich = _roh_anwenden(orig, [o for o in ops if o.art in ("ersetzen", "einfuegen")])
+    return orig, (roh if gespeichert == info["neu"] else gespeichert), wirklich
 
 
 def _zelltext(orig: str, ops: list[Operation]) -> str:
@@ -250,8 +326,13 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     nachweisbare Wirkung werden zurueckgestuft).
 
     `xl`: schon gebautes Modell derselben Quell-Excel (spart das erneute Einlesen); ohne Angabe wird es gebaut.
-    `abwahl`: IDs automatischer Aenderungen, die ein Mensch abgewaehlt hat (Schema 3; wird in Welle 2 verdrahtet).
+    `abwahl`: IDs automatischer Aenderungen, die ein Mensch abgewaehlt hat (Schema 3): sie werden nicht eingetragen
+    (nicht_uebernommen, "Vom Menschen abgewählt."); gekoppelte Aenderungen (gleiche `gruppe`, Section + Folgeabsaetze)
+    fallen mit weg.
     `absaetze`: PDF-Absaetze aus dem Plan fuer die Gegenprobe A3 (Schema 3, ADR 0004); None = Plan ohne Absaetze (Schema <= 2).
+    A3: Nach dem Speichern muss jeder Absatz mit angewendeter Aenderung so in der Excel stehen, wie das PDF es verlangt,
+    sonst "pruefen" (Wirkung "abweichung", Pruefcode gegenprobe_*). Invariante (nur mit `anwenden.gegenprobe_pflicht`):
+    eine automatische Text-Operation, deren Aenderung in keinem Absatz vorkommt, wird nicht angewendet ("ohne_absatz").
     Eine vorhandene Zieldatei wird nie ueberschrieben (Regel 29): dann gibt es einen DateiVorhanden-Fehler (auch FileExistsError)."""
     cfg = cfg or config.lade("zuordnung")
     anw = cfg.get("anwenden") or config.lade("zuordnung")["anwenden"]
@@ -265,11 +346,38 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     if xl is None:
         xl = ExcelModell(quelle)                                # nur zum Lesen (Layout, Sections)
     wb = load_workbook(str(quelle), rich_text=True, keep_vba=(quelle.suffix.lower() == ".xlsm"))
+    # Originaltexte der Absatz-Zellen (fuer die Gegenprobe A3 nach dem Speichern); ohne neue Zellen anzulegen
+    absatz_orig: dict[tuple[str, int, int], str] = {}
+    for ab in absaetze or []:
+        if ab.blatt in wb.sheetnames:
+            for z, sp, _, _ in ab.zellen:
+                c = wb[ab.blatt]._cells.get((z, sp))
+                absatz_orig[(ab.blatt, z, sp)] = _text(c) if c is not None else ""
 
     # --- Welche Aenderungen werden angewendet? (neue Section + Folgeabsaetze gelten als Gruppe) ---------------
     gruppen = _folge_gruppen(aenderungen)
     folge_zu_kopf = {f.id: k for k, fl in gruppen.items() for f in fl}
     alle_nach_id = {a.id: a for a in aenderungen}
+    kopplung = _gekoppelt(aenderungen, gruppen)
+
+    # --- Abwahl: automatische Aenderungen, die ein Mensch nicht will (gekoppelte fallen mit weg) -----------------
+    abgewaehlt: set[str] = set()
+    for aid in abwahl or ():
+        a = alle_nach_id.get(aid)
+        if a is not None and a.status == UEBERNOMMEN:
+            abgewaehlt |= kopplung.get(aid, {aid})
+    for aid in sorted(abgewaehlt):
+        a = alle_nach_id[aid]
+        if a.status == UEBERNOMMEN:
+            a.status = NICHT
+            a.grund = (a.grund + "; " if a.grund else "") + "Vom Menschen abgewählt."
+            _code(a, "abgewaehlt")
+            if aid not in (abwahl or ()):
+                _hinweise(a, "Gehört zu einer Gruppe, von der ein Mensch eine Änderung abgewählt hat; "
+                             "die Gruppe gilt nur gemeinsam.")
+        elif a.status == PRUEFEN and aid in freigaben:
+            _hinweise(a, "Nicht eingetragen: gehört zu einer Gruppe, von der ein Mensch eine Änderung abgewählt hat.")
+    freigaben = freigaben - abgewaehlt
 
     def freigegeben(a: Aenderung) -> bool:
         return a.status == PRUEFEN and a.id in freigaben
@@ -329,6 +437,19 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             weitere += [f for f in gruppen[kopf_id] if f.id != ae.id]
         for w in weitere:
             entferne(w, art, "Gehört zu einer neuen Section, deren Eintragung nicht möglich war.")
+        if ae.gruppe:                                   # Schema 3: Aenderungen derselben Gruppe gelten nur gemeinsam
+            for w in [x for x in list(nach_id.values()) if x.gruppe == ae.gruppe]:
+                entferne(w, art, "Gehört zu einer Gruppe von Änderungen, von der eine nicht eingetragen werden kann.")
+
+    # --- Invariante (ADR 0004): automatische Text-Operation ohne gespeicherten PDF-Absatz -> nicht automatisch -----
+    if absaetze is not None and anw.get("gegenprobe_pflicht", False):
+        mit_absatz = {i for ab in absaetze for i in ab.aenderungen}
+        for ae in list(aktiv):
+            if (ae.id in nach_id and not ae.bestaetigt and ae.id not in mit_absatz
+                    and any(o.art in ("ersetzen", "einfuegen") and not o.abgedeckt for o in ae.ops)):
+                entferne(ae, PRUEFEN, "Zu dieser Änderung fehlt der PDF-Absatz für die Gegenprobe; sie wird nicht automatisch eingetragen.",
+                         "Das Ergebnis könnte nach dem Eintragen nicht gegen das PDF geprüft werden. Bitte von Hand prüfen.")
+                _code(ae, "ohne_absatz")
 
     # --- Stimmt der erwartete Text noch? Ist der Neutext schreibbar? ------------------------------------------
     for ae in list(aktiv):
@@ -514,14 +635,30 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             _verschiebe_verbunden(ws, pos, n)
             _links_nachziehen(ws)
             abbildung.setdefault(blatt, []).append(("ins", pos, n))        # type: ignore[arg-type]
+            lay = xl.layouts.get(blatt)
+            sek = lay.section_spalte if lay else None
             for i, op in enumerate(ops):
                 neu_zeile = pos + i
                 stil = op.stil_von + (n if op.stil_von >= pos else 0)
+                anker = op.zeile + (n if op.zeile >= pos else 0)
                 for c in range(1, ws.max_column + 1):
                     ws.cell(neu_zeile, c)._style = copy(ws.cell(stil, c)._style)
                 ws.row_dimensions[neu_zeile].height = ws.row_dimensions[stil].height
                 for spalte, text in op.zellen.items():
-                    _setze_wert(ws.cell(neu_zeile, spalte), text)
+                    zelle = ws.cell(neu_zeile, spalte)
+                    if spalte == sek and text.strip():
+                        # RT-212: stehen die Section-Nummern als Zahl in der Excel, wird die neue auch eine Zahl
+                        vorlage = next((ws.cell(r, spalte) for r in (stil, anker)
+                                        if r != neu_zeile and _ist_zahlzelle(ws.cell(r, spalte))), None)
+                        if vorlage is not None:
+                            zahl = _section_zahl(text, vorlage.number_format)
+                            if zahl is not None:
+                                zelle.value = zahl
+                                zelle.number_format = vorlage.number_format
+                                continue
+                            _hinweise(alle_nach_id[op.aenderung], "Die Section-Nummern stehen in der Excel als Zahl. Die neue "
+                                      "Nummer wurde als Text eingetragen, weil sie mit dem Zahlenformat anders aussehen würde.")
+                    _setze_wert(zelle, text)
                 if modus == "gelb":
                     for spalte in op.zellen:
                         ws.cell(neu_zeile, spalte).fill = PatternFill("solid", fgColor=farbe)
@@ -553,6 +690,33 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     grund_abw: dict[str, str] = {}
 
     kontrolle = load_workbook(str(ziel), rich_text=True, keep_vba=(quelle.suffix.lower() == ".xlsm"))
+
+    # --- Gegenprobe A3 (ADR 0004): steht jeder betroffene Absatz so in der Excel, wie das PDF es verlangt? ----------
+    durchgefallen: dict[str, str] = {}             # Aenderungs-ID -> Pruefcode
+    a3_bestanden: set[str] = set()                 # gegen das PDF geprueft und in Ordnung
+    angewendet = set(nach_id)
+    for ab in absaetze or []:
+        if not ab.aenderungen & angewendet:
+            continue
+        zellen: dict[tuple[int, int], tuple[str, str, list[Operation]]] = {}
+        if ab.blatt in kontrolle.sheetnames:
+            for z, sp, _, _ in ab.zellen:
+                nz = neue_zeile(ab.blatt, z)
+                gesp = "" if nz is None else _text(kontrolle[ab.blatt].cell(nz, sp))
+                zellen[(z, sp)] = _a3_zelle(absatz_orig.get((ab.blatt, z, sp), ""), gesp,
+                                            zell_info.get((ab.blatt, z, sp)), ab.blatt, z, sp)
+        code = pruefe_absatz(ab, zellen, angewendet, cfg)
+        for aid in sorted(ab.aenderungen & angewendet):
+            if code is None:
+                a3_bestanden.add(aid)
+            else:
+                durchgefallen.setdefault(aid, code)
+    for aid in list(durchgefallen):                     # gekoppelte Aenderungen gelten nur gemeinsam
+        for k in kopplung.get(aid, ()):
+            if k in nach_id and k not in durchgefallen:
+                durchgefallen[k] = "gegenprobe_gruppe"
+    a3_bestanden -= set(durchgefallen)
+
     for (blatt, zeile, spalte), info in zell_info.items():
         z = neue_zeile(blatt, zeile)
         tatsaechlich = "" if z is None else _text(kontrolle[blatt].cell(z, spalte))
@@ -562,7 +726,8 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             if not zelle_stimmt:
                 abw[ae.id] += 1
                 grund_abw[ae.id] = "Der Inhalt der Zelle in der gespeicherten Datei weicht vom Plan ab."
-            elif any(o.art == "einfuegen" and not _wortgrenze(info["orig"], o.start) for o in eigene):
+            elif (ae.id not in a3_bestanden        # die Gegenprobe gegen das PDF ist genauer als die Wortgrenzen-Regel
+                  and any(o.art == "einfuegen" and not _wortgrenze(info["orig"], o.start) for o in eigene)):
                 abw[ae.id] += 1
                 grund_abw[ae.id] = "Der Text wurde mitten in ein Wort eingefügt (der Plan passt nicht zum Zellinhalt)."
             else:
@@ -629,6 +794,22 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                        "Bitte die Stelle in der Ergebnis-Excel von Hand prüfen.")
             ae.konfidenz = NIEDRIG
             ergebnis.warnungen.append(f"Änderung {ae.id} ({ae.ziel}): in der Ergebnis-Excel weicht die Stelle vom Plan ab. Bitte von Hand prüfen.")
+
+    # --- Gegenprobe A3: Ergebnis eintragen (nie "uebernommen/ok" fuer etwas, das nicht zum PDF passt) ---------------
+    if durchgefallen:
+        for aid, code in durchgefallen.items():
+            ae = nach_id[aid]
+            _code(ae, code)
+            if ae.status == NICHT:                      # schon zurueckgestuft (z. B. ohne Wirkung): nie "uebernommen"
+                continue
+            if ae.status == UEBERNOMMEN:
+                _vorschlag(ae, "Gegenprobe: Das Ergebnis in der Excel passt nicht zu dem, was das PDF verlangt.")
+                ergebnis.warnungen.append(f"Änderung {ae.id} ({ae.ziel}): Gegenprobe – das Ergebnis in der Excel passt nicht "
+                                          f"zu dem, was das PDF verlangt. Bitte von Hand prüfen.")
+            _hinweise(ae, "Gegenprobe: Das Ergebnis in der Excel passt nicht zu dem, was das PDF verlangt. Bitte prüfen."
+                      if code != "gegenprobe_gruppe" else
+                      "Gegenprobe: Eine Änderung derselben Gruppe passt nicht zum PDF; die Gruppe gilt nur gemeinsam. Bitte prüfen.")
+            ae.konfidenz, ae.wirkung, ae.nachkontrolle = NIEDRIG, WIRKUNG_ABWEICHUNG, "abweichung"
 
     # --- Hinweise: Inhalt in gestrichenen Sections ----------------------------------------
     aktive_ops = [o for a in aktiv if a.status == UEBERNOMMEN for o in a.ops]

@@ -183,13 +183,17 @@ def neue_spanne(start: int, ende: int, ops: Iterable[Operation], eigene: set[str
         d = _delta(op)
         if op.aenderung in eigene:
             e += d
+            if op.start < start:                           # beginnt vor dem Bereich (z. B. Zeilenumbruch davor mit weg):
+                s -= start - op.start                      # der Bereich beginnt dann an der Operation
         elif op.ende <= start and not (op.start == op.ende == start):
             s += d
             e += d
         elif op.start == op.ende == start:                 # fremde Einfuegung genau am Anfang gilt als davor
             s += d
             e += d
-    return s, e
+    # Eine eigene Loeschung, die ueber den Bereich hinausreicht (ganzer Absatz samt Zeilenumbruch davor/danach),
+    # macht ihn leer -- nie kuerzer als leer
+    return s, max(s, e)
 
 
 def pruefe_absatz(absatz: Absatz, zellen: dict[tuple[int, int], tuple[str, str, list[Operation]]],
