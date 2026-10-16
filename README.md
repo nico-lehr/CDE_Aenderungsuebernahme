@@ -71,6 +71,13 @@ Alle Zahlen stammen von **erfundenen** Beispielen; sie sind kein Versprechen fü
 - Noch **keine echten Beispiele** getestet: Farb- und Zeilenabstand-Schwellen müssen mit echten PDFs kalibriert werden (`docs/kalibrierung.md`).
 - Automatisch Übernommenes lässt sich im Dashboard noch nicht einzeln abwählen (die Schnittstelle kennt nur Freigaben für Vorschläge).
 
+## Stand Auftrag 002 und lokale Fortsetzung
+
+Etappe 1 („wie ein sorgfältiger Mensch“: Gegenprobe gegen das PDF, genauerer Leser, Reißverschluss-Abgleich, zweiter Farb-Leser) ist fertig. Entwicklung: 4 stille Fehler bei 120 erfundenen Paaren
+(vorher 31), 98 % der automatischen Einträge richtig. **Neu festgelegt, noch nicht eingebaut:** Farblogik (durchgestrichen = entfällt, rot oder blau ohne Strich = neu) und farbige Markierung in der Excel
+(rot = neu, blau durchgestrichen = alt), siehe `docs/adr/0005-farblogik-und-excel-markierung.md`.
+Roadmap: `docs/plan_auftrag_002.md` · Übergabe für die lokale Arbeit: `docs/uebergabe_lokal.md` · Steckbrief statt echter Inhalte: `docs/anleitung_steckbrief.md` · Fragebogen für Ollama: `docs/fragebogen_ollama.md`.
+
 ## Nächste Schritte
 
 1. 3–5 echte Beispielpaare (PDF + Excel vorher + Excel nachher) vom anderen Team, **nach Freigabe**, nur lokal, getrennt in Entwicklungs- und Testbeispiele (`docs/anleitung_echte_paare.md`).

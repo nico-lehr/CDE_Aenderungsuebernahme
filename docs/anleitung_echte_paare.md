@@ -1,6 +1,8 @@
 # Anleitung: Echte Beispiele (Paare) sicher lokal einspeisen und messen
 
-Autor: Nico Lehr · Stand: 15.10.2026 · für Windows, in einfachen Worten
+Autor: Nico Lehr · Stand: 16.10.2026 · für Windows, in einfachen Worten
+
+> **Neu (16.10.2026):** Bevor du echte Paare an die Cloud-Sitzung weitergibst: Erst `docs/anleitung_steckbrief.md` (Steckbrief = nur Zahlen, Farbcodes, Formen) und `docs/fragebogen_ollama.md`. Der frühere Testkorpus heißt jetzt `ex_test` (Entwicklung); `test` ist für den späteren ungesehenen Test reserviert.
 
 Ziel: Das Tool an **echten** Dokumenten messen, ohne dass echte Inhalte irgendwo landen, wo sie nicht hingehören.
 Ein **Paar** ist ein echtes Beispiel mit bekannter Wahrheit: das PDF mit den Änderungen, die Excel **vorher** und die von Hand erstellte Excel **nachher**.

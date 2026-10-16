@@ -56,3 +56,6 @@ Thumbs.db
 
 # Agent-Worktrees (lokale Arbeitskopien der Subagents)
 /.worktrees/
+
+# Messkopien einzelner Arbeitssitzungen (Regel 30)
+.datenkopie*/

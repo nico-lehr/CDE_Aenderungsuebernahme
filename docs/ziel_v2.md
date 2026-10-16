@@ -2,6 +2,11 @@
 
 Autor: Nico Lehr · Stand: 16.10.2026 · Auftrag 002 · Vorgänger: `docs/ziel_v1.md` (Ziel „0 stille Fehler“ dort nicht erreicht)
 
+## Korrektur des Zielbilds am 16.10.2026 (Nico)
+- **Farben im PDF uneinheitlich:** neu = mal rot, mal blau; **nur Durchstreichen** = entfällt (jede Farbe). Rot ohne Strich bedeutet nie „entfällt“.
+- **Excel-Ergebnis markiert:** rot = neuer Inhalt, blau + durchgestrichen = alter Inhalt (Alt direkt vor Neu); gestrichene Section bleibt als Zeile stehen (blau durchgestrichen). ADR 0005.
+- Echte Beispiele sieht nur eine lokale KI; die Cloud-Sitzung arbeitet mit Steckbrief (Zahlen/Formen) und erfundenen Nachbauten.
+
 ## Zielbild
 Für einen Menschen ist die Aufgabe einfach: markierten Absatz lesen, die Stelle in der Excel finden, alt durch neu ersetzen, kurz kontrollieren.
 Das Tool soll genau so arbeiten und **anhalten, sobald etwas nicht zusammenpasst**:
