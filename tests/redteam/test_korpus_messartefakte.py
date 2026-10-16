@@ -125,6 +125,10 @@ def test_rt126_korpus_zelle_weicht_nur_um_offene_aenderung_ab(seed, profil, blat
     _, soll, ist = zelle_vorher_soll_ist(lf.ordner, lf.ergebnis, blatt, zeile, spalte)
     aend = lf.aenderungen_bei(blatt, zeile, spalte)
     offene = [a for a in aend if a.status != UEBERNOMMEN]
+    if aend and not offene and ist == soll:
+        # Welle 1 (ADR 0004): die frueher offene Aenderung ist jetzt sicher (exakte Stelle) und die Zelle stimmt -- der
+        # Messartefakt-Fall entsteht hier nicht mehr (der synthetische Test oben haelt ihn fest)
+        return
     aufbau(any(a.status == UEBERNOMMEN for a in aend) and offene, "Erwartet: uebernommene UND offene Aenderung in der Zelle")
     aufbau(nur_durch_offene_aenderungen_verschieden(ist, soll, offene),
            "Die Zelle weicht auch AUSSERHALB der offenen Aenderungen vom Soll ab (dann waere es ein echter Fehler)")

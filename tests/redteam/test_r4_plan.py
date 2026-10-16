@@ -24,8 +24,6 @@ def _elemente(markup):
 # RT-203: gruenes Wort (unbekannte Farbe) im selben Absatz wie eine blaue Aenderung -> Absatz-Sperre
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-203 gruenes Wort im Absatz sperrt die blaue Aenderung nicht (hoch/automatisch); Besitzer PLAN")
 def test_rt203_gruenes_wort_sperrt_den_absatz(tmp_path):
     vorher = "Die Steuerung überwacht die Anlage täglich und alle Werte."
     alt = _excel(tmp_path, [vorher])
@@ -52,8 +50,6 @@ EXCEL_LANG = ("Die Steuerung meldet die gemessenen Druckwert der Pumpen und der 
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-204 Excel weicht ausserhalb der Aenderung ab, trotzdem hoch/automatisch (A1 fehlt); Besitzer PLAN")
 def test_rt204_excel_weicht_ausserhalb_ab_nicht_automatisch(tmp_path):
     alt = _excel(tmp_path, [EXCEL_LANG])
     l = ende_zu_ende(tmp_path, _elemente(PDF_LANG), alt)
