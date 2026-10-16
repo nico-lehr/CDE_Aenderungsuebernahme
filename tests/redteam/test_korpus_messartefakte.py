@@ -241,9 +241,12 @@ MA3_ZELLEN = [(43, "standard", 2, 4, 3), (57, "schwer", 1, 9, 1), (57, "schwer",
 def test_rt130_korpus_anker_nach_geleerter_zeile(seed, profil, blatt, zeile, spalte):
     lf = auto_lauf(seed, profil)
     rest = zeile_im_ergebnis(lf.ergebnis, blatt, zeile)
-    aufbau(len(rest) >= 4 and not any(rest[:3]) and rest[3] != "",
-           "In der Zeile ist nicht nur die Bemerkung uebrig geblieben (geleerte Zeile erwartet)")
     gezaehlt = stumm_bei(messung(seed, profil), blatt + 1, zeile, spalte)
+    if not (len(rest) >= 4 and not any(rest[:3]) and rest[3] != ""):
+        # Welle 1 (PLAN-Nacharbeit): gestrichener + direkt folgender neuer Absatz werden als Ersetzung in DERSELBEN Zelle
+        # eingetragen -- es bleibt keine geleerte Zeile mehr. Dann darf dort erst recht kein stiller Fehler stehen.
+        assert not gezaehlt, gezaehlt
+        return
     if gezaehlt:
         scheitern(f"Seed {seed}: Zelle B{blatt + 1}Z{zeile}S{spalte} der NEUEN Zeile zaehlt als stiller Fehler "
                   f"({gezaehlt[0]['aenderung']}), nur weil die alte Zeile geleert statt geloescht ist (Rest: {rest[3]!r})")
