@@ -361,12 +361,54 @@ def test_dev_und_test_haben_getrennte_stoerer(tmp_path):
     for s in range(1, 25):
         dev |= set(_erwartet(_paar(tmp_path, s, "schwer"))["stoerer"])
     assert dev and dev.isdisjoint(nur_test)
-    test = set()
-    for s in range(1001, 1011):
-        test |= set(_erwartet(_paar(tmp_path, s, "standard", "test"))["stoerer"])
-    assert nur_test <= test
+    ex_test = set()
+    for s in range(1001, 1011):      # frueherer Testkorpus (ex_test): die dort offengelegten NUR_TEST-Familien kommen vor
+        ex_test |= set(_erwartet(_paar(tmp_path, s, "standard", "ex_test"))["stoerer"])
+    assert set(stoerer.OFFENGELEGT) <= ex_test and ex_test <= set(stoerer.REGISTER)
     with pytest.raises(ValueError):
         erzeuge_paar(7, {"name": "x", "stoerer_liste": ["gedrehte_seite"]}, tmp_path / "x", "entwicklung")
+
+
+def test_korpora_und_seed_bereiche_v2(tmp_path):
+    """Regel 11 im Generator: entwicklung < 1000, test (reserviert) nur ab 2000; unbekannter Korpus/Erzeuger: Fehler."""
+    assert generator.GENERATOR_VERSION == "2" and generator.KORPORA == ("entwicklung", "ex_test", "test")
+    with pytest.raises(ValueError):
+        erzeuge_paar(1000, "standard", tmp_path / "e", "entwicklung")
+    with pytest.raises(ValueError):
+        erzeuge_paar(1005, "standard", tmp_path / "t", "test")
+    with pytest.raises(ValueError):
+        erzeuge_paar(5, "standard", tmp_path / "x", "irgendwas")
+    with pytest.raises(ValueError):
+        erzeuge_paar(5, "standard", tmp_path / "x", "entwicklung", erzeuger="word")
+    assert not any(tmp_path.iterdir())
+    assert stoerer.nur_test_erlaubt("entwicklung") == () and stoerer.nur_test_erlaubt("ex_test") == stoerer.OFFENGELEGT
+
+
+def test_ex_test_baut_dieselben_paare_wie_der_fruehere_testkorpus(tmp_path):
+    """ex_test nutzt denselben Zufallsstrom wie der fruehere Korpus "test" (v1): gleiche Aenderungen, gleiche Familien."""
+    for s in (1001, 1003):
+        neu = erzeuge_paar(s, "standard", tmp_path / "neu", "ex_test")
+        alt = erzeuge_paar(s, "standard", tmp_path / "alt", "ex_test", version="1")
+        a, b = _erwartet(neu), _erwartet(alt)
+        assert a["generator_version"] == "2" and b["generator_version"] == "1" and a["erzeuger"] == "writer"
+        assert a["stoerer"] == b["stoerer"] and a["aenderungen"] == b["aenderungen"]
+
+
+def test_nbsp_wie_ein_mensch_es_tippt():
+    """v2: Das geschuetzte Leerzeichen steht im alten UND neuen Stand nur zwischen Zahl und Einheit -- nie neben einem normalen
+    Leerzeichen und nie nur in einem der beiden Staende (v1-Artefakt: vorher "100 <NBSP>kWh", nachher "120<NBSP>kWh")."""
+    nb = "\u00a0"
+    f = stoerer.nbsp_setzen
+    m = f("Die Kapazität beträgt {-100-} {+120+} kWh.")
+    assert zustand(m, False) == "Die Kapazität beträgt 100 kWh." and zustand(m, True) == "Die Kapazität beträgt 120 kWh."
+    m = f("beträgt {-100-}{+120+} kWh")
+    assert zustand(m, False) == "beträgt 100" + nb + "kWh" and zustand(m, True) == "beträgt 120" + nb + "kWh"
+    m = f("beträgt {+120+} kWh und 5 kg")
+    assert zustand(m, False) == "beträgt kWh und 5" + nb + "kg" and zustand(m, True) == "beträgt 120 kWh und 5" + nb + "kg"
+    for markup in ("{-100 kWh-} {+120 kWh+} je", "x {-5 kW-} y 8 V", "a {+12+} {-15-} ms"):
+        for neu in (False, True):
+            z = zustand(f(markup), neu)
+            assert " " + nb not in z and nb + " " not in z and not z.startswith(nb)
 
 
 # ====================================================================== Jede Stoerer-Familie erzeugt ihre Besonderheit
@@ -590,7 +632,7 @@ def test_jede_familie_hat_einen_check():
 @pytest.mark.parametrize("name", sorted(stoerer.REGISTER))
 def test_stoerer_familie_erzeugt_ihre_besonderheit(tmp_path, name, seed):
     f = stoerer.REGISTER[name]
-    korpus = "test" if f.nur_test else "entwicklung"
+    korpus = "ex_test" if f.nur_test else "entwicklung"
     p = erzeuge_paar(seed, {"name": f"t_{name}", "stoerer_liste": [name]}, tmp_path / korpus, korpus)
     e = _erwartet(p)
     assert e["stoerer"] == [name]
@@ -770,8 +812,96 @@ def test_skript_erzeugt_korpus_und_ueberschreibt_nie(tmp_path):
 
 def test_skript_haelt_entwicklung_und_test_seeds_getrennt(tmp_path):
     assert _skript("--korpus", "entwicklung", "--seeds", "1000-1002", "--ziel", str(tmp_path)).returncode == 2
-    assert _skript("--korpus", "test", "--seeds", "1-3", "--ziel", str(tmp_path)).returncode == 2
+    assert _skript("--korpus", "ex_test", "--seeds", "1-3", "--ziel", str(tmp_path)).returncode == 2
+    assert _skript("--korpus", "ex_test", "--seeds", "1030-1031", "--ziel", str(tmp_path)).returncode == 2
+    assert _skript("--korpus", "test", "--seeds", "1001-1002", "--ziel", str(tmp_path)).returncode == 2   # test: nur ab 2000
     assert not (tmp_path / "entwicklung").exists() and not (tmp_path / "test").exists()
-    r = _skript("--korpus", "test", "--seeds", "1001-1002", "--ziel", str(tmp_path))
+    assert not (tmp_path / "ex_test").exists()
+    r = _skript("--korpus", "ex_test", "--seeds", "1001-1002", "--ziel", str(tmp_path))
     assert r.returncode == 0, r.stderr
-    assert (tmp_path / "test" / "synth_1001_standard" / "erwartet.json").exists()
+    e = json.loads((tmp_path / "ex_test" / "synth_1001_standard" / "erwartet.json").read_text(encoding="utf-8"))
+    assert e["korpus"] == "ex_test" and e["generator_version"] == "2" and e["erzeuger"] == "writer"
+    k = json.loads((tmp_path / "ex_test" / "KORPUS.json").read_text(encoding="utf-8"))
+    assert k["seeds"] == [1001, 1002] and k["je_erzeuger"] == {"writer": 2, "libreoffice": 0}
+
+
+# ====================================================================== Zweiter Erzeuger: LibreOffice (Generator v2)
+from tests.fixtures import pdf_lo  # noqa: E402
+
+lo_noetig = pytest.mark.skipif(not pdf_lo.verfuegbar(), reason="soffice (LibreOffice) fehlt -- Erzeuger 'libreoffice' wird uebersprungen")
+
+
+def _skript_env(env: dict, *args: str) -> subprocess.CompletedProcess:
+    import os
+    return subprocess.run([sys.executable, str(ROOT / "scripts" / "erzeuge_paare.py"), *args], capture_output=True, text=True,
+                          cwd=str(ROOT), timeout=120, env={**os.environ, **env})
+
+
+def test_libreoffice_fehlt_sauberer_fehler(tmp_path, monkeypatch):
+    monkeypatch.setattr(pdf_lo, "soffice_pfad", lambda: None)
+    assert not pdf_lo.verfuegbar()
+    with pytest.raises(pdf_lo.LibreOfficeFehlt):
+        erzeuge_paar(3, "standard", tmp_path, "entwicklung", erzeuger="libreoffice")
+    assert not any(tmp_path.iterdir())
+    r = _skript_env({"PATH": "/nonexistent"}, "--korpus", "entwicklung", "--seeds", "1-2", "--erzeuger", "wechselnd",
+                    "--ziel", str(tmp_path))
+    assert r.returncode == 0, r.stderr
+    assert "soffice" in r.stdout and (tmp_path / "entwicklung" / "synth_0001_standard").is_dir()
+    assert not (tmp_path / "entwicklung" / "synth_0002_standard").exists()
+    k = json.loads((tmp_path / "entwicklung" / "KORPUS.json").read_text(encoding="utf-8"))
+    assert k["seeds"] == [1] and k["erzeuger"] == {"1": "writer"}
+
+
+@lo_noetig
+def test_libreoffice_paar_gleiche_wahrheit_echtes_textprogramm(tmp_path):
+    """Gleicher Seed: Excel und Aenderungen sind fuer beide Erzeuger gleich (Wahrheit aus dem Modell); das LO-PDF hat
+    eingebettete Schriften (Carlito/Liberation), blaue und rote Zeichen, Durchstreich-Linien und eine Seitenzahl."""
+    fam = ["aufzaehlung", "fussnote", "tabelle_mit_farbkopf", "hyperlink", "silbentrennung"]
+    w = erzeuge_paar(31, {"name": "x", "stoerer_liste": fam}, tmp_path / "w", "entwicklung")
+    lo = erzeuge_paar(31, {"name": "x", "stoerer_liste": fam}, tmp_path / "lo", "entwicklung", erzeuger="libreoffice")
+    ew, el = _erwartet(w), _erwartet(lo)
+    assert ew["erzeuger"] == "writer" and el["erzeuger"] == "libreoffice"
+    assert ew["aenderungen"] == el["aenderungen"] and ew["luecken"] == el["luecken"] and ew["stoerer"] == el["stoerer"]
+    assert el["woerter_markiert"] == ew["woerter_markiert"]
+    for datei in ("vorher.xlsx", "nachher.xlsx"):
+        assert _zellen(w / datei) == _zellen(lo / datei)
+    assert el["libreoffice"]["libreoffice_version"] and el["libreoffice"]["schrift"] in pdf_lo.SCHRIFTEN
+    assert el["pdf_info"]["seiten_geschaetzt"] is True and el["pdf_info"]["fussnoten"] >= 1
+    with pdfplumber.open(lo / "aenderungen.pdf") as pdf:
+        chars = [c for pg in pdf.pages for c in pg.chars]
+        linien = [ln for pg in pdf.pages for ln in pg.lines]
+        texte = [pg.extract_text() or "" for pg in pdf.pages]
+        links = [h for pg in pdf.pages for h in pg.hyperlinks]
+    schriften = {c["fontname"].split("+")[-1] for c in chars}
+    assert any(s.startswith(("Carlito", "LiberationSans", "LiberationSerif")) for s in schriften), schriften
+    assert any(_blau(_farbe(c)) for c in chars) and any(_rot(_farbe(c)) for c in chars)
+    assert any(_rot(tuple(ln.get("stroking_color") or ())) for ln in linien)          # Durchstreichung als Linie
+    assert "Seite 1 von" in texte[0] and links
+
+
+def test_libreoffice_markup_als_flat_odt():
+    """Das Flat-ODT ist gueltiges XML; Liste, Fussnote, Hyperlink, Durchstreichung, weiches Trennzeichen und Seitenzahl-Feld
+    sind echte ODF-Elemente (laeuft auch ohne soffice)."""
+    import random as _random
+    from xml.etree import ElementTree as ET
+
+    class _A:
+        def __init__(self, markup, marker=None, typ="text_ersetzt", fussnote=None):
+            self.markup, self.marker, self.typ, self.fussnote, self.farben, self.art = markup, marker, typ, fussnote, None, "text"
+
+    class _S:
+        def __init__(self, absaetze):
+            self.scan = self.zwei_spalten = False
+            self.kopf_markup, self.ebene, self.id, self.absaetze = "1 Titel", 1, 1, absaetze
+
+    class _Ctx:
+        seed = 1
+        pdfkw = {"variante": "farbe"}
+        sektionen = [_S([_A("Das Fernüberwachungssystem {-muss-} {+soll+} geprüft werden. Siehe {@l:Datenblatt@}.",
+                            fussnote="Erfundene Fussnote."),
+                         _A("{+Kabel prüfen+}", marker="1."), _A("{-Lüfter reinigen-}", marker="2.")])]
+
+    xml = pdf_lo.baue_dokument(_Ctx(), _random.Random(1)).fodt()
+    ET.fromstring(xml.encode("utf-8"))
+    assert "<text:list " in xml and "<text:note " in xml and "<text:a " in xml and "text-line-through-style" in xml
+    assert "­" in xml and "text:page-number" in xml

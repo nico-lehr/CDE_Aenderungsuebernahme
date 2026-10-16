@@ -1,4 +1,5 @@
-"""Messwerkzeug: python -m src.cli messen --korpus entwicklung|test [--paar NAME] [--ordner PFAD] [--mit-vorschlaegen]
+"""Messwerkzeug: python -m src.cli messen --korpus entwicklung|ex_test|test [--paar NAME] [--ordner PFAD] [--mit-vorschlaegen]
+                                         [--vergleich [--gegen NNN]]
 
 Ein Paar = aenderungen.pdf + vorher.xlsx + nachher.xlsx (Format: docs/paar_format.md).
 Das Tool laeuft auf PDF + vorher; das Ergebnis wird mit "nachher" verglichen.
@@ -68,6 +69,18 @@ STRUKTUR_RISIKO_STICHWORT = {
     "autofilter": "autofilter", "tabelle": "excel-tabelle", "benannter_bereich": "benannte", "hyperlink": "hyperlink",
     "zeile_versteckt": "ausgeblendete", "zahlenformat": "zahlenformat", "datentyp": "zahlenformat",
 }
+SOLL_KLASSEN = ("haupt", "fuell_konstant", "formel", "nicht_ableitbar")     # Messung v2 (Etappe 2), siehe _Auswertung._klasse2
+ABLEITBAR = ("haupt", "fuell_konstant", "formel")
+OHNE_CODE = "ohne_code"          # gesperrte Aenderung ohne Pruefcode
+RESTARBEIT_TEILE = ("pruefen", "nicht_uebernommen", "leere_zellen_neue_zeilen", "luecken_woerter")
+RESTARBEIT_RICHTWERT = 12        # docs/ziel_v2.md: berichten, Richtwert hoechstens 12 je 100 Aenderungen
+ABLEITBAR_ZIEL = 0.85            # docs/ziel_v2.md (Etappe 2): Abdeckung ableitbarer Zellen mindestens 85 % (bis dahin nur Hinweis)
+ERZEUGER_KENNUNGEN = ("writer", "libreoffice")
+KORPORA = ("entwicklung", "ex_test", "test")
+RESTARBEIT_FORMEL = ("Restarbeit je 100 Änderungen = 100 × (Änderungen „prüfen“ + Änderungen „nicht übernommen“ + leere Zellen in "
+                     "neuen Zeilen, die laut nachher gefüllt sein müssten + Wörter in gemeldeten Lücken ÷ 10) ÷ Änderungen. "
+                     "Sie schätzt, wie viel Handarbeit nach dem Lauf bleibt (10 Lücken-Wörter ≈ eine Änderung).")
+RESTARBEIT_LUECKEN_TEILER = 10   # Restarbeit: 10 Woerter in einer gemeldeten Luecke zaehlen wie eine Aenderung
 FUELL_MAX_WOERTER = 3       # Zelle einer neuen/entfernten Zeile in einer nicht verwalteten Spalte: bis hierhin "harmlose Fuellung"
 _LEER_SPEZIAL = frozenset("               　")
 _PDF_BLIND = _LEER_SPEZIAL | frozenset("­​‌‍⁠﻿")     # Zeichen, die ein PDF meist nicht traegt
@@ -387,6 +400,15 @@ def _neu_abgleich(soll: list, ist: list) -> tuple[dict[int, int], dict[int, bool
 _TOKEN = re.compile(r"\s+|\S+")
 
 
+_CODE_ERLAUBT = re.compile(r"^[a-z0-9_:.\-]{1,60}$")
+
+
+def _code(c: Any) -> str:
+    """Pruefcode fuer den Bericht: nur Maschinen-Kennungen (Kleinbuchstaben, Ziffern, _ : . -), nie Text (Regel 16)."""
+    c = str(c).strip().lower()
+    return c if _CODE_ERLAUBT.match(c) else "sonstiger_code"
+
+
 def _wort_norm(wort: str) -> str:
     from .textutil import norm
     return norm(wort)
@@ -455,6 +477,9 @@ class _Auswertung:
         self.aend = aenderungen
         self.plan = plan
         self._inhaltsspalte: dict[int, int | None] = {}
+        self._konst_cache: dict[tuple, str | None] = {}
+        self.e_alle = None
+        self.e_alle_diffs: list[Diff] | None = None
         self.S: list[Diff] = []
         # Die Inhaltsspalte des Solls steht fest, BEVOR "leer" (verwaltete Spalten) gebraucht wird: erst ein Diff ohne `leer`,
         # daraus die Inhaltsspalte; dann das eigentliche Soll-Diff (self.S, mit `leer`).
@@ -491,8 +516,6 @@ class _Auswertung:
 
         self._bauen()
         self.luecken_erwartet = luecken_erwartet
-        self.e_alle = None
-        self.e_alle_diffs: list[Diff] | None = None
         if e_alle_blaetter is not None:
             alle = [_diff(self.V[i], _zeilen(e_alle_blaetter[i]) if i < len(e_alle_blaetter) else [], self._leer_fn(i))
                     for i in range(len(self.V))]
@@ -575,7 +598,8 @@ class _Auswertung:
                 self.einheiten.append({"key": key, "bi": bi, "zeile": z, "spalte": c, "soll": inhalt, "ist_da": ist_da,
                                        "ist": ist, "erreicht": erreicht, "art": art, "typ_falsch": typ_falsch, "ist_key": key,
                                        "vorher": v, "verwaltet": self._verwaltet(bi, c),
-                                       "klasse": klasse, "blind": ("z", z, c) in s.blind})
+                                       "klasse": klasse, "blind": ("z", z, c) in s.blind,
+                                       "klasse2": self._klasse2(bi, c, art, klasse, v, inhalt, self._vorher_keys(bi, z))})
                 self.soll_woerter[key] = _wort_diff(v, inhalt)
             for si, (anker, zellen, keys) in enumerate(s.neue):
                 for c, k in enumerate(keys, 1):
@@ -602,7 +626,8 @@ class _Auswertung:
                                            "typ_falsch": typ_falsch, "ist_key": ist_key,
                                            "vorher": "", "verwaltet": self._verwaltet(bi, c),
                                            "klasse": klasse, "si": si,
-                                           "blind": ("n", si, c) in s.blind})
+                                           "blind": ("n", si, c) in s.blind,
+                                           "klasse2": self._klasse2(bi, c, "neu", klasse, "", zellen[c - 1], keys)})
                     self.soll_woerter[key] = ([], _wort_liste(zellen[c - 1]))
 
         # Ist-Aenderungen (Auto): jede veraenderte Zelle bzw. neue Zeile
@@ -769,6 +794,87 @@ class _Auswertung:
         if art in ("neu", "weg") and max(len(soll.split()), len(vorher.split())) <= FUELL_MAX_WOERTER:
             return "harmlos"
         return "sonstige"
+
+    # ---- Klassen der Soll-Zellen fuer Etappe 2 (Messung v2) ----------------------------------------------------
+    def _verwaltete_spalten(self, bi: int) -> list[int] | None:
+        """Haupt-Spalten (Nummer/Titel/Inhalt) laut erkanntem Aufbau -- nur wenn er zum Soll passt; sonst None."""
+        lay = self._layout_von(bi)
+        if not lay or not lay.get("inhalt_spalte"):
+            return None
+        if column_index_from_string(lay["inhalt_spalte"]) != self._soll_inhaltsspalte(bi):
+            return None
+        return sorted({column_index_from_string(lay[k]) for k in ("section_spalte", "titel_spalte", "inhalt_spalte") if lay.get(k)})
+
+    def _vorher_keys(self, bi: int, zeile: int) -> tuple[str, ...]:
+        return tuple(_s(c) for c in self.vtext[bi].get(zeile, ()))
+
+    def _zeilentyp(self, bi: int, keys: tuple[str, ...]) -> tuple[bool, ...] | None:
+        """Typ einer Zeile = welche Haupt-Spalten belegt sind (z. B. Section-Kopf: Nummer+Titel(+Inhalt), Absatz: nur Inhalt)."""
+        sp = self._verwaltete_spalten(bi)
+        if sp is None:
+            return None
+        return tuple(bool(keys[c - 1]) if c - 1 < len(keys) else False for c in sp)
+
+    def _konstante(self, bi: int, spalte: int, typ: tuple[bool, ...]) -> str | None:
+        """Hat die Spalte in vorher fuer ALLE Zeilen dieses Typs denselben, nicht leeren Wert (mindestens 2 Zeilen)?
+        Die Kopfzeile der Tabelle (erste Zeile mit mindestens zwei belegten Haupt-Spalten) zaehlt nicht mit."""
+        k = (bi, spalte, typ)
+        if k in self._konst_cache:
+            return self._konst_cache[k]
+        sp = self._verwaltete_spalten(bi) or []
+        zeilen = [z for z in self.V[bi] if any(c - 1 < len(z.keys) and z.keys[c - 1] for c in sp)]
+        kopf = next((z.nr for z in zeilen if sum(1 for c in sp if c - 1 < len(z.keys) and z.keys[c - 1]) >= 2), None)
+        werte = [(z.keys[spalte - 1] if spalte - 1 < len(z.keys) else "") for z in zeilen
+                 if z.nr != kopf and self._zeilentyp(bi, z.keys) == typ]
+        wert = werte[0] if len(werte) >= 2 and len(set(werte)) == 1 and werte[0] else None
+        self._konst_cache[k] = wert
+        return wert
+
+    def _klasse2(self, bi: int, spalte: int, art: str, klasse: str, vorher: str, soll: str, zeilen_keys: tuple[str, ...]) -> str:
+        """Klassen der Soll-Zellen fuer Etappe 2 (Messung v2):
+        haupt           = verwaltete Spalte (Nummer/Titel/Inhalt),
+        formel          = Formelzelle,
+        fuell_konstant  = Zelle einer neuen/entfernten Zeile in einer Spalte, die in vorher fuer alle Zeilen desselben Typs denselben
+                          Wert hat (prueft die Messung selbst) -- ein Mensch uebernimmt den Wert von der Nachbarzeile,
+        nicht_ableitbar = alles andere (Kommentar, laufende Nummer, geaenderte Zelle ausserhalb der Haupt-Spalten ...).
+        Ableitbar (aus PDF + Excel herleitbar) sind haupt + fuell_konstant + formel."""
+        if klasse in ("formel", "haupt"):
+            return klasse
+        if art not in ("neu", "weg"):
+            return "nicht_ableitbar"
+        typ = self._zeilentyp(bi, zeilen_keys)
+        if typ is None:
+            return "nicht_ableitbar"
+        konst = self._konstante(bi, spalte, typ)
+        if konst is None:
+            return "nicht_ableitbar"
+        wert = _s(soll) if art == "neu" else _s(vorher)
+        return "fuell_konstant" if wert == konst else "nicht_ableitbar"
+
+    def richtig_nach_freigabe(self, ae: Any) -> bool | None:
+        """Waere diese (gesperrte) Aenderung nach der Freigabe richtig gewesen? Grundlage: die Excel mit ALLEN freigegebenen
+        Vorschlaegen (--mit-vorschlaegen). None = nicht messbar (ohne Vorschlags-Excel oder ohne Ziel)."""
+        if self.e_alle_diffs is None or self.e_alle is None or not ae.ops:
+            return None
+        for op in ae.ops:
+            bi = self.bi_von_name.get(op.blatt)
+            if bi is None:
+                return None
+            if op.art in ("ersetzen", "einfuegen", "zelle_leeren"):
+                ist = self.e_alle_diffs[bi].zellen.get((op.zeile, op.spalte), self._vorher(bi, op.zeile, op.spalte))
+                if _s(ist) != _s(self._erwartet(bi, op.zeile, op.spalte)):
+                    return False
+            elif op.art == "zeile_einfuegen":
+                gesucht = {c: _s(t) for c, t in op.zellen.items() if _s(t)}
+                treffer = [it for it in self.e_alle if it["art"] == "neu" and it["bi"] == bi and it["key"][3] and
+                           all(c - 1 < len(it["key"][3]) and it["key"][3][c - 1] == t for c, t in gesucht.items())]
+                if not treffer or not all(it["richtig"] for it in treffer):
+                    return False
+            else:                                   # Zeile loeschen/leeren: laut Soll muss die Zeile weg bzw. leer sein
+                s = self.S[bi]
+                if op.zeile not in s.weg and op.zeile not in s.geleert:
+                    return False
+        return True
 
     @staticmethod
     def _unerklaert(ist: str, soll: str, erlaubt: Counter) -> Counter:
@@ -1238,7 +1344,39 @@ class _Auswertung:
                 falsch_ids.update(i for i in f.aenderungen if nach_id.get(i) is not None and nach_id[i].status == UEBERNOMMEN)
         uebernommen_ids = {a.id for a in uebernommen}
         stille_ids = {i for f in stille for i in f.aenderungen if nach_id.get(i) is not None and nach_id[i].status == UEBERNOMMEN}
+
+        # --- Messung v2: Klassen der Soll-Zellen, Restarbeit, Pruefcodes, Sperr-Quote (nur Zahlen und Kennungen) ----------
+        klassen2 = {k: 0 for k in SOLL_KLASSEN}
+        klassen2_erreicht = {k: 0 for k in SOLL_KLASSEN}
+        for e in self.einheiten:
+            klassen2[e["klasse2"]] += 1
+            if e["klasse2"] != "haupt" and e["erreicht"]:
+                klassen2_erreicht[e["klasse2"]] += 1
+        klassen2_erreicht["haupt"] = erreicht           # wie "erreicht_auto" (ohne Regel-27-Zellen)
+        leer_neu = sum(1 for e in self.einheiten if e["art"] == "neu" and e["ist_da"] and not _s(e["ist"] or ""))
+        codes: Counter = Counter()
+        sperre: dict[str, dict[str, int]] = {}
+        for ae in self.aend:
+            eigene = sorted({_code(c) for c in (ae.pruefcodes or [])})
+            codes.update(eigene)
+            if self.vor_status.get(ae.id, ae.status) != PRUEFEN:
+                continue
+            richtig = self.richtig_nach_freigabe(ae)
+            for c in eigene or [OHNE_CODE]:
+                z = sperre.setdefault(c, {"gesperrt": 0, "messbar": 0, "richtig_nach_freigabe": 0})
+                z["gesperrt"] += 1
+                if richtig is not None:
+                    z["messbar"] += 1
+                    z["richtig_nach_freigabe"] += int(richtig)
         return {
+            "soll_klassen": klassen2,
+            "soll_klassen_erreicht": klassen2_erreicht,
+            "restarbeit": {"pruefen": sum(1 for a in self.aend if a.status == PRUEFEN),
+                           "nicht_uebernommen": sum(1 for a in self.aend if a.status == NICHT),
+                           "leere_zellen_neue_zeilen": leer_neu,
+                           "luecken_woerter": sum(int(lk.get("woerter") or 0) for lk in self.plan.luecken)},
+            "pruefcodes": dict(codes),
+            "sperr_quote": sperre,
             "bilanz_stimmt": bilanz_ok,
             "vollstaendig": bool(self.bil_auto.get("vollstaendig")),
             "stille_fehler": len(stille),
@@ -1801,6 +1939,7 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
     res["original_unveraendert"] = all(_sha(p) == hashes_vorher[p.name] for p in (pdf, vorher, nachher))
     res["dauer_sekunden"] = round(time.monotonic() - t0, 2)
     res["profil_angenommen"] = True                      # ohne erwartet.json/Profil: Standard-Aufbau angenommen (siehe fasse_zusammen)
+    res["erzeuger"] = _erzeuger(erwartet)
     if erwartet:
         res["stoerer"] = [s for s in erwartet.get("stoerer", []) if isinstance(s, str)]
         res["profil"] = erwartet.get("profil", "") if isinstance(erwartet.get("profil", ""), str) else ""
@@ -1816,6 +1955,15 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
             {"blatt": 0, "zeile": 0, "spalte": 0, "aenderung": "", "art": "unklar", "stumm": False, "grund": g}
             for _t, g in ausfaelle]
     return res
+
+
+def _erzeuger(erwartet: dict[str, Any] | None) -> str:
+    """PDF-Erzeuger laut erwartet.json: writer | libreoffice; Generator v1 kannte nur den eigenen Schreiber; ohne erwartet.json
+    (echte Paare): unbekannt. Nur feste Kennungen (Regel 16)."""
+    if not erwartet:
+        return "unbekannt"
+    e = erwartet.get("erzeuger", "writer")
+    return e if e in ERZEUGER_KENNUNGEN else "sonstiger"
 
 
 def _fehlgeschlagen(name: str, exc: BaseException) -> dict[str, Any]:
@@ -1839,6 +1987,8 @@ def _fehlgeschlagen(name: str, exc: BaseException) -> dict[str, Any]:
             "struktur_nach_art": {a: 0 for a in STRUKTUR_ARTEN}, "plausibilitaet_hinweise": None,
             "plausibilitaet_ungemeldet": None, "luecken_pruefbar": False,
             "aenderungen_nach_status": {}, "hinweise": [], "original_unveraendert": None,
+            "soll_klassen": {k: 0 for k in SOLL_KLASSEN}, "soll_klassen_erreicht": {k: 0 for k in SOLL_KLASSEN},
+            "restarbeit": {k: 0 for k in RESTARBEIT_TEILE}, "pruefcodes": {}, "sperr_quote": {}, "erzeuger": "unbekannt",
             "fehler": [{"blatt": 0, "zeile": 0, "spalte": 0, "aenderung": "", "art": "unklar", "stumm": False,
                         "grund": type(exc).__name__}]}
 
@@ -1986,6 +2136,52 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
         "plausibilitaet_paare_geprueft": len(plausi_paare),
         "zaehleinheiten": ZAEHLEINHEITEN,
     }
+    # --- Messung v2: Klassen, Restarbeit, Pruefcodes, Sperr-Quote, je Erzeuger -------------------------------------------
+    klassen = s_dict("soll_klassen", SOLL_KLASSEN)
+    klassen_err = s_dict("soll_klassen_erreicht", SOLL_KLASSEN)
+    gesamt["soll_klassen"] = klassen
+    gesamt["soll_klassen_erreicht"] = klassen_err
+    gesamt["soll_zellen_ableitbar"] = sum(klassen[k] for k in ABLEITBAR)
+    gesamt["erreicht_ableitbar"] = sum(klassen_err[k] for k in ABLEITBAR)
+    gesamt["abdeckung_ableitbar"] = _anteil(gesamt["erreicht_ableitbar"], gesamt["soll_zellen_ableitbar"])
+    gesamt["abdeckung_alle_klassen"] = _anteil(sum(klassen_err.values()), sum(klassen.values()))
+    rest = s_dict("restarbeit", RESTARBEIT_TEILE)
+    gesamt["restarbeit"] = rest
+    gesamt["restarbeit_je_100"] = _restarbeit(rest, gesamt["aenderungen"])
+    gesamt["restarbeit_formel"] = RESTARBEIT_FORMEL
+    codes: Counter = Counter()
+    for p in paare:
+        codes.update(p.get("pruefcodes") or {})
+    gesamt["pruefcodes"] = dict(sorted(codes.items()))
+    sperre: dict[str, dict[str, Any]] = {}
+    for p in paare:
+        for code, z in (p.get("sperr_quote") or {}).items():
+            e = sperre.setdefault(code, {"gesperrt": 0, "messbar": 0, "richtig_nach_freigabe": 0})
+            for k in e:
+                e[k] += int(z.get(k, 0))
+    for e in sperre.values():
+        e["sperr_quote"] = _anteil(e["richtig_nach_freigabe"], e["messbar"])
+    gesamt["sperr_quote"] = dict(sorted(sperre.items()))
+    je_erzeuger: dict[str, dict[str, Any]] = {}
+    for p in paare:
+        e = je_erzeuger.setdefault(p.get("erzeuger") or "unbekannt",
+                                   {"paare": 0, "stille_fehler": 0, "regel27_verstoesse": 0, "kollateral": 0, "soll_zellen": 0,
+                                    "erreicht_auto": 0, "auto_richtig": 0, "auto_gesamt": 0, "soll_woerter": 0,
+                                    "lese_luecke_woerter": 0, "idempotent": 0, "aenderungen": 0,
+                                    "restarbeit": {k: 0 for k in RESTARBEIT_TEILE}})
+        e["paare"] += 1
+        for k in ("stille_fehler", "regel27_verstoesse", "kollateral", "soll_zellen", "erreicht_auto", "auto_richtig",
+                  "auto_gesamt", "soll_woerter", "lese_luecke_woerter", "aenderungen"):
+            e[k] += p.get(k) or 0
+        e["idempotent"] += 1 if p.get("idempotent") else 0
+        for k in RESTARBEIT_TEILE:
+            e["restarbeit"][k] += (p.get("restarbeit") or {}).get(k, 0)
+    for e in je_erzeuger.values():
+        e["treffergenauigkeit_auto"] = _anteil(e["auto_richtig"], e["auto_gesamt"])
+        e["abdeckung_ohne_nachfrage"] = _anteil(e["erreicht_auto"], e["soll_zellen"])
+        e["lese_luecke_anteil"] = _anteil(e["lese_luecke_woerter"], e["soll_woerter"])
+        e["restarbeit_je_100"] = _restarbeit(e["restarbeit"], e["aenderungen"])
+
     je_stoerer: dict[str, dict[str, Any]] = {}
     for p in paare:
         for st in p.get("stoerer", []):
@@ -2094,6 +2290,18 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
                    f"Plan das Risiko vorab gemeldet hat (angekündigt: {gesamt['struktur_vorschlaege_angekuendigt']}); sonst ist sie ein Befund"},
         {"nr": 6, "name": "Originale unverändert", "wert": f"{gesamt['original_unveraendert']} von {m}", "ziel": "alle Paare",
          "einheit": "Paare", "ampel": _ampel(None if not m else gesamt["original_unveraendert"] == m, luecke=lue)},
+        # Messung v2 (docs/ziel_v2.md): nur "ok" oder "Hinweis" -- aendert den Exit-Code nicht (Ziele gelten erst ab Etappe 2)
+        {"nr": 7, "name": "Abdeckung ableitbare Zellen (Haupt + Füll-Konstante + Formel)",
+         "wert": f"{_prozent(gesamt['abdeckung_ableitbar'])} ({gesamt['erreicht_ableitbar']} von {gesamt['soll_zellen_ableitbar']})",
+         "ziel": "mindestens 85 % (Etappe 2)", "einheit": "Zellen",
+         "ampel": _hinweis(gesamt["abdeckung_ableitbar"], lambda x: x >= ABLEITBAR_ZIEL),
+         "detail": "Klassen: " + ", ".join(f"{k} {klassen_err[k]} von {klassen[k]}" for k in SOLL_KLASSEN)
+                   + ". „fuell_konstant“ = Spalte hat in vorher für alle Zeilen desselben Typs denselben Wert (prüft die Messung "
+                     "selbst); „nicht_ableitbar“ (z. B. Kommentar, laufende Nummer) zählt hier nicht mit"},
+        {"nr": 7, "name": "Restarbeit je 100 Änderungen", "wert": _zahl(gesamt["restarbeit_je_100"]),
+         "ziel": f"berichten (Richtwert höchstens {RESTARBEIT_RICHTWERT})", "einheit": "Änderungen (gewichtet)",
+         "ampel": _hinweis(gesamt["restarbeit_je_100"], lambda x: x <= RESTARBEIT_RICHTWERT),
+         "detail": RESTARBEIT_FORMEL + " Teile: " + ", ".join(f"{k} {rest[k]}" for k in RESTARBEIT_TEILE)},
     ]
 
     gesamt["kriterien_nicht_ok"] = sum(1 for k in kriterien if k["ampel"] == "NICHT ok")
@@ -2101,7 +2309,81 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
 
     return {"format": BERICHT_FORMAT, "korpus": korpus, "generator_version": generator_version,
             "schema_version": SCHEMA_VERSION, "gesamt": gesamt, "fehlerarten": fehlerarten, "je_stoerer": je_stoerer,
-            "kriterien": kriterien, "paare": paare}
+            "je_erzeuger": je_erzeuger, "kriterien": kriterien, "paare": paare}
+
+
+def _restarbeit(rest: dict[str, int], aenderungen: int) -> float | None:
+    if not aenderungen:
+        return None
+    last = rest["pruefen"] + rest["nicht_uebernommen"] + rest["leere_zellen_neue_zeilen"] + rest["luecken_woerter"] / RESTARBEIT_LUECKEN_TEILER
+    return round(100.0 * last / aenderungen, 1)
+
+
+def _hinweis(wert: float | None, ok: Callable[[float], bool]) -> str:
+    """Ampel fuer Kennzahlen, die nur berichtet werden: nie "NICHT ok" (Exit-Code bleibt unberuehrt)."""
+    if wert is None:
+        return "nicht gemessen"
+    return "ok" if ok(wert) else "Hinweis"
+
+
+def _zahl(x: float | None) -> str:
+    return "-" if x is None else f"{x:.1f}".replace(".", ",")
+
+
+# ---------------------------------------------------------------- Vergleich mit einem frueheren Bericht (--vergleich)
+VERGLEICH_HAUPT = ("stille_fehler", "regel27_verstoesse", "kollateral", "treffergenauigkeit_auto", "vorschlags_genauigkeit",
+                   "abdeckung_ohne_nachfrage", "standard_abdeckung", "abdeckung_alle", "abdeckung_ableitbar", "lese_luecke_anteil",
+                   "idempotent", "restarbeit_je_100", "aenderungen_zu_pruefen", "aenderungen_nicht_uebernommen")
+
+
+def _numerisch(x: Any) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _delta(a: Any, b: Any) -> dict[str, Any]:
+    return {"vorher": a, "jetzt": b, "delta": round(b - a, 4) if _numerisch(a) and _numerisch(b) else None}
+
+
+def vergleiche(alt: dict[str, Any], neu: dict[str, Any], gegen: str) -> dict[str, Any]:
+    """Deltas jeder Kennzahl (gesamt), je Stoerer-Familie und je Erzeuger -- nur Zahlen."""
+    ga, gn = alt.get("gesamt") or {}, neu.get("gesamt") or {}
+    kennzahlen = {k: _delta(ga.get(k), v) for k, v in gn.items()
+                  if _numerisch(v) and (k in ga and (_numerisch(ga[k]) or ga[k] is None))}
+    for k in ("vorschlags_genauigkeit", "abdeckung_ableitbar", "restarbeit_je_100"):
+        if k in gn and k not in kennzahlen:
+            kennzahlen[k] = _delta(ga.get(k), gn.get(k))
+
+    def je(name: str, felder: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+        a, b = alt.get(name) or {}, neu.get(name) or {}
+        out: dict[str, dict[str, Any]] = {}
+        for fam in sorted(set(a) | set(b)):
+            out[fam] = {f: _delta((a.get(fam) or {}).get(f), (b.get(fam) or {}).get(f)) for f in felder}
+        return out
+
+    return {"gegen": gegen, "korpus_vorher": alt.get("korpus"),
+            "generator_version_vorher": alt.get("generator_version"),
+            "vergleichbar": alt.get("generator_version") == neu.get("generator_version") and alt.get("korpus") == neu.get("korpus"),
+            "kennzahlen": kennzahlen,
+            "je_stoerer": je("je_stoerer", ("paare", "stille_fehler", "abdeckung_ohne_nachfrage")),
+            "je_erzeuger": je("je_erzeuger", ("paare", "stille_fehler", "treffergenauigkeit_auto", "abdeckung_ohne_nachfrage",
+                                              "restarbeit_je_100"))}
+
+
+def finde_bericht(korpus: str, gegen: str | None = None) -> Path | None:
+    """Ordner des letzten Berichts desselben Korpus (oder des Berichts NNN bei --gegen) unter messung_dir."""
+    basis = config.pfad("messung_dir")
+    if not basis.is_dir():
+        return None
+    ordner = [(int(m.group(1)), d) for d in basis.iterdir()
+              if d.is_dir() and (m := re.match(r"^(\d{3,})_(.+)$", d.name)) and (d / "bericht.json").is_file()]
+    if gegen is not None:
+        try:
+            nr = int(gegen)
+        except ValueError:
+            return None
+        return next((d for n, d in sorted(ordner) if n == nr), None)
+    passend = [(n, d) for n, d in ordner if d.name.split("_", 1)[1] == korpus]
+    return max(passend)[1] if passend else None
 
 
 def _prozent(x: float | None) -> str:
@@ -2161,6 +2443,42 @@ def _md(b: dict[str, Any]) -> str:
           f"{g['stille_fehler_nur_textform']}", ""]
     z += [f"- {a}: {n}" for a, n in g["stille_fehler_nach_art"].items()]
     z += ["", "## Fehlerarten", ""] + [f"- {a}: {n}" for a, n in b["fehlerarten"].items()]
+    z += ["", "## Messung v2: Klassen, Restarbeit, Prüfcodes", "",
+          f"- Soll-Zellen nach Klasse (erreicht von gesamt, Einheit: Zellen): "
+          + ", ".join(f"{k} {g['soll_klassen_erreicht'][k]} von {g['soll_klassen'][k]}" for k in SOLL_KLASSEN)
+          + f" · ableitbar (haupt + fuell_konstant + formel): {_prozent(g['abdeckung_ableitbar'])}",
+          f"- Restarbeit je 100 Änderungen: {_zahl(g['restarbeit_je_100'])} (Teile: "
+          + ", ".join(f"{k} {g['restarbeit'][k]}" for k in RESTARBEIT_TEILE) + ")",
+          f"- Formel: {g['restarbeit_formel']}",
+          "- Prüfcodes (Anzahl Änderungen je Code): " + (", ".join(f"{c} {n}" for c, n in g["pruefcodes"].items()) or "keine"),
+          "- Sperr-Quote je Code (gesperrte Änderungen, die nach Freigabe richtig gewesen wären; nur mit --mit-vorschlaegen messbar): "
+          + (", ".join(f"{c} {e['richtig_nach_freigabe']} von {e['messbar']} ({_prozent(e['sperr_quote'])}; gesperrt {e['gesperrt']})"
+                       for c, e in g["sperr_quote"].items()) or "keine gesperrten Änderungen")]
+    if b.get("je_erzeuger"):
+        z += ["", "## Je PDF-Erzeuger", "",
+              "| Erzeuger | Paare | Stille Fehler | Regel 27 | Treffergenauigkeit | Abdeckung | Lese-Lücke | Idempotent | Restarbeit/100 |",
+              "|---|---|---|---|---|---|---|---|---|"]
+        for name, e in sorted(b["je_erzeuger"].items()):
+            z.append(f"| {name} | {e['paare']} | {e['stille_fehler']} | {e['regel27_verstoesse']} | "
+                     f"{_prozent(e['treffergenauigkeit_auto'])} | {_prozent(e['abdeckung_ohne_nachfrage'])} | "
+                     f"{_prozent(e['lese_luecke_anteil'])} | {e['idempotent']} | {_zahl(e['restarbeit_je_100'])} |")
+    v = b.get("vergleich")
+    if v:
+        z += ["", f"## Vergleich mit Bericht {v['gegen']}", ""]
+        if not v["vergleichbar"]:
+            z.append(f"Achtung: anderer Korpus oder andere Generator-Version (vorher {v['korpus_vorher']}, Generator "
+                     f"{v['generator_version_vorher']}) -- die Zahlen sind nur bedingt vergleichbar.")
+            z.append("")
+        z += ["| Kennzahl | vorher | jetzt | Delta |", "|---|---|---|---|"]
+        for k in VERGLEICH_HAUPT:
+            d = v["kennzahlen"].get(k)
+            if d:
+                z.append(f"| {k} | {d['vorher']} | {d['jetzt']} | {d['delta']} |")
+        geaendert = {f: d for f, d in v["je_stoerer"].items() if any(x["delta"] for x in d.values())}
+        if geaendert:
+            z += ["", "| Störer | Δ Paare | Δ stille Fehler | Δ Abdeckung |", "|---|---|---|---|"]
+            for f, d in geaendert.items():
+                z.append(f"| {f} | {d['paare']['delta']} | {d['stille_fehler']['delta']} | {d['abdeckung_ohne_nachfrage']['delta']} |")
     if b["je_stoerer"]:
         z += ["", "## Je Störer-Familie", "", "| Störer | Paare | Stille Fehler | Abdeckung |", "|---|---|---|---|"]
         for name, e in sorted(b["je_stoerer"].items()):
@@ -2253,8 +2571,29 @@ def _konsole(b: dict[str, Any], ziel: Path, vorschlaege: bool) -> None:
     if not vorschlaege:
         print("")
         print("Hinweis: Die Qualität der Vorschläge wurde nicht gemessen (Option --mit-vorschlaegen).")
+    print(f"  Abdeckung ableitbare Zellen: {_prozent(g['abdeckung_ableitbar'])}  |  Restarbeit je 100 Änderungen: "
+          f"{_zahl(g['restarbeit_je_100'])}  |  Prüfcodes: {sum(g['pruefcodes'].values())}")
+    if len(b.get("je_erzeuger") or {}) > 1 or "libreoffice" in (b.get("je_erzeuger") or {}):
+        for name, e in sorted(b["je_erzeuger"].items()):
+            print(f"  Erzeuger {name}: {e['paare']} Paare, {e['stille_fehler']} stille Fehler, Treffergenauigkeit "
+                  f"{_prozent(e['treffergenauigkeit_auto'])}, Abdeckung {_prozent(e['abdeckung_ohne_nachfrage'])}, "
+                  f"Lese-Lücke {_prozent(e['lese_luecke_anteil'])}")
+    v = b.get("vergleich")
+    if v:
+        print("")
+        print(f"Vergleich mit {v['gegen']}" + ("" if v["vergleichbar"] else " (anderer Korpus/Generator: nur bedingt vergleichbar)") + ":")
+        for k in VERGLEICH_HAUPT:
+            d = v["kennzahlen"].get(k)
+            if d and d["delta"]:
+                print(f"  {k}: {d['vorher']} -> {d['jetzt']} (Delta {d['delta']})")
+        d = v["kennzahlen"].get("stille_fehler")
+        if d and d["delta"] and d["delta"] > 0:
+            print(f"ACHTUNG Stop-Regel: Die stillen Fehler sind gestiegen ({d['vorher']} -> {d['jetzt']}).")
     if b["korpus"] == "test":
         print("Hinweis (Regel 11): Den Test-Korpus nie zum Einstellen des Tools benutzen.")
+    if b["korpus"] == "ex_test":
+        print("Hinweis: ex_test ist der frühere Testkorpus (Seeds 1001–1030). Er ist offen als Entwicklungskorpus erklärt "
+              "und nicht mehr ungesehen.")
     print("")
     print(f"Bericht: {ziel / 'bericht.md'}")
     if g["kriterien_nicht_ok"]:
@@ -2275,10 +2614,12 @@ def _lade_korpus_info(eltern: Path) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="cde messen", description="Misst das Tool an Paaren (PDF + Excel vorher + Excel nachher).")
-    ap.add_argument("--korpus", choices=["entwicklung", "test"], default="entwicklung")
+    ap.add_argument("--korpus", choices=list(KORPORA), default="entwicklung")
     ap.add_argument("--paar", help="nur dieses Paar (Ordnername)")
     ap.add_argument("--ordner", help="anderer Eltern-Ordner mit Paaren (statt paare_dir/<korpus>)")
     ap.add_argument("--mit-vorschlaegen", action="store_true", help="auch die Qualität der Vorschläge (nach Freigabe) messen")
+    ap.add_argument("--vergleich", action="store_true", help="Deltas gegen den letzten Bericht desselben Korpus ausgeben")
+    ap.add_argument("--gegen", metavar="NNN", help="mit --vergleich: gegen den Bericht mit dieser Nummer vergleichen")
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:                       # argparse beendet selbst; wir geben den Code zurueck
@@ -2296,6 +2637,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if a.korpus == "test":
         print("Hinweis (Regel 11): Der Test-Korpus wird nur zur Endmessung benutzt, nie zum Einstellen.")
+    elif a.korpus == "ex_test":
+        print("Hinweis: ex_test = früherer Testkorpus (Seeds 1001–1030), offen als Entwicklung erklärt.")
+    alt_ordner = None
+    if a.vergleich or a.gegen:
+        alt_ordner = finde_bericht(a.korpus, a.gegen)
+        if alt_ordner is None:
+            print("Kein früherer Bericht zum Vergleich gefunden" + (f" (Nummer {a.gegen})." if a.gegen else " für diesen Korpus."))
+            if a.gegen:
+                return 2
     paare: list[dict[str, Any]] = []
     for d in kandidaten:
         try:
@@ -2307,6 +2657,12 @@ def main(argv: list[str] | None = None) -> int:
         stand = ("teilweise gemessen" if p.get("teilweise_gemessen") else "nicht messbar") if "abgestuerzt" in p else "gemessen"
         print(f"  Paar {d.name}: {stand}", flush=True)
     bericht = fasse_zusammen(paare, a.korpus, _lade_korpus_info(eltern), a.mit_vorschlaegen)
+    if alt_ordner is not None:
+        try:
+            alt = json.loads((alt_ordner / "bericht.json").read_text(encoding="utf-8"))
+            bericht["vergleich"] = vergleiche(alt, bericht, alt_ordner.name)
+        except (OSError, ValueError):
+            print("Der frühere Bericht konnte nicht gelesen werden; kein Vergleich.")
     ziel = schreibe_bericht(bericht, a.korpus)
     _konsole(bericht, ziel, a.mit_vorschlaegen)
     return 1 if bericht["gesamt"]["kriterien_nicht_ok"] else 0       # 0 = kein Kriterium "NICHT ok", 1 = Ziel verfehlt, 2 = kaputte Eingabe
