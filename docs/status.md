@@ -11,6 +11,38 @@ sind die stillen Fehler von **64 auf 7** gesunken (Ziel war 0). Auf dem **Testko
 Jede automatisch übernommene Änderung sollte stichprobenartig geprüft werden. Wie es bei echten Dokumenten abschneidet, zeigt erst die Messung an deinen
 echten Paaren (`docs/anleitung_echte_paare.md`).
 
+## Zwischenstand Auftrag 002, Etappe 1 (16.10.2026) – „wie ein sorgfältiger Mensch“
+
+**Was neu ist (ADR 0004, `docs/ziel_v2.md`):** Das Tool trägt eine Änderung nur noch automatisch ein, wenn in der Excel genau der alte Absatz aus dem PDF steht (Gegenprobe A1).
+Nach dem Speichern wird jeder betroffene Absatz gegen das PDF geprüft, nicht nur gegen den eigenen Plan (A3). Ein unklares Signal irgendwo im Absatz (unbekannte Farbe, halbe Markierung,
+Tabelle, zwei Spalten …) stoppt die Automatik für den ganzen Absatz. Der PDF-Leser behält Satzzeichen, Trenner und Fußnoten-Hochzahlen richtig, erkennt Striche über ganze Zeilen,
+gedrehte Seiten und Seitenumbrüche; ein zweiter Leser (pdfium) und eine Farb-Inventur finden Markierungen, die der Textleser übersieht. Schema 3 (`plan.json` speichert die Absätze).
+
+**Neue, realistischere Testdaten:** Generator v2 (Phantom-Fehler mit geschütztem Leerzeichen behoben) und ein zweiter PDF-Erzeuger über LibreOffice (eingebettete Schriften, Blocksatz,
+weiche Trennung, Kopf-/Fußzeilen). Korpora: `entwicklung` = 120 Paare (Seeds 1–60 und 101–160, 30 davon LibreOffice), `ex_test` = 30 Paare (früherer Testkorpus, jetzt offen als Entwicklung
+erklärt). Ein ungesehener Test (Seeds 2001–2040) kommt erst am Ende von Etappe 2.
+
+| Kennzahl | Ziel | alter Stand auf neuem Korpus¹ | jetzt: Entwicklung (120) | jetzt: ex_test (30) |
+|---|---|---|---|---|
+| Stille Fehler (nach Korrektur der Messartefakte²) | 0 | 31 | **4** | **0**² |
+| Automatisch richtig, Zellen | 100 % | 96,2 % | 98,1 % | 95,8 % |
+| Automatisch richtig, je Änderung | 100 % | – | 99,2 % (1562 von 1574) | – |
+| Vorschläge exakt nach Freigabe | ≥ 95 % | 78,0 % | 87,1 % | 48,3 % |
+| Abdeckung ohne Nachfrage, Haupt-Spalten | ≥ 90 % (Standard) | 83,7 % | 87,4 % | 85,6 % |
+| Abdeckung über alle Soll-Zellen | ≥ 70 % | 51–60 % | 57,8 % | 62,8 % |
+| Lese-Lücke | ≤ 2 % | 1,8 % | 2,2 % | 7,0 % |
+| Zweiter Lauf ändert nichts | alle | 111/120 | 120/120 | 30/30 |
+| Regel-27-Verstöße / Kollateral | 0 / 0 | 0 / 0 | 0 / 1 | 0 / 0 |
+| Restarbeit je 100 Änderungen | berichten | 24,6 | 22,6 | 28,9 |
+
+¹ Vor Etappe 1, gemessen mit dem alten Tool auf dem neuen Korpus (v2 + LibreOffice).
+² **Ehrlich lesen:** Die 0 bei `ex_test` entsteht auch dadurch, dass Wörter in einer **gemeldeten** Farb-Lücke (grüne Schrift) nicht mehr als „still“ zählen – sie sind gemeldet und der Absatz ist gesperrt.
+Die Genauigkeit der automatischen Einträge liegt dort trotzdem nur bei 95,8 %, und die Lese-Lücke bei 7,0 % (grüner Text wird weiter nicht gelesen, nur gemeldet).
+
+**Noch offen:** die 4 stillen Fehler der Entwicklung (u. a. ein abgetrennter Satzteil als eigene Zeile, eine Füllzelle in der falschen neuen Zeile); Formeln und Füllspalten in neuen Zeilen
+(Etappe 2: ZEILEN); schwache Vorschläge bei grüner/unbekannter Farbe (Leser, nicht Planer); Dashboard zeigt „PDF sagt / Excel hat“ und Abwahl noch nicht (Etappe 2: UI); Ollama (Etappe 2).
+Alle Zahlen stammen von **erfundenen** Dokumenten.
+
 ## Messwerte (erfundener Entwicklungskorpus, 60 Paare, Generator-Version 1)
 
 | Nr | Kriterium (`docs/ziel_v1.md`) | Ziel | Baseline | Jetzt | Ampel |

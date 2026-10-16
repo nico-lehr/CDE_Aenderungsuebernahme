@@ -1,6 +1,6 @@
 # CDE-Änderungsübernahme
 
-Autor: **Nico Lehr** · Stand: 15.10.2026 · Version 0.2.0 (nur mit erfundenen Daten getestet; Zahlen siehe `docs/status.md`)
+Autor: **Nico Lehr** · Stand: 16.10.2026 · Version 0.2.0 + Auftrag 002 Etappe 1 (nur mit erfundenen Daten getestet; Zahlen siehe `docs/status.md`)
 
 Seitenprojekt, **getrennt von der Masterarbeit (bess-pipeline)**. Läuft lokal, ohne Internet, ohne KI-Dienst, ohne API-Key.
 

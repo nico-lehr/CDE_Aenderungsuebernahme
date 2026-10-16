@@ -44,3 +44,6 @@ Leser/Farb-Inventur · **APPLY** = applier (Gegenprobe A3) · **ZEILEN** = neue 
 
 **Wird ein Fall repariert**, wird sein Test XPASS (rot): dann den `xfail`-Marker (bzw. die `marks=` im `pytest.param`)
 entfernen – er bleibt als Schutz-Test.
+
+
+> Stand 16.10.2026: Alle Fälle RT-200 bis RT-216 sind behoben (kein xfail mehr offen); sie laufen als normale Schutz-Tests.
