@@ -5,6 +5,7 @@
 > Welche Fälle **heute noch offen** sind, steht in `docs/status.md`. Weitere Tabellen:
 > - `README_pdf.md` – R2, PDF-Leser (RT-60 bis RT-109)
 > - `README_korpus.md` – R3, Ursachen der stillen Fehler im Entwicklungskorpus und Schwächen der Messung (RT-110 bis RT-142)
+> - `README_r4.md` – R4, Ende-zu-Ende-Fälle für Etappe 1 (Punkt am farbigen Wort, Absatz-Sperre, A1/A3, Sonderfarben, Formeln, RT-200 bis RT-216)
 >
 > Besitzer: **K-PL** = planner/applier/protokoll · **K-XL** = excel_model/matcher · **K-API** = runs/api · **K-PDF** = pdf_reader · **Mess-Bauer/K-MESS** = messen.
 
