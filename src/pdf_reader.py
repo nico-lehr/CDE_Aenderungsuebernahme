@@ -183,6 +183,7 @@ class _Z:
     unb_flaeche: str = ""              # Farbe einer nicht zugeordneten Hinterlegung / Hervorhebung
     unscharf: bool = False             # Status stammt nur aus Geometrie (Linie, Flaeche, Kommentar)
     hinweis: set = field(default_factory=set)
+    nr: int = -1                       # Position in der Zeichenfolge der Seite (Reihenfolge im Inhaltsstrom)
 
 
 @dataclass
@@ -441,7 +442,7 @@ def _lese_seite(page: Any, nr: int, cfg: dict) -> _SeitenDaten:
         rgb, unklar = _zeichenfarbe(c, sonder)
         x0, top, x1, bot = rahmen.box(c["x0"], c["top"], c["x1"], c["bottom"])
         z = _Z(text=text, x0=x0, x1=x1, top=top, bottom=bot,
-               size=float(c.get("size") or 10), font=str(c.get("fontname") or ""), leer=leer)
+               size=float(c.get("size") or 10), font=str(c.get("fontname") or ""), leer=leer, nr=i)
         z.unsichtbar = bool(modi and modi[i][0] in (3, 7))
         z.weich = bool(modi and modi[i][1])
         if rgb is not None:
@@ -868,16 +869,24 @@ def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "",
 
     R1: `leere` = die Leerraum-Zeichen der Zeile (Leerzeichen, geschuetztes Leerzeichen, Tab). Steht eines zwischen zwei
     Zeichen, trennt es die Woerter auch bei kleiner Luecke (Vorrang vor der Schwelle, z. B. enger Blocksatz) und bestimmt
-    den Trenner. Ohne Leerraum-Zeichen entscheidet die Luecke (layout.wort_luecke). (Eine Luecke ohne Zeichen trennt weiter:
+    den Trenner, sofern ueberhaupt etwas Platz ist (layout.leerzeichen_min_luecke_em). Ohne Leerraum-Zeichen entscheidet
+    die Luecke (layout.wort_luecke). (Eine Luecke ohne Zeichen trennt weiter:
     viele PDFs setzen Woerter einzeln, auch in Zeilen, die sonst Leerzeichen enthalten.)"""
     lay = cfg["layout"]
     zeichen = sorted(zeichen, key=lambda z: z.x0)
     leer = sorted((z for z in (leere or []) if not z.weich and z.text), key=lambda z: z.x0)
     mitten = [(z.x0 + z.x1) / 2 for z in leer]
 
+    min_luecke = lay.get("leerzeichen_min_luecke_em", 0.05)
+
     def dazwischen(a: _Z, b: _Z) -> list[_Z]:
+        # Leerzeichen-Zeichen zwischen a und b: Mitte zwischen den Mitten, es beginnt nicht im Zeichen davor (ein
+        # Leerzeichen, das das Zeichen davor ueberdeckt, ist ein Phantom ohne Vorschub) und es steht auch in der
+        # Lesereihenfolge des Inhaltsstroms zwischen a und b (LibreOffice zeichnet Phantome hinter dem Trennstrich)
         lo, hi = (a.x0 + a.x1) / 2, (b.x0 + b.x1) / 2
-        return [z for z, m in zip(leer, mitten) if lo < m < hi]
+        n_lo, n_hi = min(a.nr, b.nr), max(a.nr, b.nr)
+        return [z for z, m in zip(leer, mitten) if lo < m < hi and z.x0 >= a.x1 - min_luecke * a.size
+                and (z.nr < 0 or n_lo < z.nr < n_hi)]
 
     gruppen: list[list[_Z]] = []
     trenner: list[str] = []          # Trenner HINTER der Gruppe gleichen Index
@@ -885,7 +894,10 @@ def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "",
         if gruppen:
             a = gruppen[-1][-1]
             luecke = z.x0 - a.x1
-            zw = dazwischen(a, z) if leer else []
+            # Ein Leerzeichen-Zeichen zaehlt nur, wenn zwischen den Zeichen auch wirklich Platz ist
+            # (layout.leerzeichen_min_luecke_em): LibreOffice setzt an weichen Trennstellen Leerzeichen ohne Vorschub
+            # (Phantome mitten im Wort, teils ausser der Reihe), die das Wort nicht trennen duerfen.
+            zw = dazwischen(a, z) if (leer and luecke >= min_luecke * z.size) else []
             if not zw and luecke <= lay["wort_luecke"] * z.size:
                 gruppen[-1].append(z)
                 continue
