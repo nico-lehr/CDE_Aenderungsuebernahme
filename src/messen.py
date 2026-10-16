@@ -269,14 +269,31 @@ def _aehnlich(a: tuple[str, ...], b: tuple[str, ...]) -> float:
     return max(teil, summe / gewicht if gewicht else 0.0)
 
 
-def _paare(va: list[Zeile], xb: list[Zeile]) -> list[tuple[int, int]]:
-    """Ordnungstreue Zuordnung zwischen zwei Zeilenbloecken (Austausch-Block), beste Gesamtaehnlichkeit."""
+def _proj(keys: tuple[str, ...], spalten: Any) -> tuple[str, ...]:
+    """Nur die Haupt-Spalten einer Zeile (die anderen leer)."""
+    return tuple(k if c in spalten else "" for c, k in enumerate(keys, 1))
+
+
+def _aehnlich_haupt(a: tuple[str, ...], b: tuple[str, ...], spalten: Any = None) -> float:
+    """Aehnlichkeit zweier Zeilen nur ueber die Haupt-Spalten (Nacharbeit Welle 2): eine Fuellspalte (Bemerkung, Prio ...) darf
+    die Zeilen-Paarung nicht verfaelschen. Ist eine Seite in den Haupt-Spalten leer (ausgeleerte Zeile, Zeile ohne Haupt-Inhalt),
+    zaehlt wie bisher die ganze Zeile."""
+    if spalten:
+        pa, pb = _proj(a, spalten), _proj(b, spalten)
+        if any(pa) and any(pb):
+            return _aehnlich(pa, pb)
+    return _aehnlich(a, b)
+
+
+def _paare(va: list[Zeile], xb: list[Zeile], spalten: Any = None) -> list[tuple[int, int]]:
+    """Ordnungstreue Zuordnung zwischen zwei Zeilenbloecken (Austausch-Block), beste Gesamtaehnlichkeit.
+    `spalten`: Haupt-Spalten (nur sie zaehlen fuer die Aehnlichkeit), None = alle."""
     n, m = len(va), len(xb)
     if not n or not m:
         return []
     if n * m > BLOCK_MAX:
-        return [(i, i) for i in range(min(n, m)) if _aehnlich(va[i].keys, xb[i].keys) >= ZEILEN_AEHNLICH]
-    s = [[_aehnlich(va[i].keys, xb[j].keys) for j in range(m)] for i in range(n)]
+        return [(i, i) for i in range(min(n, m)) if _aehnlich_haupt(va[i].keys, xb[i].keys, spalten) >= ZEILEN_AEHNLICH]
+    s = [[_aehnlich_haupt(va[i].keys, xb[j].keys, spalten) for j in range(m)] for i in range(n)]
     best = [[0.0] * (m + 1) for _ in range(n + 1)]
     for i in range(1, n + 1):
         for j in range(1, m + 1):
@@ -297,7 +314,7 @@ def _paare(va: list[Zeile], xb: list[Zeile]) -> list[tuple[int, int]]:
     return out[::-1]
 
 
-def _diff(v: list[Zeile], x: list[Zeile], leer: Callable[[Zeile], bool] | None = None) -> Diff:
+def _diff(v: list[Zeile], x: list[Zeile], leer: Callable[[Zeile], bool] | None = None, spalten: Any = None) -> Diff:
     """Zellen-, Zeilen-Unterschiede vorher -> X. `leer(zeile)` sagt, ob eine Zeile in den verwalteten Spalten nichts mehr
     enthaelt (dann ist sie als Anker so gut wie geloescht)."""
     d = Diff()
@@ -319,7 +336,7 @@ def _diff(v: list[Zeile], x: list[Zeile], leer: Callable[[Zeile], bool] | None =
             for k in range(i2 - i1):
                 d.zuordnung[v[i1 + k].nr] = x[j1 + k].nr
             continue
-        paare = _paare(v[i1:i2], x[j1:j2]) if tag == "replace" else []
+        paare = _paare(v[i1:i2], x[j1:j2], spalten) if tag == "replace" else []
         zu_x = {j1 + b: i1 + a for a, b in paare}
         zeiger = i1
         for j in range(j1, j2):
@@ -363,15 +380,24 @@ def _anker_neu(d: Diff, v: list[Zeile], tot: set[int]) -> None:
         d.neue[k] = (v[vi].nr if vi >= 0 else 0, zellen, keys)
 
 
-def _neu_abgleich(soll: list, ist: list) -> tuple[dict[int, int], dict[int, bool]]:
+def _neu_abgleich(soll: list, ist: list, spalten: Any = None) -> tuple[dict[int, int], dict[int, bool]]:
     """Ordnet neue Zeilen des Ist den neuen Zeilen des Soll zu.
-    -> (soll_index -> ist_index, soll_index -> Ort stimmt)."""
+    -> (soll_index -> ist_index, soll_index -> Ort stimmt).
+    `spalten` (Nacharbeit Welle 2): "gleicher Inhalt" heisst gleiche Haupt-Spalten -- eine anders gefuellte Fuellspalte darf die
+    Paarung nicht verfaelschen (ob die Fuellzelle stimmt, prueft die Messung je Zelle trotzdem). None = alle Spalten."""
+    def gleich(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+        if spalten:
+            pa, pb = _proj(a, spalten), _proj(b, spalten)
+            if any(pa) or any(pb):
+                return pa == pb
+        return a == b
+
     paar: dict[int, int] = {}
     ort: dict[int, bool] = {}
     frei = list(range(len(ist)))
     for si, (anker, _, keys) in enumerate(soll):                       # 1. gleicher Anker, gleicher Inhalt
         for ii in frei:
-            if ist[ii][0] == anker and ist[ii][2] == keys:
+            if ist[ii][0] == anker and gleich(ist[ii][2], keys):
                 paar[si], ort[si] = ii, True
                 frei.remove(ii)
                 break
@@ -379,7 +405,7 @@ def _neu_abgleich(soll: list, ist: list) -> tuple[dict[int, int], dict[int, bool
         if si in paar:
             continue
         for ii in frei:
-            if ist[ii][2] == keys:
+            if gleich(ist[ii][2], keys):
                 paar[si], ort[si] = ii, False
                 frei.remove(ii)
                 break
@@ -485,8 +511,8 @@ class _Auswertung:
         # daraus die Inhaltsspalte; dann das eigentliche Soll-Diff (self.S, mit `leer`).
         roh = [_diff(self.V[i], self.N[i]) for i in range(len(self.V))]
         self._inhaltsspalte = {i: self._soll_inhaltsspalte_berechnen(i, roh[i]) for i in range(len(self.V))}
-        self.S = [_diff(self.V[i], self.N[i], self._leer_fn(i)) for i in range(len(self.V))]
-        self.I = [_diff(self.V[i], self.E[i], self._leer_fn(i)) for i in range(len(self.V))]
+        self.S = [_diff(self.V[i], self.N[i], self._leer_fn(i), self._paar_spalten(i)) for i in range(len(self.V))]
+        self.I = [_diff(self.V[i], self.E[i], self._leer_fn(i), self._paar_spalten(i)) for i in range(len(self.V))]
         self._tot = [self.S[i].weg | self.S[i].geleert | self.I[i].weg | self.I[i].geleert for i in range(len(self.V))]
         for i in range(len(self.V)):         # Anker neuer Zeilen: entfernte/ausgeleerte Zeilen zaehlen auf beiden Seiten nicht (MA-3)
             _anker_neu(self.S[i], self.V[i], self._tot[i])
@@ -511,13 +537,21 @@ class _Auswertung:
                     self.pdf_neu.update(_wort_liste(t.new))
                 if t.status in (DEL, MOD) and t.old:
                     self.pdf_alt.update(_wort_liste(t.old))
+        # Woerter in unbekannter Farbe auf Seiten, fuer die das Tool eine Luecke "unbekannte_farbe" GEMELDET hat (nur im Speicher)
+        gemeldet_seiten = {lk.get("seite") for lk in plan.luecken if lk.get("art") == "unbekannte_farbe"}
+        self.farbe_gemeldet: Counter[str] = Counter()
+        for b in pdf_analyse.blocks:
+            for t in b.tokens:
+                if "unbekannte_farbe" in (t.hinweis or "") and t.page in gemeldet_seiten:
+                    self.farbe_gemeldet.update(_wort_liste(t.new or t.old))
         self.ae_woerter = {a.id: (Counter(_wort_liste(a.neu)), Counter(_wort_liste(a.alt))) for a in aenderungen}
         self.ziele_von = {a.id: self._ziele(a) for a in aenderungen}
 
         self._bauen()
         self.luecken_erwartet = luecken_erwartet
         if e_alle_blaetter is not None:
-            alle = [_diff(self.V[i], _zeilen(e_alle_blaetter[i]) if i < len(e_alle_blaetter) else [], self._leer_fn(i))
+            alle = [_diff(self.V[i], _zeilen(e_alle_blaetter[i]) if i < len(e_alle_blaetter) else [], self._leer_fn(i),
+                          self._paar_spalten(i))
                     for i in range(len(self.V))]
             for i, d in enumerate(alle):
                 _anker_neu(d, self.V[i], self._tot[i] | d.weg | d.geleert)
@@ -579,7 +613,7 @@ class _Auswertung:
         self.soll_woerter: dict[Any, tuple[list[str], list[str]]] = {}
         self.neu_abgleich: list[tuple[dict[int, int], dict[int, bool]]] = []
         for bi, s in enumerate(self.S):
-            paar, ort = _neu_abgleich(s.neue, self.I[bi].neue)
+            paar, ort = _neu_abgleich(s.neue, self.I[bi].neue, self._paar_spalten(bi))
             self.neu_abgleich.append((paar, ort))
             for (z, c), inhalt in sorted(s.zellen.items()):
                 key = ("z", bi, z, c)
@@ -653,7 +687,7 @@ class _Auswertung:
                 richtig = soll is not None and _s(soll) == _s(inhalt)
                 out.append({"key": ("z", bi, z, c), "bi": bi, "zeile": z, "spalte": c, "inhalt": inhalt,
                             "richtig": richtig, "art": "weg" if z in d.weg else "zelle"})
-            paar, ort = _neu_abgleich(s.neue, d.neue)
+            paar, ort = _neu_abgleich(s.neue, d.neue, self._paar_spalten(bi))
             rev = {ii: si for si, ii in paar.items()}
             for ii, (anker, zellen, keys) in enumerate(d.neue):
                 si = rev.get(ii)
@@ -805,6 +839,11 @@ class _Auswertung:
             return None
         return sorted({column_index_from_string(lay[k]) for k in ("section_spalte", "titel_spalte", "inhalt_spalte") if lay.get(k)})
 
+    def _paar_spalten(self, bi: int) -> set[int] | None:
+        """Haupt-Spalten fuer die Zeilen-Paarung (None = alle Spalten, wenn der Aufbau unklar ist oder nicht zum Soll passt)."""
+        sp = self._verwaltete_spalten(bi)
+        return set(sp) if sp else None
+
     def _vorher_keys(self, bi: int, zeile: int) -> tuple[str, ...]:
         return tuple(_s(c) for c in self.vtext[bi].get(zeile, ()))
 
@@ -913,7 +952,7 @@ class _Auswertung:
             it = next((i for i in self.ist if i["key"] == key), None)
             if it is None:
                 return False
-            paar, _ort = _neu_abgleich(self.S[bi].neue, self.I[bi].neue)
+            paar, _ort = _neu_abgleich(self.S[bi].neue, self.I[bi].neue, self._paar_spalten(bi))
             si = {ii: s for s, ii in paar.items()}.get(it["ist_index"])
             if si is None:
                 return False
@@ -921,16 +960,83 @@ class _Auswertung:
             return c - 1 < len(soll) and _k(it["inhalt"]) == _k(soll[c - 1])
         return False
 
-    def _wirkung_vorhanden(self, ae: Any, vorher: str, ergebnis: str) -> bool:
+    def _wirkung_vorhanden(self, ae: Any, vorher: str, ergebnis: str, angewendet: list[str] | tuple[str, ...] = ()) -> bool:
         """Ist die Wirkung dieser (offenen) Aenderung im Ergebnistext der Zelle schon zu sehen? (neue Woerter stehen da bzw.
-        gestrichene Woerter sind weg.) Nur sicher erkennbar, wenn die Aenderung Woerter bringt oder nimmt, die vorher anders waren."""
+        gestrichene Woerter sind weg.) Nur sicher erkennbar, wenn die Aenderung Woerter bringt oder nimmt, die vorher anders waren.
+        Nacharbeit Welle 2: Gemessen wird nur, was UEBER die Wirkung der angewendeten Aenderungen derselben Zelle (`angewendet`)
+        hinausgeht -- fuegt eine angewendete Nachbar-Aenderung zufaellig dasselbe Wort ein, ist das keine Wirkung der offenen.
+        Bringt die offene Aenderung neue Woerter UND nimmt alte weg, muessen beide Seiten zu sehen sein."""
         neu, alt = self.ae_woerter[ae.id]
         vw, ew = Counter(_wort_liste(vorher)), Counter(_wort_liste(ergebnis))
+        ohne = Counter(vw)                       # Wortbestand, wenn NUR die angewendeten Aenderungen gewirkt haetten
+        for i in angewendet:
+            if i == ae.id or i not in self.ae_woerter:
+                continue
+            a_neu, a_alt = self.ae_woerter[i]
+            ohne = (ohne - (a_alt & vw)) + a_neu
+        zusatz, fehlt = ew - ohne, ohne - ew
         gebraucht = neu - vw
-        if gebraucht:
-            return not (gebraucht - ew)
-        weg = alt & vw
-        return bool(weg) and not neu and not (weg & ew)
+        weg = (alt - neu) & vw
+        if not gebraucht and not weg:
+            return False
+        if gebraucht and (gebraucht - zusatz):
+            return False
+        if weg and (weg - fehlt):
+            return False
+        return True
+
+    def _nur_gemeldete_farbe(self, ist: str, soll: str, vorher: str, offene: list) -> bool:
+        """Nacharbeit Welle 2 (eng gefasst): Die Zelle weicht vom Soll NUR darin ab, dass NEUE Woerter fehlen, die das PDF in einer
+        unbekannten Farbe zeigt (z. B. gruene Schrift), und fuer deren Seite das Tool die Luecke "unbekannte_farbe" gemeldet hat --
+        sonst nur um offene ("pruefen") Aenderungen. Dann hat das Tool die Abweichung gemeldet (Luecke bzw. gesperrter Absatz); sie ist
+        kein stiller Fehler. Nie entlastet werden: Leerraum-/Zeichenform-Unterschiede, Woerter, die zu viel im Ergebnis stehen
+        (ausser alten Woertern offener Aenderungen), fehlende Woerter, die schon in vorher standen (das Tool hat etwas geloescht),
+        fehlende Woerter ohne gemeldete Farb-Luecke und falsche Reihenfolge."""
+        if not self.farbe_gemeldet or _s(ist) == _s(soll):
+            return False
+        erlaubt = self._offene_woerter(offene)
+        gesperrt = any(a.status == PRUEFEN and any("unbekannte_farbe" in str(c) for c in (a.pruefcodes or [])) for a in offene)
+        if "\x00format" in self._unerklaert(ist, soll, Counter(erlaubt) + self.farbe_gemeldet):
+            return False
+        a, b = _wort_liste(ist), _wort_liste(soll)
+        neu_im_soll = Counter(b) - Counter(_wort_liste(vorher))
+        rest_offen = Counter(erlaubt)
+        rest_farbe = Counter(self.farbe_gemeldet) & neu_im_soll
+        farbe_fehlt = 0
+        for tag, i1, i2, j1, j2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+            if tag == "equal":
+                continue
+            for w in a[i1:i2]:                    # steht zu viel im Ergebnis: nur alte Woerter offener Aenderungen
+                if rest_offen[w] <= 0:
+                    return False
+                rest_offen[w] -= 1
+            stueck_farbe: list[str] = []
+            for w in b[j1:j2]:                    # fehlt im Ergebnis: offene Aenderung oder neues Wort in gemeldeter Farbe
+                if rest_farbe[w] > 0:
+                    rest_farbe[w] -= 1
+                    stueck_farbe.append(w)
+                elif rest_offen[w] > 0:
+                    rest_offen[w] -= 1
+                else:
+                    return False
+            # Ist der Absatz NICHT wegen der unbekannten Farbe gesperrt, zaehlt ein fehlendes Stueck nur als "Farbe", wenn mindestens
+            # ein Wort darin NICHT auch blau (neu) im PDF steht -- sonst koennte es ein verpasstes Wort einer blauen Aenderung sein.
+            if stueck_farbe and not gesperrt and all(self.pdf_neu[w] > 0 for w in stueck_farbe):
+                return False
+            farbe_fehlt += len(stueck_farbe)
+        return farbe_fehlt > 0
+
+    def _neu_als_gepaarte_zeile(self, bi: int, gesucht: dict[int, str]) -> bool:
+        """Nacharbeit Welle 2 (Paar 0136): Eine eingefuegte Zeile kann von der Zeilen-Ausrichtung (difflib + Aehnlichkeit) als
+        VERAENDERTE alte Zeile gepaart werden, wenn sie einer alten Zeile aehnelt. Steht ihr Inhalt in Ergebnis UND Soll an derselben
+        gepaarten Stelle (Soll und Ergebnis wurden gleich ausgerichtet), ist das keine fehlende Wirkung. Eng: alle Zellen der Operation
+        muessen dort im Ergebnis stehen UND laut Soll genau so stehen; sonst bleibt es ein stiller Fehler."""
+        s, i = self.S[bi], self.I[bi]
+        for vz in set(i.zuordnung) & set(s.zuordnung):
+            if all((vz, c) in i.zellen and _s(i.zellen[(vz, c)]) == t and (vz, c) in s.zellen and _s(s.zellen[(vz, c)]) == t
+                   for c, t in gesucht.items()):
+                return True
+        return False
 
     def _offene_woerter(self, aend_liste: list) -> Counter:
         erlaubt: Counter = Counter()
@@ -1073,18 +1179,21 @@ class _Auswertung:
         # (1)(4)(5) je Ziel-Zelle der Aenderungen. Bewertet wird je AENDERUNG: weicht die Zelle vom Soll nur um die Woerter
         # einer offenen ("pruefen") Aenderung ab, wartet sie auf die Freigabe und ist kein Fehler (MA-1).
         wartet: set[Any] = set()
+        gemeldet_farbe: set[Any] = set()
         r27_wirkung: dict[str, tuple[int, int, int]] = {}
         for (bi, z, c), ids in sorted(ziel_zellen.items()):
             erw, tat = self._erwartet(bi, z, c), self._tatsaechlich(bi, z, c)
             key = ("z", bi, z, c)
             for ae in offen_ziel.get((bi, z, c), []):          # Regel 27 an der Wirkung: die offene Aenderung steht schon im Text
-                if ae.id not in r27 and self._wirkung_vorhanden(ae, self._vorher(bi, z, c), tat):
+                if ae.id not in r27 and self._wirkung_vorhanden(ae, self._vorher(bi, z, c), tat, ids):
                     r27_wirkung.setdefault(ae.id, (bi, z, c))
             if _s(tat) != _s(erw):
                 offene = offen_ziel.get((bi, z, c), [])
                 unerkl = self._unerklaert(tat, erw, self._offene_woerter(offene))
                 if offene and not unerkl:
                     wartet.add(key)
+                elif self._nur_gemeldete_farbe(tat, erw, self._vorher(bi, z, c), offene):
+                    gemeldet_farbe.add(key)              # Abweichung steckt ganz in einer gemeldeten Luecke: nicht still
                 else:
                     schuld = self._schuldige(ids, unerkl)
                     stumm(key, bi, z, c, "uebernommen_aber_falsch", schuld)
@@ -1104,6 +1213,8 @@ class _Auswertung:
             ref = (bi, min(zellen) if zellen else 0)
             if not gesucht:
                 continue
+            if not treffer and self._neu_als_gepaarte_zeile(bi, gesucht):
+                continue          # die Zeilen-Ausrichtung hat die neue Zeile als veraenderte alte Zeile gepaart -- Inhalt steht dort RICHTIG
             if not treffer:
                 key = ("nop", bi, aid)
                 stumm(key, bi, 0, ref[1], "keine_wirkung", [aid])
@@ -1152,7 +1263,7 @@ class _Auswertung:
                             if ae.id not in r27:
                                 r27_wirkung.setdefault(ae.id, pos)
                 continue
-            if key in wartet:
+            if key in wartet or key in gemeldet_farbe:
                 continue
             ids = ziel_zellen.get((it["bi"], it["zeile"], it["spalte"]), []) if it["art"] != "neu" else []
             if it["art"] == "neu":
@@ -1399,6 +1510,7 @@ class _Auswertung:
             "nicht_uebernommen_zellen": nicht_n,
             "ohne_aenderung_zellen": ohne_n,
             "zellen_warten_auf_freigabe": len(wartet),
+            "zellen_luecke_gemeldet": len(gemeldet_farbe),
             "soll_zellen_pdf_blind": sum(1 for e in haupt if e["blind"]),
             "soll_zellen_pdf_blind_erreicht": sum(1 for e in haupt if e["blind"] and e["erreicht"]),
             "stille_fehler_nur_textform": sum(1 for key, f in self.fehler.items()

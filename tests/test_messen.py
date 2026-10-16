@@ -1531,3 +1531,104 @@ def test_korpus_ex_test_ohne_regel11_warnton_und_je_erzeuger(tmp_path, capsys):
     assert set(b["je_erzeuger"]) == {"libreoffice", "unbekannt"} and b["je_erzeuger"]["libreoffice"]["paare"] == 1
     assert {"paare", "stille_fehler", "treffergenauigkeit_auto", "abdeckung_ohne_nachfrage"} <= set(b["je_erzeuger"]["libreoffice"])
     assert "Je PDF-Erzeuger" in (config.pfad("messung_dir") / "001_ex_test" / "bericht.md").read_text(encoding="utf-8")
+
+
+# =======================================================================================
+# Nacharbeit Welle 2: Messartefakte eng gefasst -- jede Ausnahme hat einen Sabotage-Test (echter stiller Fehler zaehlt weiter)
+# =======================================================================================
+from types import SimpleNamespace  # noqa: E402
+from collections import Counter as _Counter  # noqa: E402
+
+
+def _ausw(**felder):
+    """Minimale _Auswertung ohne Konstruktor (nur die Felder, die die getesteten Methoden lesen)."""
+    a = messen._Auswertung.__new__(messen._Auswertung)
+    a.__dict__.update(felder)
+    return a
+
+
+def _ae(id_, alt="", neu="", status=PRUEFEN, codes=()):
+    return SimpleNamespace(id=id_, status=status, pruefcodes=list(codes), alt=alt, neu=neu)
+
+
+def _wo(*aend):
+    return {a.id: (_Counter(messen._wort_liste(a.neu)), _Counter(messen._wort_liste(a.alt))) for a in aend}
+
+
+def test_wirkung_nachbaraenderung_mit_gleichem_wort_ist_kein_regel27():
+    offen = _ae("A2", alt="Gras", neu="fachgerecht")           # offen (pruefen)
+    nachbar = _ae("A1", alt="ruht", neu="fachgerecht", status="uebernommen")   # angewendet, fuegt zufaellig dasselbe Wort ein
+    a = _ausw(ae_woerter=_wo(offen, nachbar))
+    vorher = "Der Quokka frisst Gras und ruht"
+    ergebnis = "Der Quokka frisst Gras und fachgerecht"       # nur die Nachbaraenderung wirkte
+    assert not a._wirkung_vorhanden(offen, vorher, ergebnis, ["A1"])
+    # Sabotage: die offene Aenderung hat WIRKLICH gewirkt (Wort neu UND altes Wort weg) -> weiter Regel-27-Verstoss
+    assert a._wirkung_vorhanden(offen, vorher, "Der Quokka frisst fachgerecht und fachgerecht", ["A1"])
+    # Sabotage: ohne Nachbaraenderung bleibt das Verhalten wie frueher
+    assert a._wirkung_vorhanden(offen, vorher, "Der Quokka frisst fachgerecht und ruht", [])
+    # Sabotage: reine Loeschung einer offenen Aenderung, Wort ist weg -> Verstoss
+    loesch = _ae("A3", alt="frisst", neu="")
+    a2 = _ausw(ae_woerter=_wo(loesch))
+    assert a2._wirkung_vorhanden(loesch, vorher, "Der Quokka Gras und ruht", [])
+    assert not a2._wirkung_vorhanden(loesch, vorher, vorher, [])
+
+
+def test_neu_abgleich_fuellspalte_verfaelscht_paarung_nicht():
+    soll = [(5, ("", "", "Neuer Absatz eins", "B"), ("", "", "Neuer Absatz eins", "B")),
+            (7, ("", "", "Neuer Absatz zwei", "B"), ("", "", "Neuer Absatz zwei", "B"))]
+    ist = [(7, ("", "", "Neuer Absatz zwei", ""), ("", "", "Neuer Absatz zwei", "")),
+           (5, ("", "", "Neuer Absatz eins", ""), ("", "", "Neuer Absatz eins", ""))]
+    paar, ort = messen._neu_abgleich(soll, ist, {1, 2, 3})
+    assert paar == {0: 1, 1: 0} and ort == {0: True, 1: True}
+    # Sabotage: anderer Inhalt in der Haupt-Spalte wird NICHT gleichgesetzt
+    falsch = (9, ("", "", "Anderer Text", "B"), ("", "", "Anderer Text", "B"))
+    assert messen._neu_abgleich(soll[:1], [falsch], {1, 2, 3})[0] == {}                 # weder Anker noch Inhalt
+    assert messen._neu_abgleich(soll[:1], [(5,) + falsch[1:]], {1, 2, 3})[1] == {0: True}   # nur ueber den Anker (Stufe 3)
+
+
+def test_paare_zeilenaehnlichkeit_nur_haupt_spalten():
+    va = [messen.Zeile(1, ("", "", "Alle Anschlussleitungen sind gut", "B"), ("", "", "Alle Anschlussleitungen sind gut", "B"))]
+    xb = [messen.Zeile(1, ("", "", "Alle Anschlussleitungen sind gut", "X"), ("", "", "Alle Anschlussleitungen sind gut", "X"))]
+    assert messen._paare(va, xb, {3}) == [(0, 0)]
+    # Sabotage: voellig anderer Inhalt der Haupt-Spalte bleibt ungepaart, auch wenn die Fuellspalte gleich ist
+    xb2 = [messen.Zeile(1, ("", "", "Voellig anderer Text hier", "B"), ("", "", "Voellig anderer Text hier", "B"))]
+    assert messen._paare(va, xb2, {3}) == []
+
+
+def _farbe_ausw(farbe_gemeldet, pdf_neu=()):
+    return _ausw(farbe_gemeldet=_Counter(farbe_gemeldet), pdf_neu=_Counter(pdf_neu),
+                 ae_woerter={"A1": (_Counter(), _Counter()), "A2": (_Counter(), _Counter())})
+
+
+def test_gemeldete_gruene_luecke_ist_nicht_still_aber_echter_fehler_schon():
+    sperre = _ae("A1", status=PRUEFEN, codes=["sperre:unbekannte_farbe"], alt="a", neu="b")
+    a = _farbe_ausw(["gruenes", "wort"], pdf_neu=["blau"])
+    vorher = "Das ist ein Satz."
+    soll = "Das ist ein gruenes wort Satz."
+    assert a._nur_gemeldete_farbe(vorher, soll, vorher, [sperre])                 # Ergebnis = vorher, nur Gruen fehlt
+    # Sabotage 1: zusaetzlich fehlt ein BLAUES Wort, das das Tool haette uebernehmen muessen -> weiter still
+    assert not a._nur_gemeldete_farbe(vorher, soll.replace("Satz", "blau Satz"), vorher, [sperre])
+    # Sabotage 2: im Ergebnis steht ein falsches Wort zu viel -> weiter still
+    assert not a._nur_gemeldete_farbe("Das ist ein falsch Satz.", soll, vorher, [sperre])
+    # Sabotage 3: keine gemeldete Farb-Luecke -> weiter still
+    assert not _farbe_ausw([])._nur_gemeldete_farbe(vorher, soll, vorher, [sperre])
+    # Sabotage 4: fehlendes Wort ist nicht in der gemeldeten Farbe -> weiter still
+    assert not a._nur_gemeldete_farbe(vorher, "Das ist ein anderes Satz.", vorher, [sperre])
+    # Sabotage 5: nur Leerraum-Unterschied bleibt ein Fehler
+    assert not a._nur_gemeldete_farbe("Das  ist ein Satz.", vorher, vorher, [sperre])
+    # Sabotage 6: Wort steht auch blau im PDF und der Absatz ist NICHT wegen der Farbe gesperrt -> koennte ein verpasstes
+    # blaues Wort sein -> weiter still
+    ohne_code = _ae("A2", status=PRUEFEN, codes=["a1_ziffer"])
+    b = _farbe_ausw(["wort"], pdf_neu=["wort"])
+    assert not b._nur_gemeldete_farbe(vorher, "Das ist ein wort Satz.", vorher, [ohne_code])
+
+
+def test_eingefuegte_zeile_als_gepaarte_zeile_nur_wenn_ergebnis_und_soll_gleich():
+    gleiche = SimpleNamespace(zuordnung={3: 4}, zellen={(3, 3): "Neuer Text", (3, 4): "B"})
+    falsch = SimpleNamespace(zuordnung={3: 4}, zellen={(3, 3): "Anderer Text", (3, 4): "B"})
+    a = _ausw(S=[gleiche], I=[gleiche])
+    assert a._neu_als_gepaarte_zeile(0, {3: "Neuer Text"})
+    b = _ausw(S=[gleiche], I=[falsch])                                       # Ergebnis weicht vom Soll ab
+    assert not b._neu_als_gepaarte_zeile(0, {3: "Neuer Text"})
+    c = _ausw(S=[SimpleNamespace(zuordnung={}, zellen={})], I=[gleiche])    # Soll sieht dort keine gepaarte Zeile
+    assert not c._neu_als_gepaarte_zeile(0, {3: "Neuer Text"})
