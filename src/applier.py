@@ -32,7 +32,7 @@ from openpyxl.utils import get_column_letter
 from . import config
 from .fehler import DateiVorhanden
 from .excel_model import ExcelModell, zahl_als_text
-from .gegenprobe import pruefe_absatz
+from .gegenprobe import gleich, pruefe_absatz
 from .models import (MITTEL, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN, WIRKUNG_ABWEICHUNG, WIRKUNG_KEINE, WIRKUNG_OK,
                      Absatz, Aenderung, Operation)
 from .planner import neutext_probleme, zahl_aus_text
@@ -270,6 +270,23 @@ def _a3_zelle(orig: str, gespeichert: str, info: dict | None, blatt: str, zeile:
     return orig, (roh if gespeichert == info["neu"] else gespeichert), wirklich
 
 
+def _neuer_absatz_in_zelle(ae: Aenderung) -> bool:
+    """Neuer Absatz, der in eine bestehende Zelle eingefuegt wird (nur Einfuegungen mit leerer Spanne). Der Planer legt dafuer
+    keinen PDF-Absatz an; geprueft wird er nach dem Speichern mit `_als_eigene_zeile`."""
+    return (ae.typ == "absatz_neu" and bool(ae.ops)
+            and all(o.art in ("ersetzen", "einfuegen") and o.start == o.ende and o.text.strip() for o in ae.ops))
+
+
+def _als_eigene_zeile(gespeichert: str, ohne: str, soll: str, cfg: dict) -> bool:
+    """Steht der neue Absatz `soll` als EIGENE Zeile in der Zelle (Normalform gleich), und ist der Rest der Zelle ohne diese
+    Zeile (und ihren einen Umbruch) bytegleich mit dem Zelltext ohne diese Aenderung (`ohne`)?"""
+    zeilen = gespeichert.split("\n")
+    for i, z in enumerate(zeilen):
+        if gleich(soll, z, cfg=cfg) and "\n".join(zeilen[:i] + zeilen[i + 1:]) == ohne:
+            return True
+    return False
+
+
 def _zelltext(orig: str, ops: list[Operation]) -> str:
     """Endtext einer Zelle nach allen Operationen dieser Zelle."""
     if any(o.art == "zelle_leeren" for o in ops):
@@ -442,10 +459,12 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                 entferne(w, art, "Gehört zu einer Gruppe von Änderungen, von der eine nicht eingetragen werden kann.")
 
     # --- Invariante (ADR 0004): automatische Text-Operation ohne gespeicherten PDF-Absatz -> nicht automatisch -----
+    # Ausgenommen: Freigaben, neue Zeilen (Zeilen-Nachkontrolle) und neue Absaetze in einer bestehenden Zelle (eigene Pruefung
+    # nach dem Speichern: `_als_eigene_zeile`).
+    mit_absatz = {i for ab in absaetze or [] for i in ab.aenderungen}
     if absaetze is not None and anw.get("gegenprobe_pflicht", False):
-        mit_absatz = {i for ab in absaetze for i in ab.aenderungen}
         for ae in list(aktiv):
-            if (ae.id in nach_id and not ae.bestaetigt and ae.id not in mit_absatz
+            if (ae.id in nach_id and not ae.bestaetigt and ae.id not in mit_absatz and not _neuer_absatz_in_zelle(ae)
                     and any(o.art in ("ersetzen", "einfuegen") and not o.abgedeckt for o in ae.ops)):
                 entferne(ae, PRUEFEN, "Zu dieser Änderung fehlt der PDF-Absatz für die Gegenprobe; sie wird nicht automatisch eingetragen.",
                          "Das Ergebnis könnte nach dem Eintragen nicht gegen das PDF geprüft werden. Bitte von Hand prüfen.")
@@ -711,6 +730,28 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                 a3_bestanden.add(aid)
             else:
                 durchgefallen.setdefault(aid, code)
+    # Neue Absaetze in einer bestehenden Zelle (ohne PDF-Absatz): als eigene Zeile genau der Text aus dem PDF, Rest unveraendert
+    if absaetze is not None:
+        for ae in aktiv:
+            if ae.id not in nach_id or ae.id in mit_absatz or not _neuer_absatz_in_zelle(ae):
+                continue
+            soll = ae.soll_absatz or ae.neu
+            gut = True
+            for o in ae.ops:
+                info = zell_info.get((o.blatt, o.zeile, o.spalte))
+                nz = neue_zeile(o.blatt, o.zeile)
+                if info is None or nz is None:
+                    gut = False
+                    break
+                gesp = _text(kontrolle[o.blatt].cell(nz, o.spalte))
+                ohne = _zelltext(info["orig"], [x for x in info["ops"] if x.aenderung != ae.id])
+                if not _als_eigene_zeile(gesp, ohne, soll, cfg):
+                    gut = False
+                    break
+            if gut:
+                a3_bestanden.add(ae.id)
+            else:
+                durchgefallen.setdefault(ae.id, "gegenprobe_neuer_absatz")
     for aid in list(durchgefallen):                     # gekoppelte Aenderungen gelten nur gemeinsam
         for k in kopplung.get(aid, ()):
             if k in nach_id and k not in durchgefallen:

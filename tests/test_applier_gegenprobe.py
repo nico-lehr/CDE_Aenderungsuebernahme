@@ -285,6 +285,51 @@ def test_invariante_nimmt_die_gruppe_mit(tmp_path):
     assert _zelle(tmp_path / "out.xlsx", 2, 3) == t
 
 
+# ---------------------------------------------------------------- neuer Absatz in bestehender Zelle (ohne PDF-Absatz)
+def _neuer_absatz(pos, text, soll) -> Aenderung:
+    ae = _ae("A5", [Operation("ersetzen", "CDE", 2, 3, pos, pos, text, aenderung="A5")], typ="absatz_neu")
+    ae.neu = ae.soll_absatz = soll
+    return ae
+
+
+def test_neuer_absatz_als_eigene_zeile_besteht_auch_mit_pflicht(tmp_path):
+    t = "Erster Satz.\nZweiter Satz."
+    p = _excel(tmp_path, t)
+    ae = _neuer_absatz(len("Erster Satz."), "\nNeuer Satz dazwischen.", "Neuer Satz dazwischen.")
+    uebernehmen([ae], p, tmp_path / "out.xlsx", cfg=_cfg(True), absaetze=[])
+    assert _zelle(tmp_path / "out.xlsx", 2, 3) == "Erster Satz.\nNeuer Satz dazwischen.\nZweiter Satz."
+    _bestanden(ae)
+
+
+def test_neuer_absatz_mit_anderer_aenderung_in_der_zelle(tmp_path):
+    t = "Erster Satz alt.\nZweiter Satz."
+    p = _excel(tmp_path, t)
+    a = t.index("alt")
+    a1 = _ae("A1", [_ers(a, a + 3, "neu", "A1", t)])
+    ab = _absatz(L("Erster Satz {-alt-}|{+neu+}|."), 0, t.index("\n"))
+    ae = _neuer_absatz(len(t), "\nLetzter Satz.", "Letzter Satz.")
+    uebernehmen([a1, ae], p, tmp_path / "out.xlsx", cfg=_cfg(True), absaetze=[ab])
+    assert _zelle(tmp_path / "out.xlsx", 2, 3) == "Erster Satz neu.\nZweiter Satz.\nLetzter Satz."
+    _bestanden(a1)
+    _bestanden(ae)
+
+
+def test_neuer_absatz_nicht_als_eigene_zeile_wird_pruefen(tmp_path):
+    t = "Erster Satz.\nZweiter Satz."
+    p = _excel(tmp_path, t)
+    ae = _neuer_absatz(len("Erster Satz."), " Neuer Satz dazwischen.", "Neuer Satz dazwischen.")   # ohne Umbruch angehaengt
+    uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[])
+    _durchgefallen(ae, "gegenprobe_neuer_absatz")
+
+
+def test_neuer_absatz_mit_falschem_text_wird_pruefen(tmp_path):
+    t = "Erster Satz.\nZweiter Satz."
+    p = _excel(tmp_path, t)
+    ae = _neuer_absatz(len("Erster Satz."), "\nNeuer Satz dazwischen", "Neuer Satz dazwischen.")    # Punkt fehlt
+    uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[])
+    _durchgefallen(ae, "gegenprobe_neuer_absatz")
+
+
 # ---------------------------------------------------------------- neue Section-Nummer als Zahl (RT-212)
 def _zahl_excel(tmp_path, nummern: list[tuple[float | int, str]]):
     wb = Workbook()

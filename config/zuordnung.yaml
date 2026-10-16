@@ -73,8 +73,8 @@ matcher:                      # Bewertung eines Treffers (src/matcher.py)
 anwenden:                     # Schreiben in die Excel (src/applier.py)
   markierung_farbe: FFF2CC    # Hintergrund, wenn markierung.geaenderte_zellen = gelb
   kommentar_autor: CDE-Tool   # Autor der Zellkommentare, wenn markierung.geaenderte_zellen = kommentar
-  gegenprobe_pflicht: false   # ADR 0004 Invariante: automatische Text-Aenderung ohne PDF-Absatz (plan.absaetze) -> "pruefen"
-                              # (Code ohne_absatz). Erst einschalten, wenn der Planer die Absaetze fuellt.
+  gegenprobe_pflicht: true    # ADR 0004 Invariante: automatische Text-Aenderung ohne PDF-Absatz (plan.absaetze) -> "pruefen"
+                              # (Code ohne_absatz). Neue Absaetze in einer Zelle und neue Zeilen sind ausgenommen.
 
 # --- Schema 3 / ADR 0004: Gegenprobe ---------------------------------------------------------------
 normalform:                   # Vergleichsform "streng, aber fair" (src/gegenprobe.py): Gross/Klein und Satzzeichen zaehlen
