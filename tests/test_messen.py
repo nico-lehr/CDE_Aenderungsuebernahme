@@ -1409,3 +1409,125 @@ def test_ende_zu_ende_sabotage_wird_als_strukturbefund_der_richtigen_art_gemelde
     b = messen.fasse_zusammen([dict(res, name="synth_6600")], "entwicklung", "1", False)
     assert next(k for k in b["kriterien"] if k["name"].startswith("Struktur unverändert"))["ampel"] == "NICHT ok"
     assert b["gesamt"]["kriterien_nicht_ok"] >= 1
+
+
+# =======================================================================================
+# Messung v2 (Welle 1): Soll-Zellen-Klassen, Restarbeit, Pruefcodes/Sperr-Quote, Vergleich, Korpora, je Erzeuger
+# =======================================================================================
+def test_klassen_v2_fuell_konstant_formel_nicht_ableitbar(tmp_path):
+    """Neue Section in L1: Bemerkung "Status offen" steht in vorher in ALLEN Section-Zeilen -> fuell_konstant (ableitbar).
+    Ein individueller Wert in derselben Spalte ist nicht ableitbar; eine Formelzelle ist "formel"."""
+    p = baue_paar(tmp_path, "synth_9400", MIT_NEUER_SECTION)
+    res = messen.messe_paar(p)
+    k = res["soll_klassen"]
+    assert set(k) == set(messen.SOLL_KLASSEN)
+    assert k["fuell_konstant"] == 1 and k["nicht_ableitbar"] == 0 and k["haupt"] == res["soll_zellen"]
+    assert res["soll_klassen_erreicht"]["haupt"] == res["erreicht_auto"]
+
+    q = baue_paar(tmp_path, "synth_9401", MIT_NEUER_SECTION)
+    wb = load_workbook(str(q / "nachher.xlsx"))
+    ws = wb["CDE"]
+    neue = next(r for r in range(2, ws.max_row + 1) if str(ws.cell(r, 1).value or "").startswith("4"))
+    ws.cell(neue, 4).value = "Sonderfall mit Rückfrage beim Kunden"
+    ws["E2"] = "=LEN(C2)"
+    wb.save(str(q / "nachher.xlsx"))
+    res = messen.messe_paar(q)
+    assert res["soll_klassen"]["nicht_ableitbar"] == 1 and res["soll_klassen"]["fuell_konstant"] == 0
+    assert res["soll_klassen"]["formel"] == 1
+
+    b = messen.fasse_zusammen([dict(res, name="a")], "entwicklung", "2", False)
+    g = b["gesamt"]
+    assert g["soll_zellen_ableitbar"] == res["soll_klassen"]["haupt"] + 1          # haupt + formel (fuell_konstant 0)
+    k7 = next(x for x in b["kriterien"] if x["name"].startswith("Abdeckung ableitbare"))
+    assert k7["ampel"] in ("ok", "Hinweis") and k7["einheit"] == "Zellen"
+
+
+@pytest.mark.parametrize("layout", ["L3"])
+def test_klassen_v2_prio_spalte_je_zeilentyp(tmp_path, layout):
+    """L3: Section-Zeilen haben Prio "A", Absatz-Zeilen "B" -- je Zeilentyp konstant, also fuell_konstant (neu UND entfernt)."""
+    res = messen.messe_paar(baue_paar(tmp_path, "synth_9402", MIT_NEUER_SECTION, layout))
+    assert res["soll_klassen"]["fuell_konstant"] >= 2 and res["soll_klassen"]["nicht_ableitbar"] == 0
+
+
+def test_restarbeit_formel_und_hinweis_ampel():
+    paar = {"name": "x", "aenderungen": 50, "restarbeit": {"pruefen": 3, "nicht_uebernommen": 1,
+                                                          "leere_zellen_neue_zeilen": 2, "luecken_woerter": 40}}
+    b = messen.fasse_zusammen([{**messen._fehlgeschlagen("x", ValueError()), **paar}], "entwicklung", "2", False)
+    g = b["gesamt"]
+    assert g["restarbeit_je_100"] == 20.0                     # 100 * (3 + 1 + 2 + 40/10) / 50
+    assert "÷ 10" in g["restarbeit_formel"] and g["restarbeit"]["luecken_woerter"] == 40
+    k = next(x for x in b["kriterien"] if x["name"].startswith("Restarbeit"))
+    assert k["ampel"] == "Hinweis" and k["wert"] == "20,0"     # ueber dem Richtwert 12: nur Hinweis, Exit-Code unberuehrt
+    assert all(x["ampel"] != "NICHT ok" for x in b["kriterien"] if x["nr"] == 7)
+
+
+def test_pruefcodes_histogramm_und_sperr_quote(tmp_path, monkeypatch):
+    p = baue_paar(tmp_path, "synth_9403")
+    original = messen.plane
+
+    def gesperrt(pdf, xl, cfg=None):
+        plan = original(pdf, xl, cfg)
+        ae = next(a for a in plan.aenderungen if a.ziel.endswith("C2"))
+        ae.status, ae.konfidenz = PRUEFEN, "mittel"
+        ae.pruefcodes = ["a1_abweichung", "Freitext mit Quokka-Inhalt"]
+        return plan
+    monkeypatch.setattr(messen, "plane", gesperrt)
+    res = messen.messe_paar(p, mit_vorschlaegen=True)
+    assert res["pruefcodes"] == {"a1_abweichung": 1, "sonstiger_code": 1}          # Freitext wird nie berichtet
+    assert res["sperr_quote"]["a1_abweichung"] == {"gesperrt": 1, "messbar": 1, "richtig_nach_freigabe": 1}
+    assert res["restarbeit"]["pruefen"] == 1
+    ohne = messen.messe_paar(p)                                                     # ohne Vorschlags-Excel: nicht messbar
+    assert ohne["sperr_quote"]["a1_abweichung"]["messbar"] == 0
+    b = messen.fasse_zusammen([dict(res, name="a")], "entwicklung", "2", True)
+    assert b["gesamt"]["sperr_quote"]["a1_abweichung"]["sperr_quote"] == 1.0
+    assert "quokka" not in json.dumps(b).lower() and "quokka" not in messen._md(b).lower()
+
+
+def test_vergleich_mit_letztem_bericht_und_gegen(tmp_path, capsys):
+    baue_paar(korpus_dir(), "synth_9404")
+    assert messen.main(["--korpus", "entwicklung"]) == 0
+    assert messen.main(["--korpus", "entwicklung", "--vergleich"]) == 0
+    basis = config.pfad("messung_dir")
+    b = json.loads((basis / "002_entwicklung" / "bericht.json").read_text(encoding="utf-8"))
+    v = b["vergleich"]
+    assert v["gegen"] == "001_entwicklung" and v["vergleichbar"]
+    assert v["kennzahlen"]["stille_fehler"] == {"vorher": 0, "jetzt": 0, "delta": 0}
+    assert "Vergleich mit Bericht 001_entwicklung" in (basis / "002_entwicklung" / "bericht.md").read_text(encoding="utf-8")
+    assert messen.main(["--korpus", "entwicklung", "--vergleich", "--gegen", "1"]) == 0
+    b3 = json.loads((basis / "003_entwicklung" / "bericht.json").read_text(encoding="utf-8"))
+    assert b3["vergleich"]["gegen"] == "001_entwicklung"
+    assert messen.main(["--korpus", "entwicklung", "--vergleich", "--gegen", "999"]) == 2
+    assert not (basis / "004_entwicklung").exists()
+
+
+def test_vergleich_deltas_je_kennzahl_und_familie():
+    alt = {"korpus": "entwicklung", "generator_version": "1",
+           "gesamt": {"stille_fehler": 7, "treffergenauigkeit_auto": 0.98, "idempotent": 57, "vorschlags_genauigkeit": None},
+           "je_stoerer": {"fussnote": {"paare": 5, "stille_fehler": 2, "abdeckung_ohne_nachfrage": 0.8}}}
+    neu = {"korpus": "entwicklung", "generator_version": "2",
+           "gesamt": {"stille_fehler": 3, "treffergenauigkeit_auto": 0.99, "idempotent": 60, "vorschlags_genauigkeit": 0.8,
+                      "neu_nur_jetzt": 4},
+           "je_stoerer": {"fussnote": {"paare": 5, "stille_fehler": 0, "abdeckung_ohne_nachfrage": 0.9},
+                          "bild": {"paare": 2, "stille_fehler": 0, "abdeckung_ohne_nachfrage": 1.0}}}
+    v = messen.vergleiche(alt, neu, "006_entwicklung")
+    assert not v["vergleichbar"]                                                    # andere Generator-Version
+    assert v["kennzahlen"]["stille_fehler"]["delta"] == -4 and v["kennzahlen"]["idempotent"]["delta"] == 3
+    assert v["kennzahlen"]["vorschlags_genauigkeit"] == {"vorher": None, "jetzt": 0.8, "delta": None}
+    assert v["je_stoerer"]["fussnote"]["stille_fehler"]["delta"] == -2
+    assert v["je_stoerer"]["bild"]["paare"] == {"vorher": None, "jetzt": 2, "delta": None}
+
+
+def test_korpus_ex_test_ohne_regel11_warnton_und_je_erzeuger(tmp_path, capsys):
+    k = korpus_dir("ex_test")
+    p = baue_paar(k, "synth_1001")
+    (p / "erwartet.json").write_text(json.dumps({"format": 1, "generator_version": "2", "erzeuger": "libreoffice",
+                                                 "luecken": [], "stoerer": []}), encoding="utf-8")
+    baue_paar(k, "echt_0002")
+    assert messen.main(["--korpus", "ex_test"]) == 0
+    out = capsys.readouterr().out
+    assert "Regel 11" not in out and "offen als Entwicklung" in out
+    b = json.loads(next(config.pfad("messung_dir").glob("001_ex_test/bericht.json")).read_text(encoding="utf-8"))
+    assert b["korpus"] == "ex_test"
+    assert set(b["je_erzeuger"]) == {"libreoffice", "unbekannt"} and b["je_erzeuger"]["libreoffice"]["paare"] == 1
+    assert {"paare", "stille_fehler", "treffergenauigkeit_auto", "abdeckung_ohne_nachfrage"} <= set(b["je_erzeuger"]["libreoffice"])
+    assert "Je PDF-Erzeuger" in (config.pfad("messung_dir") / "001_ex_test" / "bericht.md").read_text(encoding="utf-8")

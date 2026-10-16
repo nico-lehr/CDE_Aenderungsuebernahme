@@ -9,8 +9,11 @@ PDF-Leser oder ein anderes Modul aus src/. Dieses Modul importiert nichts aus sr
 Aufruf:
     from tests.fixtures.generator import erzeuge_paar
     ordner = erzeuge_paar(7, "schwer", Path("/irgendwo/entwicklung"), korpus="entwicklung")
+    ordner = erzeuge_paar(102, "standard", Path("/irgendwo/entwicklung"), korpus="entwicklung", erzeuger="libreoffice")
 
-Gleicher Seed + gleiches Profil + gleicher Korpus => gleiche Zellen und gleiche erwartet.json.
+Gleicher Seed + gleiches Profil + gleicher Korpus => gleiche Zellen und gleiche erwartet.json (fuer beide Erzeuger dieselben
+Zellen und Aenderungen; nur das PDF entsteht anders). Version 2 (16.10.2026): geschuetztes Leerzeichen wie ein Mensch es tippt,
+zweiter PDF-Erzeuger LibreOffice (pdf_lo.py), Korpora entwicklung / ex_test / test (siehe docs/paar_format.md).
 
 Aufbau:
   Modell      Section / Absatz (Text steht als Markup {+neu+} {-alt-} {@stil:..@}, siehe pdf_writer)
@@ -37,8 +40,13 @@ from . import stoerer as st
 from .stoerer import schlimmer
 from .pdf_writer import PdfDokument, markierte_woerter, muster_bild, scan_bild, zustand
 
-GENERATOR_VERSION = "1"
-SEED_GRENZE = 1000          # Entwicklung: Seeds < 1000, Test: Seeds >= 1000 (getrennt, Regel 11)
+GENERATOR_VERSION = "2"
+VERSIONEN = ("1", "2")      # "1" nur zum Nachbauen archivierter Paare (geschuetztes Leerzeichen wie frueher), sonst immer "2"
+SEED_GRENZE = 1000          # Entwicklung: Seeds < 1000 (Regel 11)
+EX_TEST_SEEDS = (1001, 1030)   # frueherer Testkorpus, ab v2 offen als Entwicklung erklaert ("ex_test")
+TEST_SEED_MIN = 2000        # reservierter, ungesehener Testkorpus "test": nur Seeds >= 2000
+KORPORA = ("entwicklung", "ex_test", "test")
+ERZEUGER = ("writer", "libreoffice")
 FORMAT = 1
 TYPEN = ("text_ersetzt", "text_eingefuegt", "text_geloescht", "absatz_neu", "absatz_geloescht",
          "section_neu", "section_geloescht")
@@ -202,10 +210,14 @@ def _profil(profil: str | dict) -> tuple[str, dict[str, Any]]:
 class Kontext:
     """Baut ein Dokument-Modell Schritt fuer Schritt. Wird auch von den Stoerer-Hooks benutzt."""
 
-    def __init__(self, seed: int, profil_name: str, cfg: dict[str, Any], korpus: str, versuch: int = 0) -> None:
+    def __init__(self, seed: int, profil_name: str, cfg: dict[str, Any], korpus: str, versuch: int = 0,
+                 version: str = GENERATOR_VERSION) -> None:
         self.seed, self.profil_name, self.cfg, self.korpus = seed, profil_name, cfg, korpus
         self.versuch = versuch
-        self.rng = random.Random(seed * 1_000_003 + sum(map(ord, korpus + profil_name)) * 7919 + versuch * 104_729)
+        self.version = version
+        # ex_test baut denselben Zufallsstrom wie der fruehere Testkorpus (dort hiess der Korpus "test")
+        strom = "test" if korpus == "ex_test" else korpus
+        self.rng = random.Random(seed * 1_000_003 + sum(map(ord, strom + profil_name)) * 7919 + versuch * 104_729)
         self.fehlend: list[str] = []
         self.sektionen: list[Section] = []
         self._zaehler = 0
@@ -561,12 +573,13 @@ class Kontext:
     def waehle_stoerer(self) -> None:
         r = self.rng
         ex = self.cfg.get("stoerer_liste")
+        erlaubt = st.nur_test_erlaubt(self.korpus)
         if ex is not None:
             for n in ex:
                 if n not in st.REGISTER:
                     raise ValueError(f"unbekannte Stoerer-Familie: {n}")
-                if st.REGISTER[n].nur_test and self.korpus != "test":
-                    raise ValueError(f"{n} ist NUR_TEST und darf nicht im Entwicklungskorpus vorkommen (Regel 11)")
+                if st.REGISTER[n].nur_test and n not in erlaubt:
+                    raise ValueError(f"{n} ist NUR_TEST und darf im Korpus {self.korpus!r} nicht vorkommen (Regel 11)")
             self.gewaehlt = sorted(ex, key=lambda x: st.REGISTER[x].reihenfolge)
             return
         pool = st.pool(self.cfg["pool"], self.korpus)
@@ -584,9 +597,9 @@ class Kontext:
             if r.random() < 0.25 and self.cfg["pool"] == "mild":
                 n = 0
             gew = r.sample(pool, min(n, len(pool)))
-        if self.korpus == "test":
+        if erlaubt:
             for name, (modul, rest) in st.TEST_ZWANG.items():
-                if self.seed % modul == rest and name not in gew:
+                if name in erlaubt and self.seed % modul == rest and name not in gew:
                     gew.append(name)
         self.gewaehlt = sorted(gew, key=lambda x: st.REGISTER[x].reihenfolge)
 
@@ -1072,27 +1085,56 @@ def _eintraege(ctx: Kontext, pos: _Pos) -> list[dict[str, Any]]:
 
 
 # ====================================================================== Hauptfunktion
+def pruefe_korpus_seed(korpus: str, seed: int) -> None:
+    """Regel 11: Korpora und Seed-Bereiche bleiben getrennt.
+    entwicklung: Seeds < 1000 · ex_test: frueherer Testkorpus (das Skript erlaubt nur 1001-1030) · test: nur Seeds >= 2000."""
+    if korpus not in KORPORA:
+        raise ValueError(f"korpus muss einer von {', '.join(KORPORA)} sein")
+    if korpus == "entwicklung" and seed >= SEED_GRENZE:
+        raise ValueError(f"Entwicklungs-Seeds muessen unter {SEED_GRENZE} liegen (Regel 11)")
+    if korpus == "test" and seed < TEST_SEED_MIN:
+        raise ValueError(f"Test-Seeds muessen ab {TEST_SEED_MIN} liegen (Regel 11)")
+
+
 def erzeuge_paar(seed: int, profil: str | dict = "standard", ziel: Path | str = ".",
-                 korpus: str = "entwicklung") -> Path:
+                 korpus: str = "entwicklung", erzeuger: str = "writer", version: str = GENERATOR_VERSION) -> Path:
     """Erzeugt ein Paar unter ziel/synth_<seed>_<profil>/ und gibt den Paar-Ordner zurueck.
 
-    ziel   Korpus-Ordner (z. B. data/paare/entwicklung); wird bei Bedarf angelegt.
-    korpus "entwicklung" oder "test". Nur bei "test" kommen die NUR_TEST-Stoerer-Familien vor.
+    ziel     Korpus-Ordner (z. B. data/paare/entwicklung); wird bei Bedarf angelegt.
+    korpus   "entwicklung" (Seeds < 1000), "ex_test" (frueherer Testkorpus, offen als Entwicklung erklaert; dieselben Paare wie
+             frueher, inkl. der dort offengelegten NUR_TEST-Familien) oder "test" (reserviert, nur Seeds >= 2000).
+    erzeuger "writer" (eigener PDF-Schreiber) oder "libreoffice" (Flat-ODT -> soffice; fehlt soffice: LibreOfficeFehlt).
+             Excel-Dateien und Wahrheit sind fuer beide gleich (aus dem Modell), nur das PDF entsteht anders.
+    version  "2" (Standard) oder "1" (nur um archivierte v1-Paare nachzubauen, z. B. Red-Team R3).
     Bestehende Paar-Ordner werden nie ueberschrieben (FileExistsError, Regel 29).
     """
-    if korpus not in ("entwicklung", "test"):
-        raise ValueError("korpus muss 'entwicklung' oder 'test' sein")
+    pruefe_korpus_seed(korpus, seed)
+    if erzeuger not in ERZEUGER:
+        raise ValueError(f"erzeuger muss einer von {', '.join(ERZEUGER)} sein")
+    if version not in VERSIONEN:
+        raise ValueError(f"unbekannte Generator-Version {version!r}")
+    if erzeuger == "libreoffice":
+        from . import pdf_lo
+        if not pdf_lo.verfuegbar():
+            raise pdf_lo.LibreOfficeFehlt("Erzeuger 'libreoffice' braucht soffice (LibreOffice)")
     name, cfg = _profil(profil)
     ordner = Path(ziel) / f"synth_{seed:04d}_{name}"
     if ordner.exists():
         raise FileExistsError(f"{ordner} existiert schon (Paare sind append-only)")
-    ctx, pdf = _baue(seed, name, cfg, korpus)
+    ctx, pdf = _baue(seed, name, cfg, korpus, version=version)
+    if erzeuger == "libreoffice" and "gedrehte_seite" in ctx.aktiv:
+        raise ValueError("gedrehte_seite gibt es mit dem Erzeuger 'libreoffice' nicht")
     tmp = Path(ziel) / f".tmp_{ordner.name}"
     if tmp.exists():
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
     try:
-        pdf.speichern(tmp / "aenderungen.pdf")
+        lo_info: dict[str, Any] | None = None
+        if erzeuger == "libreoffice":
+            from . import pdf_lo
+            lo_info = pdf_lo.rendere(ctx, tmp / "aenderungen.pdf")
+        else:
+            pdf.speichern(tmp / "aenderungen.pdf")
         _luecken_sammeln(ctx, pdf)
         _bewerte_struktur(ctx)
         pos_alt = schreibe_excel(tmp / "vorher.xlsx", ctx, False)
@@ -1102,10 +1144,11 @@ def erzeuge_paar(seed: int, profil: str | dict = "standard", ziel: Path | str = 
                     + sum(a.markiert() for _, a in ctx.alle_absaetze()))
         erwartet = {
             "format": FORMAT,
-            "generator_version": GENERATOR_VERSION,
+            "generator_version": version,
             "seed": seed,
             "profil": name,
             "korpus": korpus,
+            "erzeuger": erzeuger,
             "stoerer": list(ctx.aktiv),
             "layout": _layout_name(ctx),
             "woerter_markiert": markiert,
@@ -1120,6 +1163,12 @@ def erzeuge_paar(seed: int, profil: str | dict = "standard", ziel: Path | str = 
                 "gedrehte_seite": ctx.opt.get("rotiert_seite", 0),
             },
         }
+        if lo_info is not None:
+            # Seitenangaben (Aenderungen, Luecken) stammen aus dem Satz des eigenen Schreibers: bei LibreOffice nur geschaetzt.
+            # Zaehlungen, die vom Satz abhaengen (Trennungen, Umbrueche), kann nur der eigene Schreiber garantieren.
+            erwartet["pdf_info"].update(seiten=lo_info["seiten"], fussnoten=lo_info["fussnoten"], seiten_geschaetzt=True)
+            erwartet["libreoffice"] = {k: lo_info[k] for k in ("libreoffice_version", "schrift", "neu_unterstrichen",
+                                                              "aenderungsbalken", "variante", "listen", "tabellen", "bilder")}
         with open(tmp / "erwartet.json", "w", encoding="utf-8") as f:
             json.dump(erwartet, f, ensure_ascii=False, indent=2)
             f.write("\n")
@@ -1130,11 +1179,14 @@ def erzeuge_paar(seed: int, profil: str | dict = "standard", ziel: Path | str = 
     return ordner
 
 
-def _baue(seed: int, name: str, cfg: dict[str, Any], korpus: str, versuche: int = 8) -> tuple[Kontext, PdfDokument]:
+def _baue(seed: int, name: str, cfg: dict[str, Any], korpus: str, versuche: int = 8,
+          version: str = GENERATOR_VERSION) -> tuple[Kontext, PdfDokument]:
     """Baut Modell und PDF. Fehlt eine zugesagte Besonderheit (z. B. es wurde nirgends getrennt), gibt es einen
-    neuen Versuch mit anderem, aber festem Zufallsstrom -- das Ergebnis bleibt je Seed deterministisch."""
+    neuen Versuch mit anderem, aber festem Zufallsstrom -- das Ergebnis bleibt je Seed deterministisch.
+    Das PDF des eigenen Schreibers entsteht immer (auch fuer LibreOffice): es liefert Seitenangaben und Garantien,
+    und der Zufallsstrom des Modells bleibt so fuer beide Erzeuger gleich."""
     for versuch in range(versuche):
-        ctx = Kontext(seed, name, cfg, korpus, versuch)
+        ctx = Kontext(seed, name, cfg, korpus, versuch, version)
         ctx.lauf()
         pdf = rendere_pdf(ctx)
         fehlt = list(ctx.fehlend) + [n for n in ctx.aktiv

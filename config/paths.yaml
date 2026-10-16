@@ -5,7 +5,8 @@ data_dir: ./data
 runs_dir: ./data/runs
 frontend_dir: ./frontend
 # Messwerkzeug (python -m src.cli messen). Beide Ordner liegen unter data/ und sind von Git ignoriert.
-# paare_dir: je Korpus (entwicklung | test) ein Ordner pro Paar mit aenderungen.pdf, vorher.xlsx, nachher.xlsx
+# paare_dir: je Korpus (entwicklung | ex_test | test) ein Ordner pro Paar mit aenderungen.pdf, vorher.xlsx, nachher.xlsx;
+#            aeltere Korpora liegen unter paare_dir/archiv/ (siehe docs/paar_format.md)
 # messung_dir: append-only Berichte (NNN_<korpus>/bericht.json + bericht.md), enthalten KEINE Textinhalte
 paare_dir: ./data/paare
 messung_dir: ./data/messung
