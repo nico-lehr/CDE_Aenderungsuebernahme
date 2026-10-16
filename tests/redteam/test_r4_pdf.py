@@ -53,8 +53,6 @@ ZEILE2 = "und wird im Wartungsbuch mit Datum, Uhrzeit und Unterschrift sorgfält
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-202 Strich ueber ganze Zeilen: Absatz gilt still als unveraendert, keine Meldung; Besitzer PDF")
 def test_rt202_strich_ueber_ganze_zeilen(tmp_path):
     d = RohDok()
     d.ueberschrift("1 Eins")
@@ -102,8 +100,6 @@ def test_rt206_neuer_satz_ueber_seitenumbruch(tmp_path):
 # RT-214: Fussnoten-Hochzahl am geaenderten Wort
 # ---------------------------------------------------------------------------------------------
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-214 Hochzahl am blauen Wort landet im Excel-Text ('Zentrale1'); Besitzer PDF")
 def test_rt214_hochzahl_am_geaenderten_wort(tmp_path):
     d = RohDok()
     d.ueberschrift("1 Eins")
@@ -126,8 +122,6 @@ ANFANG = "Die Steuerung meldet alle Störungen der gesamten Anlage sofort und zu
 
 
 @pytest.mark.redteam
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="RT-215 'E-' / 'Mail' ueber Zeilenende im neuen Text wird 'E- Mail' (hoch); Besitzer PDF")
 def test_rt215_trennung_e_mail_im_neuen_text(tmp_path):
     d = RohDok()
     d.ueberschrift("1 Eins")

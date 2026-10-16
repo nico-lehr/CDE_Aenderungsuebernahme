@@ -56,8 +56,7 @@ XF = pytest.mark.xfail
 @pytest.mark.redteam
 @pytest.mark.parametrize("art", [
     pytest.param("kontrolle_rgb", id="kontrolle_rgb"),
-    pytest.param("separation", id="separation", marks=XF(strict=True, raises=AssertionError,
-                 reason="RT-207 rote Flaeche in Separation-Farbe (Ton 1,0) wird nicht erkannt und nicht gemeldet; Besitzer SICHT")),
+    pytest.param("separation", id="separation"),     # RT-207 behoben durch PDF (R6: Farbraum fuer Flaechen)
 ])
 def test_rt207_hinterlegung_in_separation_farbe(tmp_path, art):
     if art == "separation":
