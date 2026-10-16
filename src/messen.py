@@ -1556,6 +1556,11 @@ class _Auswertung:
         return any(z.bi == it["bi"] and z.zeile in (None, it["zeile"]) and z.spalte in (None, it["spalte"])
                    for z in self.ziele_von[ae.id] if ae.status == UEBERNOMMEN)
 
+    def _trifft_offen(self, ae, it: dict[str, Any]) -> bool:
+        """Wie `_trifft`, aber unabhaengig vom Status (fuer die Fehler-Schablonen der freigegebenen Vorschlaege)."""
+        return any(z.bi == it["bi"] and z.zeile in (None, it["zeile"]) and z.spalte in (None, it["spalte"])
+                   for z in self.ziele_von[ae.id])
+
 
 # ======================================================================================
 # 4. Ablauf je Paar
@@ -1945,11 +1950,13 @@ def _struktur_befund(vorher: Path, ergebnis: Path, diffs: list[Diff]) -> dict[st
             "datentyp_orte": orte}
 
 
-def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Path | None = None) -> dict[str, Any]:
+def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Path | None = None,
+               schablonen: bool = False) -> dict[str, Any]:
     """Misst ein Paar. Gibt die Kennzahlen (ohne Dokumentinhalt) zurueck; wirft bei kaputter Eingabe.
     Faellt nur ein Teil der Messung aus (Wiederholungslauf, Vorschlaege, Struktur), bleiben die Funde des ersten Laufs erhalten:
     das Paar gilt dann als "abgestuerzt" (teilweise gemessen), die Funde zaehlen weiter.
-    ergebnis_kopie: nur fuer Tests -- kopiert die Ergebnis-Excel (nur Automatik) dorthin."""
+    ergebnis_kopie: nur fuer Tests -- kopiert die Ergebnis-Excel (nur Automatik) dorthin.
+    schablonen: ergaenzt `fehler_schablonen` (Formen Soll/Ist je stillem Fehler und falschem Vorschlag, ohne Klartext)."""
     pdf, vorher, nachher = (ordner / n for n in DATEIEN)
     for p in (pdf, vorher, nachher):
         if not p.is_file():
@@ -2052,6 +2059,11 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
     res["dauer_sekunden"] = round(time.monotonic() - t0, 2)
     res["profil_angenommen"] = True                      # ohne erwartet.json/Profil: Standard-Aufbau angenommen (siehe fasse_zusammen)
     res["erzeuger"] = _erzeuger(erwartet)
+    if schablonen:
+        try:
+            res["fehler_schablonen"], res["fehler_schablonen_verworfen"] = _fehler_schablonen(auswertung, res["erzeuger"])
+        except Exception:                              # reine Zusatzangabe: faellt sie aus, ist das Paar trotzdem gemessen
+            res["fehler_schablonen"], res["fehler_schablonen_verworfen"] = [], -1
     if erwartet:
         res["stoerer"] = [s for s in erwartet.get("stoerer", []) if isinstance(s, str)]
         res["profil"] = erwartet.get("profil", "") if isinstance(erwartet.get("profil", ""), str) else ""
@@ -2067,6 +2079,57 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
             {"blatt": 0, "zeile": 0, "spalte": 0, "aenderung": "", "art": "unklar", "stumm": False, "grund": g}
             for _t, g in ausfaelle]
     return res
+
+
+def _soll_von_item(aw: "_Auswertung", it: dict[str, Any], diffs: list[Diff]) -> str:
+    """Soll-Text zu einer veraenderten Ist-Zelle (nur im Speicher)."""
+    if it["art"] != "neu":
+        return aw._erwartet(it["bi"], it["zeile"], it["spalte"])
+    bi = it["bi"]
+    paar, _ort = _neu_abgleich(aw.S[bi].neue, diffs[bi].neue, aw._paar_spalten(bi))
+    si = {ii: s for s, ii in paar.items()}.get(it.get("ist_index"))
+    zellen = aw.S[bi].neue[si][1] if si is not None else ()
+    return zellen[it["spalte"] - 1] if it["spalte"] - 1 < len(zellen) else ""
+
+
+def _fehler_schablonen(aw: "_Auswertung", erzeuger: str, maximal: int = 40) -> tuple[list[dict[str, Any]], int]:
+    """`messen --schablonen`: fuer jeden stillen Fehler und jeden falschen Vorschlag (hoechstens `maximal`) die FORMEN von Soll und Ist
+    der betroffenen Zelle (Aufbau und Zeichensatz siehe src/steckbrief.py, `schablone`), dazu Fehlerart, Aenderungstyp und Erzeuger.
+    Kein Klartext. -> (Eintraege, Zahl der Eintraege, die die Positivliste nicht bestanden haben und verworfen wurden)."""
+    from . import steckbrief as sb
+    nach_id = {a.id: a for a in aw.aend}
+    stille: list[dict[str, Any]] = []
+    for key, f in aw.fehler.items():
+        if not f.stumm or f.quelle == "paar":
+            continue
+        k0, soll, ist = (key[0] if isinstance(key, tuple) and key else ""), "", ""
+        if k0 in ("z", "typ", "r27") and f.zeile > 0:
+            soll, ist = aw._erwartet(f.bi, f.zeile, f.spalte), aw._tatsaechlich(f.bi, f.zeile, f.spalte)
+        elif k0 == "n" and len(key) == 5:
+            it = next((i for i in aw.ist if i["key"] == key), None)
+            if it is not None:
+                soll, ist = _soll_von_item(aw, it, aw.I), it["inhalt"]
+        elif k0 == "n":
+            e = next((x for x in aw.einheiten if x["key"] == key), None)
+            if e is not None:
+                soll, ist = e["soll"], e["ist"] or ""
+        typ = next((nach_id[i].typ for i in f.aenderungen if i in nach_id), "")
+        stille.append(sb.fehler_eintrag("stiller_fehler", f.art, typ, erzeuger, soll, ist))
+    falsche: list[dict[str, Any]] = []
+    if aw.e_alle is not None and aw.e_alle_diffs is not None:
+        vorhanden = {(i["key"], _s(i["inhalt"])) for i in aw.ist}
+        for it in aw.e_alle:
+            if it["richtig"] or (it["key"], _s(it["inhalt"])) in vorhanden:
+                continue
+            ae = next((a for a in aw.aend if aw._trifft_offen(a, it)), None)
+            falsche.append(sb.fehler_eintrag("falscher_vorschlag", "", ae.typ if ae else "", erzeuger,
+                                             _soll_von_item(aw, it, aw.e_alle_diffs), it["inhalt"]))
+    auswahl: list[dict[str, Any]] = []
+    for i in range(max(len(stille), len(falsche))):           # abwechselnd, damit beide Quellen vorkommen
+        auswahl += [lst[i] for lst in (stille, falsche) if i < len(lst)]
+    auswahl = auswahl[:maximal]
+    ok = [e for e in auswahl if not sb.pruefe_eintrag(e)]
+    return ok, len(auswahl) - len(ok)
 
 
 def _erzeuger(erwartet: dict[str, Any] | None) -> str:
@@ -2609,7 +2672,31 @@ def _md(b: dict[str, Any]) -> str:
         plausi_t = "-" if plausi is None else (str(p.get("plausibilitaet_ungemeldet")) + " von " + str(len(plausi)) if plausi else "0")
         z.append(f"| {p['name']} | {p['soll_zellen']} | {ab} | {p['stille_fehler']} | {p.get('regel27_verstoesse', 0)} | "
                  f"{struktur} | {plausi_t} | {bil} | {fe or '-'} |")
+    if any("fehler_schablonen" in p for p in b["paare"]):
+        z += _md_schablonen(b["paare"])
     return "\n".join(z) + "\n"
+
+
+def _md_schablonen(paare: list[dict[str, Any]]) -> list[str]:
+    """Abschnitt "Fehler-Schablonen" (nur mit --schablonen): Formen Soll/Ist, kein Klartext."""
+    z = ["", "## Fehler-Schablonen", "",
+         "Formen statt Text: A = Großbuchstabe, a = Kleinbuchstabe, 9 = Ziffer, · = geschütztes Leerzeichen, ¶ = Zeilenumbruch, ⇥ = Tab, "
+         "W… = langes Wort, ? = anderes Zeichen. Vor jeder Form steht das Format: `-:` normal, `a:` alt (durchgestrichen), `n:` neu; die Läufe sind durch ‖ getrennt.", ""]
+    laeufe = lambda ls: " ‖ ".join(f"{x['f']}:{x['form']}" for x in ls) or "(leer)"          # noqa: E731
+    for p in paare:
+        if not p.get("fehler_schablonen") and not p.get("fehler_schablonen_verworfen"):
+            continue
+        z += [f"### {p['name']}", "", "| Quelle | Fehlerart | Änderungstyp | Erzeuger | Soll | Ist |", "|---|---|---|---|---|---|"]
+        for e in p["fehler_schablonen"]:
+            z.append(f"| {e['quelle']} | {e['fehlerart']} | {e['aenderungstyp']} | {e['erzeuger']} | "
+                     f"`{laeufe(e['soll'])}` | `{laeufe(e['ist'])}` |")
+        verworfen = p.get("fehler_schablonen_verworfen") or 0
+        if verworfen > 0:
+            z += ["", f"Verworfen (Positivliste nicht bestanden): {verworfen}"]
+        elif verworfen < 0:
+            z += ["", "Die Fehler-Schablonen dieses Paars konnten nicht erstellt werden."]
+        z.append("")
+    return z
 
 
 def schreibe_bericht(bericht: dict[str, Any], korpus: str) -> Path:
@@ -2730,6 +2817,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--paar", help="nur dieses Paar (Ordnername)")
     ap.add_argument("--ordner", help="anderer Eltern-Ordner mit Paaren (statt paare_dir/<korpus>)")
     ap.add_argument("--mit-vorschlaegen", action="store_true", help="auch die Qualität der Vorschläge (nach Freigabe) messen")
+    ap.add_argument("--schablonen", action="store_true",
+                    help="Bericht um den Abschnitt Fehler-Schablonen ergaenzen: Formen (kein Text) von Soll und Ist je stillem Fehler/falschem Vorschlag")
     ap.add_argument("--vergleich", action="store_true", help="Deltas gegen den letzten Bericht desselben Korpus ausgeben")
     ap.add_argument("--gegen", metavar="NNN", help="mit --vergleich: gegen den Bericht mit dieser Nummer vergleichen")
     try:
@@ -2761,7 +2850,7 @@ def main(argv: list[str] | None = None) -> int:
     paare: list[dict[str, Any]] = []
     for d in kandidaten:
         try:
-            p = messe_paar(d, a.mit_vorschlaegen)
+            p = messe_paar(d, a.mit_vorschlaegen, schablonen=a.schablonen)
         except Exception as exc:                  # ein kaputtes Paar bricht die Messung nicht ab
             p = _fehlgeschlagen(d.name, exc)
         p["name"] = d.name

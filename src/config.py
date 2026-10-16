@@ -11,7 +11,8 @@ import yaml
 PROJEKT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = PROJEKT_ROOT / "config"
 # Ordner, die bei gesetztem CDE_DATA_ROOT unter diesem Ordner liegen (z.B. fuer Tests)
-_UNTER_DATA_ROOT = {"runs_dir": "runs", "paare_dir": "paare", "messung_dir": "messung", "profile_dir": "profile"}
+_UNTER_DATA_ROOT = {"runs_dir": "runs", "paare_dir": "paare", "messung_dir": "messung", "profile_dir": "profile",
+                   "steckbrief_dir": "steckbrief"}
 
 
 @lru_cache(maxsize=None)

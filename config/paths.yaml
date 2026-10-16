@@ -13,3 +13,6 @@ messung_dir: ./data/messung
 # Layout-Profile (python -m src.cli profil ...): Vorschau-Datensaetze und Bestaetigungen, append-only (Regel 29),
 # liegt unter data/ und ist von Git ignoriert. Siehe docs/adr/0003-layout-profile.md
 profile_dir: ./data/profile
+# Steckbrief (python -m src.cli steckbrief): Zahlen, Farbcodes und Formen eines Beispiel-Paars, KEIN Text (Regel 16).
+# append-only (NNN_<name>/steckbrief.json + steckbrief.md), liegt unter data/ und ist von Git ignoriert.
+steckbrief_dir: ./data/steckbrief
