@@ -53,6 +53,17 @@ _HINWEIS_TEXT = {
                    "gelesen worden sein (ein Satz kann zerrissen sein).",
     "tabelle": "Dieses Wort steht in einer Tabelle. Die Tabelle wurde zeilenweise als normaler Text gelesen; "
                "Zellen können falsch zugeordnet sein.",
+    # Schema 3 (Leser-Treue R1-R8)
+    "rand_unklar": "Eine Linie oder Fläche deckt den Rand eines Wortes nicht genau ab (z. B. ein Satzzeichen daneben). "
+                   "Der Rand wurde dem Rest des Wortes zugeschlagen. Bitte prüfen.",
+    "absatzgrenze_unklar": "Es ist nicht sicher, ob hier ein neuer Absatz beginnt (die Zeile davor endet etwas früher "
+                           "als die anderen). Bitte prüfen.",
+    "trennung_unklar": "Ein neues Wort ist am Zeilenende getrennt. Es wurde ohne Trennstrich zusammengefügt, kommt so aber "
+                       "sonst nicht im Dokument vor. Bitte prüfen.",
+    "hochzahl_markiert": "Eine kleine hochgestellte Marke (z. B. Fußnotenzahl) ist markiert. Sie wurde nicht als Teil des "
+                         "Wortes gelesen. Bitte prüfen.",
+    "linienfarbe_unklar": "Die Farbe einer Linie durch den Text konnte nicht gelesen werden. Sie wurde als Durchstreichung "
+                          "gewertet. Bitte prüfen.",
 }
 
 
@@ -283,6 +294,17 @@ def _render_modi(page: Any) -> list[tuple[int, bool]] | None:
             self.modi.append((self._modus, weich))
             return adv
 
+        def paint_path(self, gstate: Any, *a: Any, **kw: Any) -> None:   # type: ignore[override]
+            # R6: Farbraum der Linien/Flaechen merken (pdfminer gibt ihn nur fuer Zeichen heraus; pdfplumber uebernimmt
+            # die Attribute ncs/scs, wenn sie am Objekt stehen)
+            vorher = len(getattr(self.cur_item, "_objs", []))
+            super().paint_path(gstate, *a, **kw)
+            try:
+                for obj in self.cur_item._objs[vorher:]:
+                    obj.ncs, obj.scs = gstate.ncs, gstate.scs
+            except Exception:
+                pass
+
     try:
         if hasattr(page, "_layout"):
             return None
@@ -346,16 +368,29 @@ class _Sonderfarben:
 
 def _zeichenfarbe(c: dict, sonder: Any = None) -> tuple[tuple[float, float, float] | None, bool]:
     """(RGB oder None, unklar). 'unklar' = Farbe aus Muster/Sonderfarbraum, die nicht umgerechnet werden kann."""
-    farbe = c.get("non_stroking_color")
+    return _farbe(c.get("non_stroking_color"), c.get("ncs"), sonder)
+
+
+def _objektfarbe(o: dict, strich: bool, sonder: Any = None) -> tuple[tuple[float, float, float] | None, bool]:
+    """Farbe einer Linie/Flaeche MIT Farbraum (R6), wie bei Zeichen: (RGB oder None, unklar).
+    strich=True: Linienfarbe (stroking), sonst Fuellfarbe. Ohne bekannten Farbraum wie frueher (Grau/RGB/CMYK nach Anzahl)."""
+    if strich:
+        return _farbe(o.get("stroking_color"), o.get("scs"), sonder)
+    return _farbe(o.get("non_stroking_color"), o.get("ncs"), sonder)
+
+
+def _farbe(farbe: Any, raum_roh: Any, sonder: Any = None) -> tuple[tuple[float, float, float] | None, bool]:
     if farbe is None:
         return None, False
     if isinstance(farbe, str):
         return None, True
+    if isinstance(farbe, (int, float)):
+        farbe = (farbe,)
     try:
         werte = tuple(float(x) for x in farbe)
     except (TypeError, ValueError):
         return None, True
-    raum = str(c.get("ncs") or "")
+    raum = str(raum_roh or "")
     if len(werte) == 1 and raum in ("Separation", "DeviceN", "Indexed", "Pattern", "Lab"):
         rgb = sonder(werte) if (sonder is not None and raum in ("Separation", "DeviceN")) else None
         if rgb is not None:
@@ -532,7 +567,9 @@ class _Markierer:
         self.andere: list[dict[str, Any]] = []          # Kommentare anderer Art: {"typ", "boxen", "treffer"}
         self.rect_farben: Counter = Counter()
         self._flaechen_roh: list[tuple[float, float, float, float, str | None, str]] = []   # (Box, Bedeutung, Farbe)
-        self._linien_roh: list[tuple[float, float, float, bool]] = []                       # (x0, x1, y, hell)
+        # (x0, x1, y, hell, lang, farbe_unklar); lang = breiter als durchstreichung.max_breite_anteil der Seite
+        self._linien_roh: list[tuple[float, float, float, bool, bool, bool]] = []
+        self.sonder = _Sonderfarben(page)
         w, h = float(page.width), float(page.height)
         bw, bh = rahmen.masse
         if cfg["hintergrund"]["aktiv"]:
@@ -540,13 +577,18 @@ class _Markierer:
             for r in page.rects:
                 if not r.get("fill"):
                     continue
-                rgb = _rgb(r.get("non_stroking_color"))
-                if rgb is None:
+                rgb, unklar = _objektfarbe(r, False, self.sonder)     # R6: Farbraum beachten (Sonderfarbe Ton 1,0 != weiss)
+                if rgb is None and not unklar:
                     continue
                 if r["width"] * r["height"] > hg["max_flaeche_anteil"] * w * h:
                     continue
                 box = _kasten(r, rahmen)
                 if box[3] - box[1] <= 1.6:     # duenne Rechtecke sind Linien (siehe unten)
+                    continue
+                if rgb is None:
+                    # Farbe nicht berechenbar: nicht still uebergehen, sondern wie eine unbekannte Hinterlegung melden
+                    self.rect_farben[("sonderfarbe", None)] += 1
+                    self._flaechen_roh.append(box + (None, "sonderfarbe"))
                     continue
                 k = klasse(rgb, cfg, hintergrund=True)
                 self.rect_farben[(_hex(rgb), k)] += 1
@@ -555,15 +597,25 @@ class _Markierer:
                     self._flaechen_roh.append(box + (bed, _hex(rgb)))
         d = cfg["durchstreichung"]
         if d["aktiv"]:
+            # R5: keine Breitenkappe mehr fuer Durchstreichungen (die Kappe gilt nur noch fuer Unterstreichungen, siehe pruefe)
+            kappe = d["max_breite_anteil"] * bw
             for l in page.lines:
                 x0, top, x1, bot = _kasten(l, rahmen)
-                if (l.get("linewidth", 1) or 0) <= d["max_linienstaerke_pt"] and abs(bot - top) <= 1.2 \
-                        and (x1 - x0) < d["max_breite_anteil"] * bw:
-                    self._linien_roh.append((x0, x1, (top + bot) / 2, self._hell(l.get("stroking_color"))))
+                if (l.get("linewidth", 1) or 0) <= d["max_linienstaerke_pt"] and abs(bot - top) <= 1.2 and x1 - x0 >= 2:
+                    hell, unklar = self._hell(*_objektfarbe(l, True, self.sonder))
+                    self._linien_roh.append((x0, x1, (top + bot) / 2, hell, x1 - x0 >= kappe, unklar))
             for r in page.rects:
                 x0, top, x1, bot = _kasten(r, rahmen)
-                if bot - top <= 1.6 and 2 <= x1 - x0 < d["max_breite_anteil"] * bw:
-                    self._linien_roh.append((x0, x1, (top + bot) / 2, self._hell(r.get("non_stroking_color"))))
+                if bot - top <= 1.6 and 2 <= x1 - x0:
+                    hell, unklar = self._hell(*_objektfarbe(r, not r.get("fill"), self.sonder))
+                    self._linien_roh.append((x0, x1, (top + bot) / 2, hell, x1 - x0 >= kappe, unklar))
+            # flache Kurven/Pfade (z. B. als Polylinie gezeichnete Striche) sind Linienkandidaten
+            for c in page.curves:
+                x0, top, x1, bot = _kasten(c, rahmen)
+                if bot - top <= d.get("kurve_max_hoehe_pt", 1.2) and x1 - x0 >= 2 \
+                        and (c.get("linewidth", 1) or 0) <= d["max_linienstaerke_pt"]:
+                    hell, unklar = self._hell(*_objektfarbe(c, bool(c.get("stroke")), self.sonder))
+                    self._linien_roh.append((x0, x1, (top + bot) / 2, hell, x1 - x0 >= kappe, unklar))
         if cfg["annotationen"]["aktiv"]:
             self._annotationen(page)
 
@@ -572,14 +624,14 @@ class _Markierer:
         _, s, v = colorsys.rgb_to_hsv(*(max(0.0, min(1.0, x)) for x in rgb))
         return s >= hg["min_saettigung"] and v >= hg["min_helligkeit"]
 
-    def _hell(self, farbe: Any) -> bool:
-        """Hellgraue (neutrale, helle) Linie? Das ist eine Zierlinie, keine Durchstreichung."""
-        rgb = _rgb(farbe)
+    def _hell(self, rgb: tuple[float, float, float] | None, unklar: bool = False) -> tuple[bool, bool]:
+        """(hell, farbe_unklar): Hellgraue (neutrale, helle) Linie? Das ist eine Zierlinie, keine Durchstreichung.
+        farbe_unklar: die Farbe (Sonderfarbraum) konnte nicht berechnet werden."""
         if rgb is None:
-            return False
+            return False, unklar
         d = self.cfg["durchstreichung"]
         _, s, v = colorsys.rgb_to_hsv(*(max(0.0, min(1.0, x)) for x in rgb))
-        return s <= d["hell_max_saettigung"] and v >= d["hell_min_helligkeit"]
+        return s <= d["hell_max_saettigung"] and v >= d["hell_min_helligkeit"], False
 
     def _boxen(self, a: dict, data: dict, page: Any) -> list[tuple[float, float, float, float]]:
         """Bereiche eines Kommentars in Leserichtung (aus QuadPoints, sonst aus dem Rechteck)."""
@@ -636,24 +688,45 @@ class _Markierer:
         cfg = self.cfg
         d = cfg["durchstreichung"]
         streichen = _bedeutung("durchgestrichen", cfg) is not None
-        for x0, x1, y, hell in self._linien_roh:
+        def gedeckt(c: _Z, x0: float, x1: float) -> bool:
+            return (min(x1, c.x1) - max(x0, c.x0)) >= d["min_abdeckung"] * max(c.x1 - c.x0, 0.1)
+
+        for x0, x1, y, hell, lang, farbe_unklar in self._linien_roh:
             for art, band in (("strich", d["band"]), ("unter", d["unterstreichung_band"])):
                 if art == "strich" and not streichen:
                     continue
+                if art == "unter" and lang:
+                    continue                    # lange Linien unter dem Text: Trennlinie/Rahmen, keine Unterstreichung
                 treffer = [c for c in zeichen
                            if c.top + band[0] * (c.bottom - c.top) <= y <= c.top + band[1] * (c.bottom - c.top)
                            and min(x1, c.x1) - max(x0, c.x0) > 0]
                 if not treffer:
                     continue
+                if art == "strich":
+                    # R5: die Linie zaehlt nur, wenn sie die Zeichen unter ihr wirklich im Durchstreich-Band kreuzt
+                    # (Anteil min_kreuz_anteil), unabhaengig von ihrer Laenge
+                    unter = [c for c in zeichen if not c.leer and c.top <= y <= c.bottom
+                             and min(x1, c.x1) - max(x0, c.x0) > 0]
+                    gekreuzt = [c for c in treffer if not c.leer]
+                    if unter and len(gekreuzt) < d.get("min_kreuz_anteil", 0.6) * len(unter):
+                        for c in gekreuzt:
+                            if gedeckt(c, x0, x1):
+                                c.hinweis.add("linie_unklar")
+                        continue
                 size = statistics.median(c.size for c in treffer)
                 ueber = max(0.0, min(c.x0 for c in treffer) - x0) + max(0.0, x1 - max(c.x1 for c in treffer))
                 if hell or ueber > d["max_ueberstand_em"] * size:
                     if art == "strich":
                         # Zierlinie quer durch den Text: nicht als Durchstreichung werten, aber nicht verschweigen
                         for c in treffer:
-                            if not c.leer and (min(x1, c.x1) - max(x0, c.x0)) >= d["min_abdeckung"] * max(c.x1 - c.x0, 0.1):
+                            if not c.leer and gedeckt(c, x0, x1):
                                 c.hinweis.add("linie_unklar")
                     continue
+                if art == "strich" and farbe_unklar:
+                    # R6: Linienfarbe nicht berechenbar (Sonderfarbraum): als Durchstreichung werten, aber melden
+                    for c in treffer:
+                        if not c.leer and gedeckt(c, x0, x1):
+                            c.hinweis.add("linienfarbe_unklar")
                 (self.striche if art == "strich" else self.unterstriche).append((x0, x1, y))
         f = cfg["flaechen"]
         for x0, top, x1, bot, bed, hx in self._flaechen_roh:
@@ -747,45 +820,93 @@ class _Markierer:
                 for k in self.andere if not k["treffer"]]
 
 
-def _zeichenstatus(g: list[_Z], anteil: float) -> list[str]:
-    """Status je Zeichen eines Wortes. Der Status jedes Zeichens bleibt erhalten, damit nichts verloren geht:
+def _zeichenstatus(g: list[_Z], anteil: float) -> tuple[list[str], bool]:
+    """Status je Zeichen eines Wortes (fuer old/new/status des Tokens, Verhalten wie bisher) und ob die Markierung nur
+    aus Geometrie stammt (Linie, Flaeche, Kommentar). Der Status jedes Zeichens bleibt erhalten, damit nichts verloren geht:
     'Netzleistung' (gestrichen) + 'Leistung' (neu) ohne Leerzeichen bleibt ein Wort mit altem UND neuem Text,
     'ab' + 'gesichert' (neu) behaelt das unveraenderte 'ab'.
-    Nur bei Markierungen aus Geometrie (Linie, Flaeche, Kommentar) wird ein einzelnes unmarkiertes Randzeichen
-    (Satzzeichen, hoechstens ein Buchstabe) dem Rest angepasst, weil Linien und Flaechen oft knapp daneben liegen."""
+    Unmarkierte Satzzeichen am markierten Wort und (nur bei Geometrie) ein einzelner unmarkierter Randbuchstabe werden dem
+    Rest angepasst, weil Linien und Flaechen oft knapp daneben liegen. Die Zeichen-Laeufe (`PdfToken.teile`) uebernehmen
+    diese Glaettung nur bei Geometrie (siehe _woerter)."""
     n = len(g)
     st = [z.status for z in g]
     n_del = st.count(DEL)
     n_add = st.count(ADD)
     if n_del and n_add:
-        return st                      # Ersetzung ohne Leerzeichen: Zeichen einzeln behalten
+        return st, False               # Ersetzung ohne Leerzeichen: Zeichen einzeln behalten
     marke = DEL if n_del else ADD if n_add else None
+    geometrie = marke is not None and all(z.unscharf for z in g if z.status == marke)
     if marke is None or (n_del + n_add) / n < anteil:
-        return st
+        return st, geometrie
     behalten = [i for i, z in enumerate(g) if z.status == KEEP]
     buchstaben = [i for i in behalten if g[i].text[:1].isalnum()]
-    knapp_daneben = (len(buchstaben) == 1 and buchstaben[0] in (0, n - 1)
-                     and all(z.unscharf for z in g if z.status == marke))
+    knapp_daneben = len(buchstaben) == 1 and buchstaben[0] in (0, n - 1) and geometrie
     if not buchstaben or knapp_daneben:
-        return [marke] * n
-    return st
+        return [marke] * n, geometrie
+    return st, geometrie
 
 
-def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> tuple[list[PdfToken], list[_Info]]:
-    """Zeichen einer Zeile -> Woerter (mit Statusanteilen)."""
+_GESCHUETZT = ("\xa0", " ", " ")      # geschuetzte Leerzeichen (auch schmal / Ziffernbreite)
+
+
+def _teile(g: list[_Z], st: list[str]) -> list[tuple[str, str]]:
+    """Zeichen-Laeufe [(status, text)] eines Wortes; leer, wenn das ganze Wort denselben Status hat."""
+    if len(set(st)) <= 1:
+        return []
+    out: list[tuple[str, str]] = []
+    for z, s in zip(g, st):
+        if out and out[-1][0] == s:
+            out[-1] = (s, out[-1][1] + z.text)
+        else:
+            out.append((s, z.text))
+    return out
+
+
+def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "",
+             leere: list[_Z] | None = None, hoch: list[_Z] | None = None) -> tuple[list[PdfToken], list[_Info]]:
+    """Zeichen einer Zeile -> Woerter (mit Statusanteilen).
+
+    R1: `leere` = die Leerraum-Zeichen der Zeile (Leerzeichen, geschuetztes Leerzeichen, Tab). Steht eines zwischen zwei
+    Zeichen, trennt es die Woerter auch bei kleiner Luecke (Vorrang vor der Schwelle, z. B. enger Blocksatz) und bestimmt
+    den Trenner. Ohne Leerraum-Zeichen entscheidet die Luecke (layout.wort_luecke). (Eine Luecke ohne Zeichen trennt weiter:
+    viele PDFs setzen Woerter einzeln, auch in Zeilen, die sonst Leerzeichen enthalten.)"""
     lay = cfg["layout"]
     zeichen = sorted(zeichen, key=lambda z: z.x0)
+    leer = sorted((z for z in (leere or []) if not z.weich and z.text), key=lambda z: z.x0)
+    mitten = [(z.x0 + z.x1) / 2 for z in leer]
+
+    def dazwischen(a: _Z, b: _Z) -> list[_Z]:
+        lo, hi = (a.x0 + a.x1) / 2, (b.x0 + b.x1) / 2
+        return [z for z, m in zip(leer, mitten) if lo < m < hi]
+
     gruppen: list[list[_Z]] = []
+    trenner: list[str] = []          # Trenner HINTER der Gruppe gleichen Index
     for z in zeichen:
-        if gruppen and z.x0 - gruppen[-1][-1].x1 <= lay["wort_luecke"] * z.size:
-            gruppen[-1].append(z)
-        else:
-            gruppen.append([z])
+        if gruppen:
+            a = gruppen[-1][-1]
+            luecke = z.x0 - a.x1
+            zw = dazwischen(a, z) if leer else []
+            if not zw and luecke <= lay["wort_luecke"] * z.size:
+                gruppen[-1].append(z)
+                continue
+            texte = "".join(x.text for x in zw)
+            if any(c in texte for c in _GESCHUETZT):
+                trenner.append("\xa0")
+            elif "\t" in texte:
+                trenner.append("\t")
+            else:
+                trenner.append(" ")
+        gruppen.append([z])
+    trenner.append(" ")              # am Zeilenende: Leerzeichen (zusammengefuegte Trennungen setzen das selbst)
     tokens = []
     infos = []
-    for g in gruppen:
+    for gi, g in enumerate(gruppen):
         n = len(g)
-        st = _zeichenstatus(g, cfg["durchstreichung"]["wort_anteil"])
+        roh = [z.status for z in g]
+        st, geometrie = _zeichenstatus(g, cfg["durchstreichung"]["wort_anteil"])
+        # R2: Zeichen-Laeufe. Die Farbe ist je Zeichen eindeutig -> roher Status je Zeichen. Geglaettet wird nur bei
+        # Markierungen aus Geometrie (Linie, Flaeche, Kommentar); hat die Glaettung etwas umentschieden: rand_unklar.
+        teile = _teile(g, st if geometrie else roh)
         old = "".join(z.text for z, s in zip(g, st) if s in (KEEP, DEL))
         new = "".join(z.text for z, s in zip(g, st) if s in (KEEP, ADD))
         if all(s == KEEP for s in st):
@@ -814,14 +935,59 @@ def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> t
             hin.add("ligatur")
         if status == MOD and any(z.unscharf for z in g):
             hin.add("teilweise_markiert")
-        tokens.append(PdfToken(old=old, new=new, status=status, page=seite, bbox=bbox, hinweis=";".join(sorted(hin))))
+        if geometrie and st != roh:
+            hin.add("rand_unklar")
+        # R3: markierte Hochzahl (Fussnoten-Marke), die zu diesem Wort gehoert: nicht im Text, aber gemeldet
+        naechstes_x0 = gruppen[gi + 1][0].x0 if gi + 1 < len(gruppen) else float("inf")
+        if any(h.status != KEEP and (gi == 0 or h.x0 >= g[0].x0) and h.x0 < naechstes_x0 for h in hoch or ()):
+            hin.add("hochzahl_markiert")
+        tokens.append(PdfToken(old=old, new=new, status=status, page=seite, bbox=bbox, hinweis=";".join(sorted(hin)),
+                               trenner=trenner[gi], teile=teile))
         infos.append(info)
     return tokens, infos
 
 
+def _hochzahlen(cluster: list[list[_Z]], lay: dict) -> tuple[list[list[_Z]], list[list[_Z]]]:
+    """R3: Hochzahlen (Fussnoten-Marken): Zeichen deutlich kleiner als der Median der Zeile (layout.hochzahl_faktor) UND
+    angehoben (Unterkante mindestens layout.hochzahl_anhebung Schriftgroessen ueber der Grundlinie der Zeile).
+    Sie gehoeren nicht in den Wort-Text. Gibt (Zeilen ohne Hochzahlen, Hochzahlen je Zeile) zurueck. Eine eigene
+    kleine 'Zeile' aus Hochzahlen (Mitte zu weit weg fuer dieselbe Zeile) wird der Zeile darunter zugeordnet."""
+    faktor = lay.get("hochzahl_faktor", 0.75)
+    anhebung = lay.get("hochzahl_anhebung", 0.15)
+    max_zeichen = lay.get("hochzahl_max_zeichen", 6)
+    infos = []
+    for cl in cluster:
+        med = statistics.median(c.size for c in cl)
+        haupt = [c for c in cl if c.size >= faktor * med]
+        basis = statistics.median(c.bottom for c in haupt) if haupt else None
+        infos.append((med, basis, min(c.top for c in cl), min(c.x0 for c in cl), max(c.x1 for c in cl)))
+    rest: list[list[_Z]] = []
+    hoch: list[list[_Z]] = []
+    for cl, (med, basis, _, _, _) in zip(cluster, infos):
+        h = [c for c in cl if basis is not None and c.size < faktor * med and c.bottom <= basis - anhebung * med]
+        bleibt = [c for c in cl if not any(c is x for x in h)]
+        rest.append(bleibt if bleibt else cl)
+        hoch.append(h if bleibt else [])
+    # ganze kleine Cluster (nur Hochzahlen) an die Zeile darunter haengen
+    for i, cl in enumerate(rest):
+        if not cl or len(cl) > max_zeichen:
+            continue
+        gross = max(c.size for c in cl)
+        for j, (med, basis, top, x0, x1) in enumerate(infos):
+            if j == i or basis is None or not rest[j] or gross >= faktor * med:
+                continue
+            if all(top <= c.bottom <= basis - anhebung * med and x0 - med <= c.x0 and c.x1 <= x1 + med for c in cl):
+                hoch[j].extend(cl)
+                rest[i] = []
+                break
+    return rest, hoch
+
+
 def _zeilen(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> list[_Zeile]:
-    tol = cfg["layout"]["zeilen_toleranz"]
+    lay = cfg["layout"]
+    tol = lay["zeilen_toleranz"]
     weiche = [z for z in zeichen if z.weich]
+    leere = [z for z in zeichen if z.leer and not z.weich and not z.unsichtbar]
     zeichen = [z for z in zeichen if not z.leer]
     zeichen = sorted(zeichen, key=lambda z: ((z.top + z.bottom) / 2, z.x0))
     cluster: list[list[_Z]] = []
@@ -834,14 +1000,21 @@ def _zeilen(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> li
         else:
             cluster.append([z])
             mitten.append(mitte)
+    cluster, hoch_je = _hochzahlen(cluster, lay) if cluster else ([], [])
     zeilen = []
-    for cl in cluster:
-        toks, infos = _woerter(cl, seite, cfg, grund_hex)
+    for cl, hoch in zip(cluster, hoch_je):
+        if not cl:
+            continue
+        c_top, c_bot = min(z.top for z in cl), max(z.bottom for z in cl)
+        c_x0, c_x1 = min(z.x0 for z in cl), max(z.x1 for z in cl)
+        leer_cl = [z for z in leere if c_top <= (z.top + z.bottom) / 2 <= c_bot and c_x0 <= (z.x0 + z.x1) / 2 <= c_x1]
+        toks, infos = _woerter(cl, seite, cfg, grund_hex, leer_cl, hoch)
         if not toks:
             continue
         t0 = toks[0]
         if t0.status == KEEP and _NUR_PRIVAT.fullmatch(t0.old):      # Symbolschrift-Aufzaehlungspunkt am Zeilenanfang = Aufzaehlungszeichen
             t0.old = t0.new = "•"
+            t0.teile = []
             t0.hinweis = ";".join(h for h in t0.hinweis.split(";") if h and h != "nicht_lesbar")
             infos[0].unlesbar = False
         fett_n = sum(1 for z in cl if re.search(r"bold|black|heavy|semibold", z.font, re.I))
@@ -984,7 +1157,35 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
 
     def kurz(z: _Zeile) -> bool:
         return kurz_im_text(z) or (schwelle_kurz is not None and z.x1 < schwelle_kurz)
-    block_zeilen: dict[int, tuple[_Zeile, _Zeile]] = {}      # Block -> (erste, letzte Zeile)
+
+    # R4: "Haette das erste Wort der naechsten Zeile noch in die vorige gepasst?" Rechter Rand je Zeile: 90-%-Wert der
+    # Zeilenenden langer Zeilen DERSELBEN Seite, die waagerecht mit ihr ueberlappen (Spalten bleiben getrennt).
+    seiten_zeilen: dict[int, list[_Zeile]] = {}
+    for zl in seiten_nutz:
+        for z in zl:
+            seiten_zeilen.setdefault(z.seite, []).append(z)
+    rand_cache: dict[int, float | None] = {}
+
+    def rechter_rand(z: _Zeile) -> float | None:
+        if id(z) not in rand_cache:
+            ref = sorted(l.x1 for l in seiten_zeilen.get(z.seite, []) if len(l.tokens) >= 5 and l.x0 < z.x1 and l.x1 > z.x0)
+            rand_cache[id(z)] = ref[int(0.9 * (len(ref) - 1))] if len(ref) >= lay.get("absatz_passt_min_zeilen", 3) else None
+        return rand_cache[id(z)]
+
+    def passt(vorher: _Zeile, tok: PdfToken) -> str:
+        """'ja' (haette sicher gepasst -> harter Umbruch) | 'nein' | 'unklar' (knapp) | '' (unbekannt: kein Rand)."""
+        r = rechter_rand(vorher)
+        if r is None:
+            return ""
+        if _erste_form(vorher.tokens[-1]).endswith("-") or vorher.weich_ende:
+            return "nein"                          # Silbentrennung: die Zeile ist voll
+        rest = (r - vorher.x1) - ((tok.bbox[2] - tok.bbox[0]) + lay.get("leerzeichen_em", 0.28) * vorher.size)
+        if rest >= lay.get("absatz_passt_toleranz_em", 0.5) * vorher.size:
+            return "ja"
+        return "unklar" if rest > 0 else "nein"
+
+    wortschatz = {norm(x) for zl in alle_zeilen for z in zl for t in z.tokens for x in (t.old, t.new) if x}
+    block_zeilen: dict[int, tuple[_Zeile, _Zeile]] = {}      # id(Block) -> (erste, letzte Zeile)
     for nutz in seiten_nutz:
         if not nutz:
             continue
@@ -1004,13 +1205,13 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
                 else:   # unnummerierte Ueberschrift: Zuordnung ueber Text, Nummern bleiben
                     sec_alt = sec_neu = None
             else:
-                toks = _silben(toks, aktuell, cfg, weich_ids)
+                toks = _silben(toks, aktuell, cfg, weich_ids, wortschatz)
             bbox = (min(z.x0 for z in aktuell), min(z.top for z in aktuell),
                     max(z.x1 for z in aktuell), max(z.bottom for z in aktuell))
             ergebnis.blocks.append(PdfBlock(idx=idx, page=aktuell[0].seite, kind=art, tokens=toks, bbox=bbox,
                                             section_alt=sec_alt, section_neu=sec_neu,
                                             hinweise=_block_hinweise(toks)))
-            block_zeilen[idx] = (aktuell[0], aktuell[-1])
+            block_zeilen[id(ergebnis.blocks[-1])] = (aktuell[0], aktuell[-1])
             idx += 1
             aktuell = []
 
@@ -1036,11 +1237,17 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
                     ist_listenpunkt = block_marke == "strich" or ende in (".", ":", ";", "!", "?") or kurz_im_text(vorher)
                 else:
                     ist_listenpunkt = True
+            grenze = ""
+            if aktuell and art == "absatz" and not kopf and vorher is not None and not ist_listenpunkt:
+                grenze = passt(vorher, z.tokens[0])
             neu_start = (not aktuell or (kopf and not folge_kopf) or (art == "ueberschrift" and not folge_kopf)
                          or (not folge_kopf and (
                              (vorher is not None and z.top - vorher.top > lay["absatz_faktor"] * median)
                              or (weit and vorher is not None and kurz(vorher))
-                             or ist_listenpunkt)))
+                             or ist_listenpunkt or grenze == "ja")))
+            if grenze == "unklar" and not neu_start:
+                t0 = z.tokens[0]
+                t0.hinweis = ";".join(sorted(set(filter(None, t0.hinweis.split(";"))) | {"absatzgrenze_unklar"}))
             if neu_start:
                 abschliessen()
                 art = "ueberschrift" if kopf else "absatz"
@@ -1053,39 +1260,59 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
             vorher = z
         abschliessen()
     _seitenumbruch(ergebnis, block_zeilen, weich_ids, {norm(w) for w in lay["keine_silbentrennung_vor"]}, kurz,
-                   lay["silbentrennung_min_buchstaben"])
+                   lay["silbentrennung_min_buchstaben"], wortschatz, passt)
     return seiten_nutz
 
 
 def _seitenumbruch(ergebnis: PdfAnalyse, block_zeilen: dict[int, tuple[_Zeile, _Zeile]], weich_ids: set[int],
-                   ausnahmen: set[str], kurz: Any, min_buchstaben: int = 2) -> None:
+                   ausnahmen: set[str], kurz: Any, min_buchstaben: int = 2, wortschatz: set[str] | None = None,
+                   passt: Any = None) -> None:
     """Absatz ueber den Seitenumbruch: ein am Seitenende getrenntes Wort wird zusammengefuegt; setzt sich ein Absatz
-    auf der naechsten Seite fort, bekommen beide Bloecke einen Hinweis (die Woerter bleiben je Seite)."""
+    auf der naechsten Seite fort, bekommen beide Bloecke einen Hinweis (die Woerter bleiben je Seite).
+
+    R4: Der letzte Block einer Seite bekommt `fortsetzung` (die Bloecke werden NICHT zusammengelegt, das macht der Planer):
+      "sicher"   kein Satzende UND (naechste Seite beginnt klein ODER Silbentrennung verbunden) UND das erste Wort der
+                 naechsten Seite haette nicht mehr in die letzte Zeile gepasst;
+      "moeglich" sonst, wenn die letzte Zeile voll ist (auch mit Satzende), die Grenze knapp ist oder die naechste Seite
+                 ohne Satzende klein weitergeht;
+      ""         sonst (die letzte Zeile endet frueh: neuer Absatz)."""
     bl = ergebnis.blocks
     i = 0
     while i < len(bl) - 1:
         b, b2 = bl[i], bl[i + 1]
         if b.kind == b2.kind == "absatz" and b2.page > b.page and b.tokens and b2.tokens:
+            letzte = block_zeilen.get(id(b), (None, None))[1]
             v, t = b.tokens[-1], b2.tokens[0]
-            m = _verbinden(v, t, id(v) in weich_ids, ausnahmen, min_buchstaben)
+            p = passt(letzte, t) if (passt is not None and letzte is not None) else ""
+            verbunden = False
+            m = _verbinden(v, t, id(v) in weich_ids, ausnahmen, min_buchstaben, wortschatz)
             if m is not None:
+                verbunden = True
                 b.tokens[-1] = m
                 del b2.tokens[0]
+                b.hinweise += [h for h in _block_hinweise([m]) if h not in b.hinweise]
                 if not b2.tokens:
                     del bl[i + 1]
                     for k, rest in enumerate(bl[i + 1:], i + 1):
                         rest.idx = k
-                else:
-                    b2.bbox = (min(x.bbox[0] for x in b2.tokens), min(x.bbox[1] for x in b2.tokens),
-                               max(x.bbox[2] for x in b2.tokens), max(x.bbox[3] for x in b2.tokens))
-                continue
+                    i += 1
+                    continue
+                b2.bbox = (min(x.bbox[0] for x in b2.tokens), min(x.bbox[1] for x in b2.tokens),
+                           max(x.bbox[2] for x in b2.tokens), max(x.bbox[3] for x in b2.tokens))
+                v, t = b.tokens[-1], b2.tokens[0]
             text_v, text_t = _erste_form(v), _erste_form(t)
-            letzte = block_zeilen.get(b.idx, (None, None))[1]
-            if text_t[:1].islower() or (not re.search(r"[.!?:;)\"”»]$", text_v) and letzte is not None and not kurz(letzte)):
+            satzende = bool(re.search(r"[.!?:;)\"”»]$", text_v))
+            klein = text_t[:1].islower()
+            voll = p == "nein" or (p == "" and letzte is not None and not kurz(letzte))
+            if klein or (not satzende and letzte is not None and not kurz(letzte)):
                 for blk, satz in ((b, "Der Absatz geht auf der nächsten Seite weiter."),
                                   (b2, "Dieser Absatz ist die Fortsetzung des Absatzes von der vorigen Seite.")):
                     if satz not in blk.hinweise:
                         blk.hinweise.append(satz)
+            if not satzende and (klein or verbunden) and (p == "nein" or verbunden):
+                b.fortsetzung = "sicher"
+            elif voll or p == "unklar" or (klein and not satzende):
+                b.fortsetzung = "moeglich"
         i += 1
 
 
@@ -1103,7 +1330,7 @@ def _design_ueberschriften(seiten_nutz: list[list[_Zeile]], body: float, cfg: di
     je_seite: Counter = Counter()
     for z in koepfe:
         for t in z.tokens:
-            t.old, t.status = t.new, KEEP
+            t.old, t.status, t.teile = t.new, KEEP, []
             t.hinweis = ";".join(sorted(set(filter(None, t.hinweis.split(";"))) | {"design_blau"}))
         je_seite[z.seite] += len(z.tokens)
     for seite, n in sorted(je_seite.items()):
@@ -1175,35 +1402,92 @@ def _zeilenabstand(abstaende: list[float], body: float) -> float:
     return statistics.median(stark[0])
 
 
-def _verbinden(v: PdfToken, t: PdfToken, weich: bool, ausnahmen: set[str], min_buchstaben: int = 2) -> PdfToken | None:
+def _abkuerzung(vor: str) -> bool:
+    """Steht vor dem Zeilenend-Strich eine Abkuerzung oder Ziffer ('XML-', 'BESS-', '2-')? Dann ist er ein echter Bindestrich."""
+    if not vor:
+        return False
+    if vor[-1].isdigit():
+        return True
+    teil = re.split(r"[-/]", vor)[-1]
+    return len(teil) >= 2 and teil.isupper()
+
+
+def _laeufe(t: PdfToken) -> list[tuple[str, str]]:
+    """Zeichen-Laeufe eines Tokens (auch wenn `teile` leer ist)."""
+    if t.teile:
+        return list(t.teile)
+    return [(t.status, t.new if t.status == ADD else t.old)]
+
+
+def _verbinden(v: PdfToken, t: PdfToken, weich: bool, ausnahmen: set[str], min_buchstaben: int = 2,
+               wortschatz: set[str] | None = None) -> PdfToken | None:
     """Fuegt ein am Zeilenende getrenntes Wort wieder zusammen ('Kapazi-' + 'taet'; mit '-' oder weichem Trennstrich).
     Gilt fuer unveraenderte, neue und gestrichene Woerter, wenn beide Teile denselben Status haben.
     `min_buchstaben` (config layout.silbentrennung_min_buchstaben): so viele Buchstaben muss das Stueck VOR dem Trennstrich haben.
-    Der weiche Trennstrich ist unsichtbar; er zaehlt nicht mit ('Ne' + 'nnleistung' ist genauso lang wie 'Ne-' + 'nnleistung')."""
+    Der weiche Trennstrich ist unsichtbar; er zaehlt nicht mit ('Ne' + 'nnleistung' ist genauso lang wie 'Ne-' + 'nnleistung').
+
+    R8: Grossbuchstabe nach dem Strich ('E-' + 'Mail') oder Abkuerzung/Ziffer davor ('XML-' + 'basiert') -> der Strich bleibt
+    (echter Bindestrich). Kleinbuchstabe danach -> ohne Strich. Bei NEUEM Text ohne weichen Strich nur dann sicher, wenn das
+    zusammengefuegte Wort sonst im Dokument vorkommt (`wortschatz`, normiert); kommt nur die Form mit Strich vor, bleibt er;
+    sonst ohne Strich + Hinweis 'trennung_unklar'. `trennstelle` = Position im Wort (Zeichenfolge aller Laeufe): bei
+    behaltenem Strich zeigt sie auf den Strich (er ist optional), sonst auf die Fuegestelle."""
     if v.status != t.status or v.status not in (KEEP, ADD, DEL):
         return None
     text_v = v.new if v.status == ADD else v.old
     text_t = t.new if t.status == ADD else t.old
-    if not text_t[:1].islower() or norm(text_t) in ausnahmen or not text_v:
+    if not text_v or not text_t or norm(text_t) in ausnahmen:
         return None
+    hinweis_neu: set[str] = set()
     if text_v.endswith("-"):
-        strich = 1
-    elif weich and text_v[-1].isalpha():
-        strich = 0
+        vor = text_v[:-1]
+        if not vor or not vor[-1].isalnum():
+            return None
+        if text_t[:1].isupper():
+            mit_strich = True
+        elif text_t[:1].islower():
+            mit_strich = _abkuerzung(vor)
+            if not mit_strich and len(vor) < min_buchstaben:
+                return None
+            if not mit_strich and v.status == ADD and wortschatz is not None:
+                if norm(vor + text_t) not in wortschatz:
+                    if norm(vor + "-" + text_t) in wortschatz:
+                        mit_strich = True
+                    else:
+                        hinweis_neu.add("trennung_unklar")
+        else:
+            return None
+        strich = 0 if mit_strich else 1
+    elif weich and text_v[-1].isalpha() and text_t[:1].islower():
+        if len(text_v) < min_buchstaben:
+            return None
+        mit_strich, strich = False, 0
     else:
-        return None
-    if len(text_v) - strich < min_buchstaben:
         return None
     bbox = (v.bbox[0], min(v.bbox[1], t.bbox[1]), max(v.bbox[2], t.bbox[2]), max(v.bbox[3], t.bbox[3]))
     if v.page != t.page:
         bbox = v.bbox
-    hin = ";".join(sorted((set(v.hinweis.split(";")) | set(t.hinweis.split(";"))) - {""}))
+    hin = ";".join(sorted((set(v.hinweis.split(";")) | set(t.hinweis.split(";")) | hinweis_neu) - {""}))
     alt = (v.old[:len(v.old) - strich] + t.old) if v.old else ""
     neu = (v.new[:len(v.new) - strich] + t.new) if v.new else ""
-    return PdfToken(old=alt, new=neu, status=v.status, page=v.page, bbox=bbox, hinweis=hin)
+    # Zeichen-Laeufe zusammensetzen (Strich am Ende des ersten Teils entfernen, wenn er wegfaellt)
+    lv = _laeufe(v)
+    if strich:
+        s_, tx = lv[-1]
+        lv[-1] = (s_, tx[:-1])
+        lv = [x for x in lv if x[1]]
+    fuge = sum(len(tx) for _, tx in lv)
+    teile: list[tuple[str, str]] = []
+    for s_, tx in lv + _laeufe(t):
+        if teile and teile[-1][0] == s_:
+            teile[-1] = (s_, teile[-1][1] + tx)
+        else:
+            teile.append((s_, tx))
+    return PdfToken(old=alt, new=neu, status=v.status, page=v.page, bbox=bbox, hinweis=hin, trenner=t.trenner,
+                    teile=teile if len(teile) > 1 else [], trennstelle=fuge - 1 if mit_strich and text_v.endswith("-") else fuge)
 
 
-def _silben(tokens: list[PdfToken], zeilen: list[_Zeile], cfg: dict, weich_ids: set[int]) -> list[PdfToken]:
+def _silben(tokens: list[PdfToken], zeilen: list[_Zeile], cfg: dict, weich_ids: set[int],
+            wortschatz: set[str] | None = None) -> list[PdfToken]:
     """Fuegt am Zeilenende getrennte Woerter wieder zusammen. weich_ids: Woerter, hinter denen ein weicher
     Trennstrich steht (wird um zusammengefuegte Woerter ergaenzt)."""
     lay = cfg["layout"]
@@ -1216,7 +1500,7 @@ def _silben(tokens: list[PdfToken], zeilen: list[_Zeile], cfg: dict, weich_ids: 
     for t in tokens:
         if out and id(t) in erste_der_zeilen:
             v = out[-1]
-            m = _verbinden(v, t, id(v) in weich_ids, ausnahmen, mindest)
+            m = _verbinden(v, t, id(v) in weich_ids, ausnahmen, mindest, wortschatz)
             if m is not None:
                 if id(t) in weich_ids:
                     weich_ids.add(id(m))

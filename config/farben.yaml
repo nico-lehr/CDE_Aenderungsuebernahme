@@ -25,7 +25,9 @@ durchstreichung:
   band: [0.28, 0.72]         # Linie muss in diesem Hoehenband des Zeichens liegen
   min_abdeckung: 0.5         # Anteil der Zeichenbreite, den die Linie ueberdeckt
   max_linienstaerke_pt: 2.0
-  max_breite_anteil: 0.6     # laengere Linien sind Trennlinien/Tabellenrahmen
+  max_breite_anteil: 0.6     # laengere Linien unter dem Text sind Trennlinien/Tabellenrahmen (gilt nur noch fuer Unterstreichungen)
+  min_kreuz_anteil: 0.6      # R5: eine Linie im Durchstreich-Band zaehlt (unabhaengig von ihrer Laenge), wenn sie so viele der Zeichen unter ihr im Band kreuzt; sonst Hinweis linie_unklar
+  kurve_max_hoehe_pt: 1.2    # R5: flache Kurven/Pfade bis zu dieser Hoehe sind Linienkandidaten
   wort_anteil: 0.6           # ab diesem Zeichenanteil gilt das Wort als durchgestrichen
   max_ueberstand_em: 1.0     # Linie ragt hoechstens so weit (in Schriftgroessen) ueber den Text hinaus; sonst Zierlinie
   hell_min_helligkeit: 0.6   # hellgraue Linien (neutral und heller als das) sind Zierlinien, keine Durchstreichung
@@ -38,6 +40,12 @@ annotationen:                # PDF-Kommentare (Hervorheben / Durchstreichen)
 layout:
   zeilen_toleranz: 0.5       # Anteil der Schriftgroesse fuer "gleiche Zeile"
   wort_luecke: 0.18          # Luecke (Anteil Schriftgroesse) = Leerzeichen
+  leerzeichen_em: 0.28       # R4: Breite eines Leerzeichens (Anteil Schriftgroesse) fuer "haette das Wort noch gepasst?"
+  absatz_passt_toleranz_em: 0.5   # R4: so viel Platz (Schriftgroessen) muss UEBRIG bleiben, damit "haette gepasst" sicher ist; knapper -> absatzgrenze_unklar
+  absatz_passt_min_zeilen: 3 # R4: so viele lange Zeilen (>= 5 Woerter) braucht die Seite, um den rechten Rand zu schaetzen
+  hochzahl_faktor: 0.75      # R3: Zeichen kleiner als Faktor * Median der Zeile ...
+  hochzahl_anhebung: 0.15    # R3: ... und mindestens so viele Schriftgroessen angehoben = Hochzahl (Fussnoten-Marke), nicht im Wort-Text
+  hochzahl_max_zeichen: 6    # R3: hoechstens so viele Zeichen hat eine allein stehende Hochzahl-Gruppe
   absatz_faktor: 1.3         # Zeilenabstand > Faktor * typischer Zeilenabstand => neuer Absatz
   ueberschrift_faktor: 1.08  # Schrift groesser als Fliesstext => Ueberschrift
   kopf_fuss_anteil: 0.07     # oberer/unterer Seitenrand fuer Kopf-/Fusszeilen
