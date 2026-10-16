@@ -399,3 +399,55 @@ def test_unscharfer_treffer_ist_hoechstens_mittel(tmp_path):
     plan, _ = lauf(tmp_path, pdf, alt)
     (a,) = plan.aenderungen
     assert a.status == PRUEFEN and a.konfidenz == "mittel" and "excel_weicht_ab" in a.pruefcodes
+
+
+# ------------------------------------------------------------------------------------------------ Nacharbeit
+def test_ersatzweg_bekommt_absatz_wenn_die_laeufe_passen(tmp_path):
+    """Hochzahl in der Excel: der Exakt-Index (Wort-Vorauswahl) findet die Stelle nicht, der alte Matcher schon. A1 ist in der
+    Normalform gleich -> der Vorschlag bekommt einen PDF-Absatz; nach Freigabe besteht er die Gegenprobe A3."""
+    alt = excel(tmp_path, [["1", "Eins", "Die Anlage² meldet Fehler sofort an die Leitstelle."], ZWEI])
+    pdf = pdf_aus([("h", "1 Eins"), ("p", "Die Anlage meldet {+alle+} Fehler sofort an die Leitstelle."),
+                   ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")])
+    xl = ExcelModell(alt)
+    plan = plane(pdf, xl)
+    (a,) = plan.aenderungen
+    assert a.status == PRUEFEN and any(a.id in ab.aenderungen for ab in plan.absaetze)
+    out = tmp_path / "frei.xlsx"
+    uebernehmen(plan.aenderungen, alt, out, {a.id}, absaetze=plan.absaetze)
+    assert zelle(out, 2, 3) == "Die Anlage² meldet alle Fehler sofort an die Leitstelle."
+    a3_ok(plan, alt, out)
+
+
+def test_ersatzweg_ohne_absatz_wenn_die_excel_abweicht(tmp_path):
+    alt = excel(tmp_path, [["1", "Eins", "Die Anlage meldet Fehler sofort an die zentrale Leitstelle."], ZWEI])
+    pdf = pdf_aus([("h", "1 Eins"), ("p", "Die Anlage meldet {+alle+} Fehler sofort an die Leitstelle."),
+                   ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")])
+    plan = plane(pdf, ExcelModell(alt))
+    assert plan.aenderungen[0].status == PRUEFEN and not plan.absaetze
+
+
+def test_gestrichener_listenpunkt_und_neuer_direkt_danach_ist_eine_ersetzung_in_der_zelle(tmp_path):
+    alt = excel(tmp_path, [["1", "Eins", None], ["", "", "Erster Absatz mit genug Text darin."], ["", "", "a) Alter Listenpunkt hier."],
+                           ["", "", "b) Bleibt stehen hier."], ["2", "Zwei", None], ["", "", "Zweiter Absatz mit genug Text darin."]])
+    pdf = pdf_aus([("h", "1 Eins"), ("p", "Erster Absatz mit genug Text darin."), ("p", "{-a) Alter Listenpunkt hier.-}"),
+                   ("p", "{+a) Neuer Listenpunkt hier.+}"), ("p", "b) Bleibt stehen hier."),
+                   ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")])
+    plan, out = lauf(tmp_path, pdf, alt)
+    loesch, neu = plan.aenderungen
+    assert (loesch.status, neu.status) == (UEBERNOMMEN, UEBERNOMMEN) and loesch.gruppe == neu.gruppe != ""
+    assert neu.ops[0].art == "ersetzen" and neu.ops[0].zeile == 4
+    assert zelle(out, 4, 3) == "a) Neuer Listenpunkt hier." and zelle(out, 5, 3) == "b) Bleibt stehen hier."
+    assert load_workbook(str(out))["CDE"].max_row == load_workbook(str(alt))["CDE"].max_row      # keine leere Zeile, keine neue
+    a3_ok(plan, alt, out)
+
+
+def test_neue_section_vor_seitenumbruch_ohne_satzende_ist_unklar(tmp_path):
+    alt = excel(tmp_path, [["1", "Eins", "Erster Absatz mit genug Text darin."], ZWEI])
+    pdf = pdf_aus([("h", "1 Eins"), ("p", "Erster Absatz mit genug Text darin."), ("h", "{+1.1 Neu+}"),
+                   ("p", "{+Die Anlage wird geprüft, sofern keine+}"), ("p", "Fußnote eins."),
+                   ("p", "{+Störung ansteht.+}", 2), ("h", "2 Zwei", 2), ("p", "Zweiter Absatz mit genug Text darin.", 2)])
+    plan, _ = lauf(tmp_path, pdf, alt)
+    sec = next(a for a in plan.aenderungen if a.typ == "section_neu")
+    folge = next(a for a in plan.aenderungen if a.typ == "absatz_neu" and "geprüft" in a.neu)
+    assert sec.status == folge.status == PRUEFEN
+    assert "sperre:fortsetzung_unklar" in sec.pruefcodes and "sperre:fortsetzung_unklar" in folge.pruefcodes

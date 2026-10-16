@@ -56,6 +56,9 @@ planer:                       # Planen und Anwenden (src/planner.py, src/applier
   # neuer Text danach -> fortsetzung_unklar, nie automatisch). Wird nur benutzt, wenn KEIN Block eine Angabe hat. Aus, seit der
   # PDF-Leser die Angabe selbst macht ("sicher" | "moeglich"); nur fuer aeltere Leser gedacht.
   fortsetzung_raten: false
+  # Neuer Text ohne Satzende unten auf der Seite, danach bis zur naechsten Seite hoechstens so viele unveraenderte Woerter (z. B.
+  # eine Fussnote) und keine sichere Fortsetzung: der Absatz geht vielleicht weiter -> fortsetzung_unklar (nie automatisch)
+  seitenende_rest_woerter: 25
   satzende_zeichen: ".!?:;"
   doppelt_min_woerter: 3      # Ab so vielen Woertern gilt "gleicher Absatz steht schon" als sicher (nicht uebernommen); kuerzer = nur Vorschlag
 

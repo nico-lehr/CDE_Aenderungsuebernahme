@@ -21,7 +21,7 @@ from openpyxl.utils import get_column_letter
 
 from . import config
 from .excel_model import Kandidat, ExcelModell, zahl_als_text
-from .abgleich import (ExaktIndex, Fundstelle, Spur, Zuordnung, _woerter_norm, ganz_loeschen, ops_fuer_spur,
+from .abgleich import (ExaktIndex, _aufbau, Fundstelle, Spur, Zuordnung, _woerter_norm, ganz_loeschen, ops_fuer_spur,
                        reissverschluss, spuren, umbenennen)
 from .gegenprobe import normalform, vergleiche, zustand, zustand_mit_optional
 from .matcher import Matcher, Treffer
@@ -667,12 +667,42 @@ class _Planer:
             else:
                 self._deckel = basis
             if b.hat_aenderung:
+                n0 = len(self.out)
                 if b.ganz_geloescht:
                     self._geloescht(b)
                 else:
                     for i0, i1 in self._gruppen(b):
                         self._text_gruppe(b, i0, i1)
+                self._ersatz_absatz(b, tr, self.out[n0:])
         return True
+
+    def _ersatz_absatz(self, b: PdfBlock, tr: Treffer | None, aes: list[Aenderung]) -> None:
+        """PDF-Absatz fuer die Gegenprobe A3 auch auf dem Weg ueber den alten Matcher -- aber nur, wenn die Laeufe des Blocks
+        genau zur Excel-Stelle passen (A1 gleich) und alle Operationen in dieser Spanne liegen. Sonst keinen Absatz (dann
+        greift beim automatischen Eintragen die Invariante "ohne_absatz")."""
+        if tr is None or not aes:
+            return
+        k = tr.kandidat
+        aufbau = _aufbau(b.tokens, "X")
+        if len(aufbau.gruppen) != len(aes):
+            return
+        ids = {f"X{n + 1}": ae.id for n, ae in enumerate(aes)}
+        laeufe = umbenennen(aufbau.laeufe, ids)
+        if k.art == "kopf":
+            zellen = list(dict.fromkeys((t.zeile, t.spalte) for t in k.tokens))
+            bereiche = [(z, s, 0, len(self.xl.text(k.blatt, z, s))) for z, s in zellen]
+        else:
+            bereiche = [(k.zeile, k.spalte, k.start, k.end)]
+        excel = " ".join(self.xl.text(k.blatt, z, s)[a:e] for z, s, a, e in bereiche)
+        alt, optional = zustand_mit_optional(laeufe, set())
+        if not vergleiche(alt, excel, optional, self.cfg.get("normalform")).gleich:
+            return
+        for ae in aes:
+            for o in ae.ops:
+                if o.art not in ("ersetzen", "einfuegen") or not any(
+                        (o.blatt, o.zeile, o.spalte) == (k.blatt, z, s) and a <= o.start and o.ende <= e for z, s, a, e in bereiche):
+                    return
+        self._absatz(k.blatt, bereiche, laeufe)
 
     # ------------------------------------------------------------ Geloeschte Absaetze
     def _geloescht_spur(self, i: int) -> None:
@@ -718,7 +748,9 @@ class _Planer:
             self._ist = tr.kandidat.text if tr is not None else ""
             self._deckel = (["excel_weicht_ab"] if z.status == "keiner" else [z.status, "excel_weicht_ab"]) + \
                 (self._a1_codes(b.alt_text, tr.kandidat.text) if tr is not None else [])
+            n0 = len(self.out)
             self._geloescht(b)
+            self._ersatz_absatz(b, tr, self.out[n0:])
 
     def _ersatz_moeglich(self, i: int) -> bool:
         schw = self.cfg["schwellen"]
@@ -747,6 +779,8 @@ class _Planer:
             if not folge:
                 continue
             gruppe = [kopf] + folge
+            alte = {m.gruppe for m in gruppe if m.gruppe}
+            gruppe += [a for a in self.out if a.gruppe in alte and a not in gruppe]     # z. B. neuer Absatz in geleerter Zelle
             for m in gruppe:
                 m.gruppe = kopf.id
             if all(m.status == UEBERNOMMEN for m in gruppe):
@@ -1160,6 +1194,11 @@ class _Planer:
                 k += 1
         # die Folgeabsaetze stehen in derselben Excel-Zeile: ihr Zweifel gilt auch fuer die Section (und umgekehrt)
         self._spur_start(i, [self.spuren[k] for k in koerper])
+        if any(self._seitenende_offen(k) for k in [i, *koerper]) and "fortsetzung_unklar" not in self._spur_sperre:
+            # neuer Text endet ohne Satzende unten auf der Seite (z. B. vor einer Fussnote) und ist nicht sicher mit der
+            # naechsten Seite verbunden: der Absatz geht vielleicht weiter -> nie automatisch
+            if "fortsetzung_unklar" in [str(c) for c in _planer_cfg(self.cfg).get("unsichere_hinweise", [])]:
+                self._spur_sperre = self._spur_sperre + ["fortsetzung_unklar"]
         ae = self._basis_neu(sp, "section_neu" if ist_kopf else "absatz_neu")
         if koerper:
             ae.gruppe = ae.id
@@ -1189,6 +1228,8 @@ class _Planer:
             doppelt = True
         else:
             doppelt = False
+        if not ist_kopf and not doppelt and self._in_geleerte_zelle(i, ae):
+            return
         ort = self._anker(i)
         if ort is None:
             self._nicht(ae, "Keine Ankerstelle in der Excel gefunden (kein benachbarter Text zuordenbar).")
@@ -1227,6 +1268,67 @@ class _Planer:
                 self._absatz_als_zeile(ae, sp, ort, lay, stufe, ort.davor, seq)
 
     _ag_codes: list[str] = []
+
+    def _seitenende_offen(self, i: int) -> bool:
+        """Endet der (neue) Absatz ohne Satzende unten auf seiner Seite, und folgt auf dieser Seite nur noch wenig unveraenderter
+        Text (z. B. eine Fussnote), bevor die naechste Seite beginnt? Dann koennte er dort weitergehen."""
+        sp = self.spuren[i]
+        if sp.kind != "absatz" or any(b.fortsetzung == "sicher" for b in sp.bloecke):
+            return False
+        pl = _planer_cfg(self.cfg)
+        ende = sp.neu.rstrip().rstrip("\"'“”»«)]")
+        if not ende or ende[-1:] in str(pl.get("satzende_zeichen", ".!?:;")):
+            return False
+        seite = sp.bloecke[-1].page
+        rest = 0
+        for k in range(i + 1, len(self.spuren)):
+            nx = self.spuren[k]
+            if nx.bloecke[0].page > seite:
+                return True
+            if nx.hat_aenderung:
+                return False
+            rest += len(nx.alt.split())
+            if rest > int(pl.get("seitenende_rest_woerter", 25)):
+                return False
+        return False
+
+    def _in_geleerte_zelle(self, i: int, ae: Aenderung) -> bool:
+        """Ein ganz gestrichener Absatz, direkt gefolgt von einem ganz neuen: wie ein Mensch den neuen Text in die Zelle des
+        gestrichenen schreiben (Ersetzung), statt die Zelle zu leeren und eine neue Zeile anzulegen. Nur wenn die Loeschung die
+        ganze Zelle leert; beide gelten nur gemeinsam (`gruppe`)."""
+        if i == 0 or self.spuren[i].kind != "absatz":
+            return False
+        vor = self.spuren[i - 1]
+        if not (vor.ganz_geloescht and vor.kind == "absatz"):
+            return False
+        loesch = [a for a in self.out if self._spur_von.get(a.id) == i - 1 and a.typ == "absatz_geloescht"]
+        if len(loesch) != 1 or loesch[0].status == NICHT or len(loesch[0].ops) != 1:
+            return False
+        lo = loesch[0]
+        op = lo.ops[0]
+        voll = self.xl.text(op.blatt, op.zeile, op.spalte)
+        if not (op.art == "ersetzen" and op.text == "" and op.start == 0 and op.ende == len(voll) and voll):
+            return False
+        if any(o.art == "ersetzen" and o.start == o.ende == len(voll) and (o.blatt, o.zeile, o.spalte) == (op.blatt, op.zeile, op.spalte)
+               for a in self.out if a is not ae for o in a.ops):
+            return False                                  # dort steht schon ein neuer Absatz
+        sp = self.spuren[i]
+        ae.ops = [Operation("ersetzen", op.blatt, op.zeile, op.spalte, len(voll), len(voll), sp.neu, sp.erster.idx * 1000,
+                            aenderung=ae.id)]
+        ae.ziel = lo.ziel
+        ae.score = 1.0
+        ae.excel_text = voll[:200]
+        gruppe = lo.gruppe or lo.id
+        for a in self.out:
+            if a.gruppe and a.gruppe == lo.gruppe:
+                a.gruppe = gruppe
+        lo.gruppe = ae.gruppe = gruppe
+        self._hinweis(ae, "Der neue Absatz ersetzt den gestrichenen Absatz direkt davor und steht in dessen Zelle; beide werden nur "
+                          "gemeinsam eingetragen.")
+        stufe = HOCH if lo.status == UEBERNOMMEN else MITTEL
+        self._setze(ae, stufe, "" if stufe == HOCH else "Gehört zur Streichung davor, die noch geprüft werden muss.",
+                    [] if stufe == HOCH else ["gruppe"])
+        return True
 
     def _anker_grund(self, ae: Aenderung, gruende: list[str]) -> None:
         """Gruende, warum die Ankerstelle fuer einen neuen Absatz unsicher ist: in `grund` und als Hinweis."""
