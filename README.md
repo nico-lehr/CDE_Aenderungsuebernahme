@@ -76,7 +76,7 @@ Alle Zahlen stammen von **erfundenen** Beispielen; sie sind kein Versprechen fü
 Etappe 1 („wie ein sorgfältiger Mensch“: Gegenprobe gegen das PDF, genauerer Leser, Reißverschluss-Abgleich, zweiter Farb-Leser) ist fertig. Entwicklung: 4 stille Fehler bei 120 erfundenen Paaren
 (vorher 31), 98 % der automatischen Einträge richtig. **Neu festgelegt, noch nicht eingebaut:** Farblogik (durchgestrichen = entfällt, rot oder blau ohne Strich = neu) und farbige Markierung in der Excel
 (rot = neu, blau durchgestrichen = alt), siehe `docs/adr/0005-farblogik-und-excel-markierung.md`.
-Roadmap: `docs/plan_auftrag_002.md` · Übergabe für die lokale Arbeit: `docs/uebergabe_lokal.md` · Steckbrief statt echter Inhalte: `docs/anleitung_steckbrief.md` · Fragebogen für Ollama: `docs/fragebogen_ollama.md`.
+Roadmap: `docs/plan_auftrag_002.md` · Übergabe für die lokale Arbeit: `docs/uebergabe_lokal.md` · Steckbrief statt echter Inhalte: `docs/anleitung_steckbrief.md` · Fragebogen für Ollama: `docs/fragebogen_ollama.md` · Updates ohne Git: `docs/arbeiten_ohne_github_sync.md` · Prompt für eine lokale Claude-Code-Sitzung: `docs/prompt_lokale_sitzung.md`.
 
 ## Nächste Schritte
 

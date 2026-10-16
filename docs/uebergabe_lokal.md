@@ -2,6 +2,9 @@
 
 Autor: Nico Lehr · Stand: 16.10.2026 · Arbeitsbranch der Cloud-Sitzung: `claude/cool-keller-5tt3mh` (Stand ist nach `main` gemergt)
 
+> **Ohne GitHub-Sync?** Updates per ZIP einspielen: `docs/arbeiten_ohne_github_sync.md` (Skript `scripts\update_einspielen.bat`).
+> **Neue lokale Claude-Code-Sitzung:** fertiger Prompt mit allen Infos und Aufgaben in `docs/prompt_lokale_sitzung.md` (Datenschutz-Regeln beachten).
+
 ## 1. Wo steht das Projekt?
 - **Etappe 1 von Auftrag 002 ist fertig** (Gegenprobe gegen das PDF, genauerer PDF-Leser, Reißverschluss-Abgleich, zweiter Farb-Leser, realistischere Testdaten). Zahlen und Grenzen: `docs/status.md`, Roadmap: `docs/plan_auftrag_002.md`.
 - **Neu festgelegt, aber noch nicht eingebaut** (Etappe 2a): Farblogik im PDF (durchgestrichen = entfällt, rot/blau ohne Strich = neu) und farbige Markierung in der Excel
