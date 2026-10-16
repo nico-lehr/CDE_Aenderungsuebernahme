@@ -97,4 +97,21 @@ ueberschriften_design:       # alle Ueberschriften blau = Gestaltung, nicht "neu
   max_anteil_text: 0.5       # Anteil markierter Woerter im uebrigen Text, bis zu dem das als Gestaltung gilt
 
 sicht:                       # Schema 3 / ADR 0004: zweiter Leser (pdfium) und Farb-Inventur (src/sicht.py); Welle 2
-  aktiv: false
+  aktiv: true                # Hauptschalter fuer beide Teile
+  leser:                     # C1: Farbe und Darstellungsmodus je Zeichen aus pdfium
+    aktiv: true
+    box_toleranz_pt: 0.75    # pdfium-Zeichen (Mitte) muss so nah am Kasten des pdfplumber-Zeichens liegen
+    min_abgleich: 0.8        # so viele Zeichen der Seite muessen zugeordnet sein, sonst Seite ohne zweiten Leser (Warnung)
+    uneinig_max_saettigung: 0.15   # "klar unmarkiert": Saettigung darunter; sagt der andere Leser klar blau/rot -> farbe_uneinig
+  inventur:                  # C3: Seitenbild auf unerklaerte Farbe pruefen
+    aktiv: true
+    dpi: 100
+    min_saettigung: 0.25     # kraeftige Farbpixel (HSV); Grau/Schwarz zaehlt nie
+    min_helligkeit: 0.16
+    rand_px: 2               # erklaerte Bereiche werden um so viele Pixel vergroessert
+    zelle_px: 6              # grobes Raster (Pixel je Zelle)
+    zelle_min_anteil: 0.08   # Anteil farbiger Pixel, ab dem eine Zelle zaehlt
+    min_zellen: 3            # so viele zusammenhaengende Zellen = unerklaerte Farbe
+    linie_max_dicke_pt: 2.0  # duennere Grafik ist eine Linie (vom Leser beurteilt)
+    balken_max_breite_pt: 3.0   # Aenderungsbalken: schmaler senkrechter Strich neben dem Text ...
+    balken_min_hoehe_pt: 8.0    # ... mindestens so hoch

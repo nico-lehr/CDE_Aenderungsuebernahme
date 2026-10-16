@@ -64,6 +64,11 @@ _HINWEIS_TEXT = {
                          "Wortes gelesen. Bitte prüfen.",
     "linienfarbe_unklar": "Die Farbe einer Linie durch den Text konnte nicht gelesen werden. Sie wurde als Durchstreichung "
                           "gewertet. Bitte prüfen.",
+    # SICHT (zweiter Leser, Farb-Inventur; src/sicht.py)
+    "farbe_uneinig": "Zwei Leseverfahren sehen für dieses Wort verschiedene Farben (eines farbig, eines ohne Farbe). "
+                     "Bitte im PDF prüfen.",
+    "tinte_unerklaert": "Im Seitenbild ist hier Farbe zu sehen, die keiner erkannten Markierung entspricht "
+                        "(z. B. eine Fläche in ungewöhnlicher Form). Bitte im PDF prüfen.",
 }
 
 
@@ -1703,6 +1708,8 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
     ergebnis = PdfAnalyse(pfad=str(pfad), seiten=0, blocks=[])
     seiten_daten: list[_SeitenDaten] = []
     markierer: dict[int, _Markierer] = {}
+    from . import sicht as _sicht       # SICHT: zweiter Leser + Farb-Inventur (config farben.yaml sicht:)
+    zweit = _sicht.Sicht(pfad, cfg) if _sicht.bereit(cfg) else None
     with pdfplumber.open(str(pfad)) as pdf:
         ergebnis.seiten = len(pdf.pages)
         for nr, page in enumerate(pdf.pages, 1):
@@ -1710,6 +1717,10 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
             seiten_daten.append(sd)
             if any(not z.leer for z in sd.zeichen):
                 markierer[nr] = _Markierer(page, cfg, sd.rahmen)
+                if zweit:
+                    zweit.merke_seite(page, sd)
+    if zweit:
+        zweit.zweiter_leser(seiten_daten)
     # Grundfarbe des Dokuments (Farbe, in der der Grossteil des Textes steht): nie eine Markierung
     zaehler: Counter = Counter()
     for sd in seiten_daten:
@@ -1765,6 +1776,8 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
                         gesetzt = True
                 if gesetzt:
                     b.hinweise += [h for h in _block_hinweise(b.tokens) if h not in b.hinweise]
+    if zweit:
+        zweit.inventur(ergebnis, seiten_daten, markierer)
     ergebnis.luecken.sort(key=lambda l: (l["seite"], l["art"]))
     # Farbuebersicht fuer das Dashboard (zum Kalibrieren)
     for (hx, k), n in text_farben.most_common():
