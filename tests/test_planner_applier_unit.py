@@ -240,11 +240,14 @@ def test_gestrichener_punkt_samt_woertern_am_rand(tmp_path):
     assert l.aen[0].wirkung == WIRKUNG_OK
 
 
-def test_gestrichenes_zeichen_am_rand_fehlt_in_der_excel_gibt_nicht_uebernommen(tmp_path):
+def test_gestrichenes_aufzaehlungszeichen_fehlt_in_der_excel_ergebnis_trotzdem_richtig(tmp_path):
+    """Schema 3 (ADR 0004, Normalform): ein Aufzaehlungszeichen am Absatzanfang ist optional. Der alte Absatz steht damit exakt
+    in der Excel, die gestrichenen Woerter werden entfernt; das Ergebnis ist genau der neue Absatz (frueher: nicht uebernommen)."""
     el = _el_punkt("{-• Das System-} Die Anlage läuft stabil im Betrieb und liefert Daten.")
     alt = baue_alt(tmp_path, _el_punkt("Das System Die Anlage läuft stabil im Betrieb und liefert Daten."), "L1")
-    l = analysiere(tmp_path, el, alt)
-    assert l.aen[0].status == NICHT and "Zeichen" in l.aen[0].grund
+    l = uebernimm(analysiere(tmp_path, el, alt))
+    assert l.aen[0].status == UEBERNOMMEN and l.aen[0].wirkung == WIRKUNG_OK
+    assert zelle(l.out, 2, 3) == "Die Anlage läuft stabil im Betrieb und liefert Daten."
 
 
 def test_ersetztes_zeichen_am_absatzanfang_wird_ersetzt(tmp_path):
@@ -345,7 +348,9 @@ def test_planer_leert_zelle_nur_bei_vollstaendig_gestrichenem_absatz(tmp_path):
                               ("p", "Zweiter Absatz mit genug Text darin.")], "L3")
     l = uebernimm(analysiere(tmp_path, el, alt))
     ae = l.aen[0]
-    assert ae.status == UEBERNOMMEN and ae.ops[0].art == "zelle_leeren" and ae.ops[0].erwartet
+    # Schema 3: die ganze Zelle wird per "ersetzen" geleert (pruefbar mit der Gegenprobe A3), nicht mehr per "zelle_leeren"
+    assert ae.status == UEBERNOMMEN and ae.ops[0].art == "ersetzen" and ae.ops[0].text == "" and ae.ops[0].erwartet
+    assert (ae.ops[0].start, ae.ops[0].ende) == (0, len(ae.ops[0].erwartet))
     assert zeile_mit(l.out, "Alle Racks") is None
 
 

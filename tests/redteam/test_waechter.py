@@ -212,7 +212,17 @@ def test_waechter_gleicher_text_in_zwei_blaettern_gleiche_section_nur_vorschlag(
           ("p", "Gamma A text drei steht hier im Dokument.")]
     l = uebernimm(analysiere(tmp_path, el, p))
     ae = next(a for a in l.aen if a.typ == "text_ersetzt")
-    assert ae.status == "pruefen" and ae.konfidenz == "mittel"
+    # Welle 1 (ADR 0004, Reissverschluss): die Nachbarabsaetze stehen exakt nur in Blatt A -> die Reihenfolge entscheidet
+    # eindeutig fuer Blatt A (automatisch), Blatt B bleibt unberuehrt.
+    assert ae.status == "uebernommen" and ae.ziel.startswith("Blatt A!")
+    from openpyxl import load_workbook
+    wb2 = load_workbook(str(l.out))
+    assert wb2["Blatt B"]["C3"].value == satz_ and wb2["Blatt A"]["C3"].value == satz_.replace("muss", "soll")
+    # ohne eindeutige Nachbarn entscheidet die Reihenfolge nicht: nur ein Vorschlag
+    el2 = [("h", "2 Zwei"), ("p", "Das System {-muss-} {+soll+} alle Daten speichern und sichern.")]
+    l2 = analysiere(tmp_path / "zwei", el2, p)
+    ae2 = next(a for a in l2.aen if a.typ == "text_ersetzt")
+    assert ae2.status == "pruefen" and ae2.konfidenz == "mittel"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -245,7 +255,11 @@ def test_waechter_20000_zeilen_gesamtlauf_unter_60_sekunden(tmp_path):
     l = uebernimm(analysiere(tmp_path, el, alt))
     dauer = time.time() - t0
     assert dauer < 60, f"Gesamtlauf dauerte {dauer:.0f} s"
-    assert l.bil["stimmt"] and all(a.status == "uebernommen" and a.nachkontrolle == "ok" for a in l.aen)
+    # Welle 1 (ADR 0004): der neue Absatz steht im PDF direkt hinter Absatz 0, in der Excel folgen darauf aber noch 8 Absaetze,
+    # die das PDF nicht zeigt -> die Einfuegestelle ist nicht sicher (Code anker_luecke, nur Vorschlag). Die Text-Aenderungen
+    # bleiben automatisch.
+    assert l.bil["stimmt"] and all(a.status == "uebernommen" and a.nachkontrolle == "ok" for a in l.aen if a.typ != "absatz_neu")
+    assert all(a.status == "pruefen" and "anker_luecke" in a.pruefcodes for a in l.aen if a.typ == "absatz_neu")
 
 
 # ---------------------------------------------------------------------------------------------

@@ -28,7 +28,16 @@ def test_hart_umgebrochene_excel(tmp_path):
         plan, bil, gleich = durchlauf(tmp_path, erzeuge_gross(), alt_hook=hook)
     except Exception:
         pytest.skip("Hook passt nicht zur Struktur der Fixture")
-    assert gleich and bil["stimmt"]
+    # Schema 3 (ADR 0004): eine Aenderung, deren Excel-Stelle einen harten Zeilenumbruch enthaelt, ist nur ein Vorschlag
+    # (Code excel_umbruch). Alles andere ist automatisch und richtig; nach Freigabe stimmt das ganze Ergebnis.
+    offen = [a for a in plan.aenderungen if a.status != "uebernommen"]
+    assert all(a.status == "pruefen" and a.pruefcodes == ["excel_umbruch"] for a in offen), [(a.typ, a.pruefcodes) for a in offen]
+    assert bil["stimmt"]
+    from src.applier import uebernehmen
+    from tests.fixtures.szenario import inhalt_zeilen
+    from tests.helfer import norm
+    uebernehmen(plan.aenderungen, tmp_path / "alt.xlsx", tmp_path / "out2.xlsx", {a.id for a in offen})
+    assert norm(inhalt_zeilen(tmp_path / "out2.xlsx", "L1")) == norm(inhalt_zeilen(tmp_path / "soll.xlsx", "L1"))
 
 
 def test_abweichende_excel_wird_nicht_still_geaendert(tmp_path):
