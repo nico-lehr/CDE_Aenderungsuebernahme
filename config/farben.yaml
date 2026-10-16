@@ -40,6 +40,7 @@ annotationen:                # PDF-Kommentare (Hervorheben / Durchstreichen)
 layout:
   zeilen_toleranz: 0.5       # Anteil der Schriftgroesse fuer "gleiche Zeile"
   wort_luecke: 0.18          # Luecke (Anteil Schriftgroesse) = Leerzeichen
+  leerzeichen_min_luecke_em: 0.05   # R1: ein Leerzeichen-Zeichen trennt nur, wenn zwischen den Nachbarzeichen mindestens so viel Platz ist (sonst Phantom, z. B. LibreOffice an weichen Trennstellen)
   leerzeichen_em: 0.28       # R4: Breite eines Leerzeichens (Anteil Schriftgroesse) fuer "haette das Wort noch gepasst?"
   absatz_passt_toleranz_em: 0.5   # R4: so viel Platz (Schriftgroessen) muss UEBRIG bleiben, damit "haette gepasst" sicher ist; knapper -> absatzgrenze_unklar
   absatz_passt_min_zeilen: 3 # R4: so viele lange Zeilen (>= 5 Woerter) braucht die Seite, um den rechten Rand zu schaetzen
