@@ -446,8 +446,13 @@ def _lese_seite(page: Any, nr: int, cfg: dict) -> _SeitenDaten:
             continue
         rgb, unklar = _zeichenfarbe(c, sonder)
         x0, top, x1, bot = rahmen.box(c["x0"], c["top"], c["x1"], c["bottom"])
+        groesse = float(c.get("size") or 10)
+        if richtungen[i] in ("ab", "auf") and bot - top > 0:
+            # quer stehender Text (z. B. Seite mit /Rotate 90): pdfminer meldet als "size" die ZeichenBREITE;
+            # die Schriftgroesse ist die Hoehe des Zeichens in Leserichtung
+            groesse = bot - top
         z = _Z(text=text, x0=x0, x1=x1, top=top, bottom=bot,
-               size=float(c.get("size") or 10), font=str(c.get("fontname") or ""), leer=leer, nr=i)
+               size=groesse, font=str(c.get("fontname") or ""), leer=leer, nr=i)
         z.unsichtbar = bool(modi and modi[i][0] in (3, 7))
         z.weich = bool(modi and modi[i][1])
         if rgb is not None:
@@ -1255,7 +1260,7 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
                 else:
                     ist_listenpunkt = True
             grenze = ""
-            if aktuell and art == "absatz" and not kopf and vorher is not None and not ist_listenpunkt:
+            if aktuell and art == "absatz" and not kopf and vorher is not None:
                 grenze = passt(vorher, z.tokens[0])
             neu_start = (not aktuell or (kopf and not folge_kopf) or (art == "ueberschrift" and not folge_kopf)
                          or (not folge_kopf and (
@@ -1277,13 +1282,13 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
             vorher = z
         abschliessen()
     _seitenumbruch(ergebnis, block_zeilen, weich_ids, {norm(w) for w in lay["keine_silbentrennung_vor"]}, kurz,
-                   lay["silbentrennung_min_buchstaben"], wortschatz, passt)
+                   lay["silbentrennung_min_buchstaben"], wortschatz, passt, body, lay.get("fussnote_faktor", 0.9))
     return seiten_nutz
 
 
 def _seitenumbruch(ergebnis: PdfAnalyse, block_zeilen: dict[int, tuple[_Zeile, _Zeile]], weich_ids: set[int],
                    ausnahmen: set[str], kurz: Any, min_buchstaben: int = 2, wortschatz: set[str] | None = None,
-                   passt: Any = None) -> None:
+                   passt: Any = None, body: float | None = None, fussnote_faktor: float = 0.9) -> None:
     """Absatz ueber den Seitenumbruch: ein am Seitenende getrenntes Wort wird zusammengefuegt; setzt sich ein Absatz
     auf der naechsten Seite fort, bekommen beide Bloecke einen Hinweis (die Woerter bleiben je Seite).
 
@@ -1292,11 +1297,26 @@ def _seitenumbruch(ergebnis: PdfAnalyse, block_zeilen: dict[int, tuple[_Zeile, _
                  naechsten Seite haette nicht mehr in die letzte Zeile gepasst;
       "moeglich" sonst, wenn die letzte Zeile voll ist (auch mit Satzende), die Grenze knapp ist oder die naechste Seite
                  ohne Satzende klein weitergeht;
-      ""         sonst (die letzte Zeile endet frueh: neuer Absatz)."""
+      ""         sonst (die letzte Zeile endet frueh: neuer Absatz).
+    Fussnoten (kleinere Schrift) am Seitenende werden dabei uebersprungen."""
     bl = ergebnis.blocks
+
+    def fussnote(blk: PdfBlock) -> bool:
+        """Fussnote am Seitenende: kleinere Schrift als der Fliesstext (layout.fussnote_faktor)."""
+        zl = block_zeilen.get(id(blk))
+        return (blk.kind == "absatz" and zl is not None and body is not None
+                and max(zl[0].size, zl[1].size) <= fussnote_faktor * body)
+
     i = 0
     while i < len(bl) - 1:
         b, b2 = bl[i], bl[i + 1]
+        if b2.page > b.page and fussnote(b) and not fussnote(b2):
+            # Fussnoten unten auf der Seite ueberspringen: der Absatz davor kann auf der naechsten Seite weitergehen
+            j = i
+            while j > 0 and bl[j].page == b.page and fussnote(bl[j]):
+                j -= 1
+            if bl[j].page == b.page and not fussnote(bl[j]):
+                b = bl[j]
         if b.kind == b2.kind == "absatz" and b2.page > b.page and b.tokens and b2.tokens:
             letzte = block_zeilen.get(id(b), (None, None))[1]
             v, t = b.tokens[-1], b2.tokens[0]
@@ -1330,6 +1350,16 @@ def _seitenumbruch(ergebnis: PdfAnalyse, block_zeilen: dict[int, tuple[_Zeile, _
                 b.fortsetzung = "sicher"
             elif voll or p == "unklar" or (klein and not satzende):
                 b.fortsetzung = "moeglich"
+            if b is not bl[i] and b.fortsetzung:
+                # `fortsetzung` meint den NAECHSTEN Block: die Fussnoten wandern hinter die Fortsetzung
+                von = next(k for k, x in enumerate(bl) if x is b) + 1
+                fussnoten = bl[von:i + 1]
+                del bl[von:i + 1]
+                bl[von + 1:von + 1] = fussnoten
+                for k, rest in enumerate(bl):
+                    rest.idx = k
+                i = von + len(fussnoten) + 1
+                continue
         i += 1
 
 

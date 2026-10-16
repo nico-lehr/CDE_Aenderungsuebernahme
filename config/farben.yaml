@@ -44,6 +44,7 @@ layout:
   leerzeichen_em: 0.28       # R4: Breite eines Leerzeichens (Anteil Schriftgroesse) fuer "haette das Wort noch gepasst?"
   absatz_passt_toleranz_em: 0.5   # R4: so viel Platz (Schriftgroessen) muss UEBRIG bleiben, damit "haette gepasst" sicher ist; knapper -> absatzgrenze_unklar
   absatz_passt_min_zeilen: 3 # R4: so viele lange Zeilen (>= 5 Woerter) braucht die Seite, um den rechten Rand zu schaetzen
+  fussnote_faktor: 0.9       # R4: Bloecke am Seitenende mit Schrift <= Faktor * Fliesstext sind Fussnoten (beim Seitenumbruch uebersprungen)
   hochzahl_faktor: 0.75      # R3: Zeichen kleiner als Faktor * Median der Zeile ...
   hochzahl_anhebung: 0.15    # R3: ... und mindestens so viele Schriftgroessen angehoben = Hochzahl (Fussnoten-Marke), nicht im Wort-Text
   hochzahl_max_zeichen: 6    # R3: hoechstens so viele Zeichen hat eine allein stehende Hochzahl-Gruppe
