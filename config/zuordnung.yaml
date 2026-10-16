@@ -29,6 +29,13 @@ geloeschtes:
   inhalt: leeren              # leeren | zeile_entfernen
 markierung:
   geaenderte_zellen: keine    # keine | kommentar | gelb
+  # ADR 0005: Aenderungen in der Excel wie im PDF markieren. farbe = neuer Inhalt rot, alter Inhalt blau + durchgestrichen
+  # (Alt direkt vor Neu in derselben Zelle); keine = bisheriges Verhalten (alter Text wird ersetzt/geleert).
+  aenderungen: farbe          # farbe | keine
+  neu_farbe: FFFF0000         # Schriftfarbe fuer neuen Inhalt (ARGB); der Steckbrief zeigt, welche Farben die echte CDE nutzt
+  alt_farbe: FF0000FF         # Schriftfarbe fuer alten Inhalt (zusaetzlich durchgestrichen)
+  trenner: " "                # zwischen Alt und Neu in derselben Zelle
+  geloeschte_section: markieren   # markieren (Zeile bleibt, Inhalt blau + durchgestrichen) | zeile_entfernen
 
 planer:                       # Planen und Anwenden (src/planner.py, src/applier.py)
   # Zeichen, die beim Lesen eines PDF oft verfaelscht werden (Ligaturen, Ersatzzeichen): Neutext damit wird nie automatisch uebernommen

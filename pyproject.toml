@@ -17,4 +17,5 @@ testpaths = ["tests"]
 xfail_strict = true
 markers = [
     "redteam: Red-Team-Test mit absichtlich erwartetem Fehler (xfail strict, Grund mit RT-Nummer und Besitzer)",
+    "markierung_an: Test laeuft mit farbiger Excel-Markierung (markierung.aenderungen = farbe, ADR 0005); sonst ist sie aus",
 ]
