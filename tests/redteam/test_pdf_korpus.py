@@ -25,10 +25,10 @@ _MARKER = re.compile(r"^(\(?\d{1,2}[.)]|[a-zA-Z][.)]|[•\-–·▪●○*])$")
 
 
 def _paar(seed: int, profil: str):
-    aufbau(g.GENERATOR_VERSION == "1", "Generator-Version geaendert: Seeds neu pruefen (Tests an Version 1 gebunden)")
+    aufbau("1" in getattr(g, "VERSIONEN", (g.GENERATOR_VERSION,)), "Generator kann Version 1 nicht mehr nachbauen")
     aufbau(seed < 1000, "Nur Entwicklungskorpus (Regel 11)")
     name, cfg = g._profil(profil)
-    ctx, pdf = g._baue(seed, name, cfg, "entwicklung")
+    ctx, pdf = g._baue(seed, name, cfg, "entwicklung", version="1")
     return ctx, pdf
 
 
@@ -112,8 +112,8 @@ def test_rt108_korpus_getrennte_blaue_woerter_seed57(tmp_path):
 
 @pytest.mark.redteam
 def test_rt109_korpus_scan_seite_wird_als_luecke_gemeldet_seed12(tmp_path):
-    aufbau(g.GENERATOR_VERSION == "1", "Generator-Version geaendert")
-    ordner = g.erzeuge_paar(12, "schwer", tmp_path / "paare", "entwicklung")
+    aufbau("1" in getattr(g, "VERSIONEN", (g.GENERATOR_VERSION,)), "Generator kann Version 1 nicht mehr nachbauen")
+    ordner = g.erzeuge_paar(12, "schwer", tmp_path / "paare", "entwicklung", version="1")
     erwartet = json.loads((ordner / "erwartet.json").read_text(encoding="utf-8"))
     soll = [l for l in erwartet["luecken"] if l["art"] == "scan_seite"]
     aufbau(bool(soll), "Der Generator hat keine Scan-Seite erwartet")

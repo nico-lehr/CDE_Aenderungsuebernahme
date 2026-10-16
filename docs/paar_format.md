@@ -1,6 +1,6 @@
 # Paar-Format und Messbericht (Vertrag zwischen Daten-Bauer und Mess-Bauer)
 
-Autor: Nico Lehr · Stand: 15.10.2026
+Autor: Nico Lehr · Stand: 16.10.2026 (Generator v2, Messung v2)
 
 Ein **Paar** ist ein Beispiel mit bekannter Wahrheit: ein PDF mit Änderungen, die Excel **vorher** und die von Hand erstellte Excel **nachher**.
 Das Messwerkzeug (`python -m src.cli messen`) lässt das Tool auf PDF + vorher laufen und vergleicht das Ergebnis mit „nachher“.
@@ -9,18 +9,29 @@ Das Messwerkzeug (`python -m src.cli messen`) lässt das Tool auf PDF + vorher l
 
 ```
 data/paare/
-  entwicklung/                 ← hier darf geprüft und eingestellt werden
-    KORPUS.json                ← nur bei erzeugten Paaren: Generator-Version, Seeds
+  entwicklung/                 ← hier darf geprüft und eingestellt werden (Seeds < 1000)
+    KORPUS.json                ← nur bei erzeugten Paaren: Generator-Version, Seeds, Erzeuger, LibreOffice-Version
     synth_0001_standard/       ← Namen beginnen mit synth_ (erfunden) oder echt_ (Nicos Beispiele)
       aenderungen.pdf
       vorher.xlsx
       nachher.xlsx
       erwartet.json            ← NUR bei synth_, optional (Zusatzwissen des Generators)
-  test/                        ← nur zur Endmessung (Regel 11), nie zum Einstellen
-    ...
+  ex_test/                     ← früherer Testkorpus (Seeds 1001–1030), seit 16.10.2026 OFFEN als Entwicklung erklärt
+  test/                        ← reserviert für die ungesehene Endmessung (nur Seeds ≥ 2000, Regel 11), nie zum Einstellen
+  archiv/                      ← verschobene ältere Korpora (z. B. entwicklung_v1/, test_v1/), nie gelöscht (Regel 29)
 data/messung/
   001_entwicklung/bericht.json, bericht.md     ← append-only, nie überschreiben (Regel 29)
 ```
+
+### Korpora (Generator v2, Regel 11)
+| Korpus | Seeds | Inhalt | Zweck |
+|---|---|---|---|
+| `entwicklung` | 1–60 (writer) und 101–160 (gerade Seeds LibreOffice, ungerade writer) | erfundene Paare v2 | Entwicklung und Einstellen |
+| `ex_test` | nur 1001–1030 | derselbe Zufallsstrom wie der frühere Testkorpus v1 (gleiche Änderungen, gleiche Familien inkl. der dort offengelegten Familien `gedrehte_seite`, `gruene_markierung`) | offen als Entwicklung erklärt – nicht mehr ungesehen |
+| `test` | nur ≥ 2000 | reserviert (später mit neuen, nur dort vorkommenden Familien) | genau einmal messen; **jetzt nicht erzeugen** |
+
+`python scripts/erzeuge_paare.py --korpus entwicklung|ex_test|test --seeds … [--erzeuger writer|libreoffice|wechselnd]` prüft die
+Seed-Bereiche (Exit-Code 2 bei Verstoß). Die v1-Paare liegen in `data/paare/archiv/entwicklung_v1/` und `data/paare/archiv/test_v1/`.
 Pfade kommen aus `config/paths.yaml` (`paare_dir`, `messung_dir`), nie hartcodiert (Regel 28). Der Name `echt_…` ist nur für Nicos echte Beispiele, die **lokal** bleiben.
 
 ## Das Messwerkzeug braucht `erwartet.json` NICHT
@@ -31,9 +42,11 @@ Das **Soll** wird immer aus `vorher.xlsx` ↔ `nachher.xlsx` abgeleitet (Zellver
 ```json
 {
   "format": 1,
-  "generator_version": "1",
+  "generator_version": "2",
   "seed": 12,
   "profil": "standard",
+  "korpus": "entwicklung",
+  "erzeuger": "writer",
   "stoerer": ["fussnote", "silbentrennung"],
   "woerter_markiert": 37,
   "aenderungen": [
@@ -49,11 +62,34 @@ Das **Soll** wird immer aus `vorher.xlsx` ↔ `nachher.xlsx` abgeleitet (Zellver
 - `luecken`: was das Tool als Lücke **melden muss** (`models.LUECKEN_ARTEN`).
 - Der Generator schreibt die Wahrheit aus seinem **logischen Modell**, nie aus dem PDF-Leser.
 
+- `erzeuger`: `writer` (eigener PDF-Schreiber) oder `libreoffice` (seit v2). Fehlt das Feld (v1), war es `writer`.
+- Nur bei `libreoffice`: Block `"libreoffice": {"libreoffice_version", "schrift", "neu_unterstrichen", "aenderungsbalken", "variante",
+  "listen", "tabellen", "bilder"}` und `pdf_info.seiten_geschaetzt: true` – die Seitenangaben von Änderungen und Lücken stammen aus dem
+  Satz des eigenen Schreibers und sind bei LibreOffice nur geschätzt. Änderungen, Lücken, Excel-Dateien und `woerter_markiert` sind für
+  beide Erzeuger **gleich** (Wahrheit aus dem logischen Modell, nie aus dem PDF-Leser).
+
 ### `KORPUS.json` (je Korpus-Ordner, nur erzeugte Paare)
 ```json
-{"generator_version": "1", "korpus": "entwicklung", "seeds": [1, 2, 3], "erstellt": "2026-10-15"}
+{"generator_version": "2", "korpus": "entwicklung", "seeds": [1, 2, 101, 102], "erstellt": "2026-10-16",
+ "erzeuger": {"1": "writer", "2": "writer", "101": "writer", "102": "libreoffice"},
+ "je_erzeuger": {"writer": 3, "libreoffice": 1}, "libreoffice_version": "24.2.7.2"}
 ```
-Zahlen verschiedener Generator-Versionen sind **nicht vergleichbar**.
+Zahlen verschiedener Generator-Versionen sind **nicht vergleichbar** (das Skript verweigert, v2-Paare in einen v1-Ordner zu legen).
+
+### Generator v2 (16.10.2026)
+* **Geschütztes Leerzeichen wie ein Mensch es tippt:** v1 setzte es auch hinter `+}`/`-}`; aus „{-100-} {+120+} kWh“ wurde vorher
+  „100 ␣<NBSP>kWh“, nachher „120<NBSP>kWh“ – zwei Texte, die kein Mensch so schreibt und die das PDF nicht zeigt (3 Phantom-„stille
+  Fehler“). v2 setzt es nur, wenn es im alten UND im neuen Stand direkt zwischen Zahl und Einheit steht (`stoerer.nbsp_setzen`). Sonst sind
+  v1 und v2 je Seed gleich (gleicher Zufallsstrom). `erzeuge_paar(..., version="1")` baut v1-Paare weiter nach (nur für Red-Team R3).
+* **Zweiter PDF-Erzeuger LibreOffice** (`tests/fixtures/pdf_lo.py`): dasselbe Modell als Flat-ODT (von Hand geschriebenes XML) →
+  `soffice --headless -env:UserInstallation=file:///<tmp>/lo_profil_<pid> --convert-to pdf` (eigenes Profil je Aufruf, Zeitlimit).
+  Wie ein Textprogramm: eingebettete Schriften (Carlito, Liberation Sans/Serif), Blocksatz, weiche Trennzeichen (U+00AD) in langen
+  Wörtern, echte Aufzählungen/Nummerierungen (Listen-Stile), Kopf-/Fußzeile mit Seitenzahl-Feld, natürliche Seitenumbrüche (auch mitten
+  im Absatz), Fußnoten, Tabellen, Bilder, Zwei-Spalten-Bereich, Scan-Seite (eigene Seitenvorlage ohne Kopfzeile), Hyperlinks.
+  Markierung nur per Zeichenformat: blau = neu (je Paar teils zusätzlich unterstrichen), rot + durchgestrichen = entfällt (der Strich läuft
+  über ganze Zeilen), Mischformen wie beim eigenen Schreiber; je Paar zufällig Änderungsbalken am linken Rand. Nicht nachgebildet:
+  PDF-Kommentare (Variante `annot` → farbig), CMYK (LibreOffice schreibt RGB), `/Rotate` (`gedrehte_seite` gibt es nur beim eigenen
+  Schreiber), „Änderungen nachverfolgen“. Fehlt `soffice`, überspringen Skript und Tests die LibreOffice-Paare sauber.
 
 ## Messbericht (`bericht.json`) – enthält NIE Text aus Dokumenten (Regel 16)
 ```json
@@ -90,6 +126,31 @@ Jede Kriterien-Zeile hat das Feld `einheit` (im `bericht.md` die Spalte „Einhe
 * **Soll-Zellen außerhalb der Haupt-Spalten:** `soll_zellen` zählt nur die verwalteten Spalten (ohne Formeln). Getrennt: `soll_zellen_formel` (+ `…_verfehlt`), `soll_zellen_unverwaltet_sonstige` (+ `…_verfehlt`, z. B. neu nummerierte Spalte) und `soll_zellen_unverwaltet` (nur kurze Füllung neuer/entfernter Zeilen, aufgeschlüsselt in `…_aufschluesselung`). `nicht_verwaltet_verfehlt_orte` nennt nur Blatt/Zeile/Spalte/Klasse.
 * **Abdeckung über ALLE Soll-Zellen:** Die Ampelzeile „Abdeckung ohne Nachfrage (nur Haupt-Spalten)“ zählt nur `soll_zellen`. Die eigene Zeile „Abdeckung über ALLE Soll-Zellen (inkl. Füllspalten, Formeln)“ teilt `erreicht_alle` durch `soll_zellen_alle` (Haupt-Spalten + harmlose Füllung + sonstige + Formelzellen; Einheit Zellen) und hat die Grenze **mindestens 70 %** (Kriterium 4 in `docs/ziel_v1.md`). „Erreicht“ heißt: Text und Datentyp stimmen mit `nachher.xlsx` überein. Die Formelzellen sind im `detail` getrennt ausgewiesen (`erreicht_formel` von `soll_zellen_formel`) und es steht eine Zahl ohne sie dabei (`abdeckung_alle_ohne_formeln`).
 * **Absturz eines Messteils:** Stürzt nur der Wiederholungslauf (Idempotenz), die Vorschläge oder die Struktur-Prüfung ab, bleiben die Funde des ersten Laufs erhalten. Das Paar zählt dann als „teilweise gemessen“ (`teilweise_gemessen`, `ausgefallene_messteile`, `paare_teilweise_gemessen`) und in `paare_abgestuerzt`. Bei abgestürzten Paaren steht keine Ampel auf „ok“, sondern auf „nicht vollständig gemessen“ (außer sie ist schon „NICHT ok“).
+
+### Messung v2 (16.10.2026) – neue Kennzahlen (nur Zahlen und feste Kennungen)
+* **Klassen der Soll-Zellen** (`soll_klassen`, `soll_klassen_erreicht`, je Paar und gesamt): `haupt` (Nummer/Titel/Inhalt), `formel`,
+  `fuell_konstant` (Zelle einer neuen/entfernten Zeile in einer Spalte, die in `vorher` für ALLE Zeilen desselben Typs – gleiche belegte
+  Haupt-Spalten, ohne die Kopfzeile – denselben nicht leeren Wert hat; das prüft die Messung selbst) und `nicht_ableitbar` (Kommentar,
+  laufende Nummer, geänderte Zelle außerhalb der Haupt-Spalten …). **Abdeckung ableitbare Zellen** = erreicht / (haupt + fuell_konstant +
+  formel) (`abdeckung_ableitbar`). Die alten Klassen (`harmlos`, `sonstige`) und Felder bleiben unverändert.
+* **Restarbeit je 100 Änderungen** (`restarbeit_je_100`, Teile in `restarbeit`) = 100 × (Änderungen „prüfen“ + Änderungen „nicht
+  übernommen“ + leere Zellen in neuen Zeilen, die laut nachher gefüllt sein müssten + Wörter in gemeldeten Lücken ÷ 10) ÷ Änderungen.
+  Richtwert ≤ 12 (`docs/ziel_v2.md`).
+* **Prüfcodes** (`pruefcodes`): Histogramm von `Aenderung.pruefcodes` (Schema 3; Anzahl Änderungen je Code). Codes, die nicht wie eine
+  Maschinen-Kennung aussehen, erscheinen nur als `sonstiger_code` (Regel 16).
+* **Sperr-Quote je Code** (`sperr_quote`): je Code die gesperrten Änderungen (Plan-Status „prüfen“), davon messbar und davon
+  „nach Freigabe richtig“ (Ziel-Zellen bzw. neue Zeilen stimmen in der Excel mit allen freigegebenen Vorschlägen mit nachher überein;
+  nur mit `--mit-vorschlaegen`). Hohe Quote = die Sperre bremst oft unnötig. Gesperrte Änderungen ohne Code stehen unter `ohne_code`.
+* **Je Erzeuger** (`je_erzeuger`): Paare, stille Fehler, Regel 27, Kollateral, Treffergenauigkeit, Abdeckung, Lese-Lücke, Idempotenz,
+  Restarbeit getrennt für `writer`, `libreoffice` (und `unbekannt` = Paare ohne `erwartet.json`).
+* **Kriterien Nr. 7** („Abdeckung ableitbare Zellen“, „Restarbeit je 100 Änderungen“) haben nur die Ampeln `ok` / `Hinweis` / `nicht
+  gemessen` – sie ändern den Exit-Code nicht.
+* **`messen --vergleich [--gegen NNN]`**: Deltas jeder numerischen Kennzahl (`gesamt`), je Störer-Familie und je Erzeuger gegen den letzten
+  Bericht desselben Korpus (oder gegen Bericht `NNN`) – im Feld `vergleich` des Berichts, als Tabelle im `bericht.md` und in der Konsole
+  (steigen die stillen Fehler, steht dort „ACHTUNG Stop-Regel“). `vergleichbar: false` bei anderem Korpus oder anderer Generator-Version.
+  Unbekannte Nummer bei `--gegen`: Exit-Code 2.
+* **Korpora:** `--korpus entwicklung|ex_test|test`. Bei `ex_test` steht nur der Hinweis „offen als Entwicklung erklärt“ (kein
+  Regel-11-Warnton mehr); bei `test` bleibt der Regel-11-Hinweis.
 
 ### Ampel-Werte
 `ok` · `NICHT ok` · `nicht gemessen` · `nicht vollständig gemessen` (es gab abgestürzte Paare) · `Hinweis` (nur Plausibilität).

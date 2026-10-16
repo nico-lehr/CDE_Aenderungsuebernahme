@@ -51,10 +51,11 @@ def wurzel() -> Path:
 
 def paar(seed: int, profil: str) -> Path:
     """Erzeugt (einmal) das Entwicklungs-Paar zu Seed/Profil und gibt den Ordner zurueck."""
-    aufbau(g.GENERATOR_VERSION == "1", "Generator-Version geaendert: Seeds neu pruefen (Tests an Version 1 gebunden)")
+    # Die R3-Faelle sind an Generator-Version 1 gebunden; v2 kann v1-Paare weiter nachbauen (version="1").
+    aufbau("1" in getattr(g, "VERSIONEN", (g.GENERATOR_VERSION,)), "Generator kann Version 1 nicht mehr nachbauen")
     aufbau(seed < g.SEED_GRENZE, "Nur Entwicklungskorpus (Seeds < 1000, Regel 11)")
     if (seed, profil) not in _PAARE:
-        _PAARE[(seed, profil)] = g.erzeuge_paar(seed, profil, wurzel() / "paare", "entwicklung")
+        _PAARE[(seed, profil)] = g.erzeuge_paar(seed, profil, wurzel() / "paare", "entwicklung", version="1")
     return _PAARE[(seed, profil)]
 
 
