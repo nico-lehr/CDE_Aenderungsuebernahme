@@ -393,10 +393,38 @@ def _gruen(ctx) -> bool:
 _NBSP = re.compile(r"(?:(?<=\d)|(?<=\+\})|(?<=-\})) (?=(?:kW|kWh|V|kg|A|Wochen|Monate|Stunden|dB|ms)\b)")
 
 
+def nbsp_setzen(markup: str) -> str:
+    """Setzt geschuetzte Leerzeichen zwischen Zahl und Einheit -- so, wie ein Mensch es abtippen wuerde (Generator v2).
+
+    v1 setzte das Zeichen auch hinter `+}`/`-}` ohne Ruecksicht auf den alten/neuen Stand: aus "{-100-} {+120+} kWh" wurde
+    vorher "100 <NBSP>kWh" (Leerzeichen UND geschuetztes Leerzeichen), nachher "120<NBSP>kWh" -- Texte, die kein Mensch so
+    schreibt und die das PDF nicht zeigt (Phantom-"stille Fehler"). Jetzt wird jede Stelle einzeln geprueft: sie bekommt das
+    Zeichen nur, wenn es im alten UND im neuen Stand direkt zwischen einer Ziffer und der Einheit steht."""
+    out = markup
+    pos = 0
+    while True:
+        m = _NBSP.search(out, pos)
+        if m is None:
+            return out
+        probe = out[:m.start()] + "\u00a0" + out[m.end():]
+        if all(_nbsp_sauber(zustand(probe, neu)) for neu in (False, True)):
+            out = probe
+        pos = m.start() + 1
+
+
+def _nbsp_sauber(text: str) -> bool:
+    """Jedes geschuetzte Leerzeichen steht zwischen einer Ziffer und einem Buchstaben (kein Leerraum daneben)."""
+    for i, ch in enumerate(text):
+        if ch == "\u00a0" and not (0 < i < len(text) - 1 and text[i - 1].isdigit() and text[i + 1].isalpha()):
+            return False
+    return True
+
+
 def _sonder(ctx) -> bool:
+    v1 = getattr(ctx, "version", "2") == "1"          # Version 1 nur zum Nachbauen archivierter Paare (Red-Team R3)
     for _, a in ctx.alle_absaetze():
         if a.art == "text":
-            a.markup = _NBSP.sub(" ", a.markup)
+            a.markup = _NBSP.sub(" ", a.markup) if v1 else nbsp_setzen(a.markup)
     return True
 
 
@@ -484,6 +512,19 @@ REGISTER: dict[str, Stoerer] = _mk(
 NUR_TEST: tuple[str, ...] = tuple(sorted(n for n, f in REGISTER.items() if f.nur_test))
 # Im Testkorpus erzwungen: Seed % modul == rest -> Familie kommt vor (in 30 Seeds je 6 Paare)
 TEST_ZWANG: dict[str, tuple[int, int]] = {"gedrehte_seite": (5, 0), "gruene_markierung": (5, 2)}
+# Generator v2: Diese NUR_TEST-Familien kamen im frueheren Testkorpus (Seeds 1001-1030) vor. Der ist jetzt offen als Entwicklung
+# erklaert ("ex_test"); nur diese Familien duerfen dort vorkommen. Spaeter neu hinzukommende NUR_TEST-Familien bleiben dem
+# reservierten Korpus "test" (Seeds >= 2000) vorbehalten.
+OFFENGELEGT: tuple[str, ...] = ("gedrehte_seite", "gruene_markierung")
+
+
+def nur_test_erlaubt(korpus: str) -> tuple[str, ...]:
+    """NUR_TEST-Familien, die in diesem Korpus vorkommen duerfen."""
+    if korpus == "test":
+        return NUR_TEST
+    if korpus == "ex_test":
+        return OFFENGELEGT
+    return ()
 
 
 def pool(art: str, korpus: str = "entwicklung") -> list[str]:
