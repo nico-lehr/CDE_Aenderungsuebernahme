@@ -4,6 +4,7 @@ analyse  : nur auswerten und die Bilanz anzeigen (schreibt nichts in die Excel)
 lauf     : auswerten und alle sicheren Aenderungen eintragen
            (mit --alle-vorschlaege werden auch Vorschlaege ("pruefen") uebernommen)
 messen   : Messwerkzeug fuer Paare (PDF + Excel vorher + nachher), siehe src/messen.py
+steckbrief: Steckbrief eines Paars (nur Zahlen, Farbcodes und Formen, kein Text), siehe src/steckbrief.py und docs/anleitung_steckbrief.md
 farben   : zeigt, welche Farben im PDF vorkommen und wie sie gedeutet werden (nur Zahlen und Farbcodes, keine Woerter)
 profil   : Layout-Profile fuer den Aufbau der Excel: vorschau | bestaetigen | liste | analyse (siehe docs/adr/0003)
 """
@@ -122,6 +123,9 @@ def main(argv: list[str] | None = None) -> int:
     if args and args[0] == "messen":
         from . import messen
         return messen.main(args[1:])
+    if args and args[0] == "steckbrief":
+        from . import steckbrief
+        return steckbrief.main(args[1:])
     if args and args[0] == "farben":
         return _farben(args[1:])
     if args and args[0] == "profil":
