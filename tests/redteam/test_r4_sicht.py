@@ -47,8 +47,6 @@ def _passt(a):
     return WORT in a.alt or WORT in a.neu
 
 
-XF = pytest.mark.xfail
-
 
 # ---------------------------------------------------------------------------------------------
 # RT-207: Hinterlegung als Flaeche in Separation-Farbe "Rot" mit Ton 1,0 (wirkt rot -> entfaellt)
@@ -75,8 +73,7 @@ def test_rt207_hinterlegung_in_separation_farbe(tmp_path, art):
 @pytest.mark.redteam
 @pytest.mark.parametrize("art", [
     pytest.param("kontrolle_cmyk", id="kontrolle_cmyk"),
-    pytest.param("devicen", id="devicen", marks=XF(strict=True, raises=AssertionError,
-                 reason="RT-208 blauer DeviceN-Text (2 Kanaele) gilt still als unveraendert; Besitzer SICHT")),
+    pytest.param("devicen", id="devicen"),           # RT-208 behoben durch SICHT (C1 zweiter Leser)
 ])
 def test_rt208_text_in_devicen_farbe(tmp_path, art):
     if art == "devicen":
@@ -96,8 +93,7 @@ def test_rt208_text_in_devicen_farbe(tmp_path, art):
 @pytest.mark.redteam
 @pytest.mark.parametrize("form", [
     pytest.param("re", id="kontrolle_rechteck"),
-    pytest.param("kurve", id="kurve", marks=XF(strict=True, raises=AssertionError,
-                 reason="RT-209 blaue Hinterlegung als Kurven-Pfad gilt still als unveraendert; Besitzer SICHT")),
+    pytest.param("kurve", id="kurve"),               # RT-209 behoben durch SICHT (C3 Farb-Inventur: Luecke)
 ])
 def test_rt209_markierung_als_kurvenflaeche(tmp_path, form):
     dok, kasten = _dok((WORT, ("flaeche", "0.72 0.86 1 rg", form)))
@@ -112,8 +108,7 @@ def test_rt209_markierung_als_kurvenflaeche(tmp_path, form):
 @pytest.mark.redteam
 @pytest.mark.parametrize("modus", [
     pytest.param("kontrolle_fuellung", id="kontrolle_fuellung"),
-    pytest.param("kontur", id="kontur", marks=XF(strict=True, raises=AssertionError,
-                 reason="RT-210 Text nur mit blauer Kontur (Tr 1) gilt still als unveraendert; Besitzer SICHT")),
+    pytest.param("kontur", id="kontur"),             # RT-210 behoben durch SICHT (C1: Konturfarbe bei Modus 1)
 ])
 def test_rt210_nur_kontur_text(tmp_path, modus):
     befehl = "0 g 0 0 1 RG 0.3 w 1 Tr" if modus == "kontur" else "0 0 1 rg"

@@ -116,7 +116,7 @@ def _z(hex_: str = "#000000", klasse_: str | None = None, unsichtbar: bool = Fal
     return z
 
 
-BLAU, ROT, SCHWARZ, GRAU_BLAU = (0.0, 0.3, 0.9), (0.9, 0.1, 0.1), (0.0, 0.0, 0.0), (0.45, 0.47, 0.5)
+BLAU, ROT, SCHWARZ, GRAU_BLAU = (0.0, 0.3, 0.9), (0.9, 0.1, 0.1), (0.0, 0.0, 0.0), (0.5, 0.6, 0.67)
 
 
 @pytest.mark.parametrize("fall,z,fuell,kontur,modus,erg,klasse_nachher,hinweis", [

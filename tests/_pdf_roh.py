@@ -8,7 +8,7 @@ Alle Objekte werden ueber "{OBJ<n>}" (n-tes Zusatzobjekt) referenziert, wie bei 
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from tests.fixtures.pdf_writer import SEITE_B, SEITE_H
 from tests.redteam._bau_r4 import RohDok
@@ -17,6 +17,8 @@ from tests.redteam._bau_r4 import RohDok
 @dataclass
 class SichtDok(RohDok):
     seiten_eintraege: str = ""          # zusaetzliche Eintraege im Seiten-Dictionary der ERSTEN Seite (z. B. "/Annots [...]")
+    xobjekte: dict = field(default_factory=dict)        # Name -> Verweis
+    schattierungen: dict = field(default_factory=dict)  # Name -> Dictionary
 
     def objekt(self, inhalt: bytes) -> str:
         """Fuegt ein Zusatzobjekt an; gibt den Platzhalter fuer Verweise zurueck ("{OBJ<n>} 0 R")."""
@@ -35,8 +37,8 @@ class SichtDok(RohDok):
                      name: str = "Sh1", vorn: bool = False) -> None:
         """Einfarbige Schattierung in einem Rechteck-Ausschnitt (fuer pdfplumber unsichtbar)."""
         c = " ".join(f"{v:g}" for v in rgb)
-        self.ressourcen += (f" /Shading << /{name} << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] "
-                            f"/Function << /FunctionType 2 /Domain [0 1] /C0 [{c}] /C1 [{c}] /N 1 >> /Extend [true true] >> >>")
+        self.schattierungen[name] = (f"<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] "
+                                     f"/Function << /FunctionType 2 /Domain [0 1] /C0 [{c}] /C1 [{c}] /N 1 >> /Extend [true true] >>")
         befehl = f"q {x0:.2f} {SEITE_H - bot:.2f} {x1 - x0:.2f} {bot - top:.2f} re W n /{name} sh Q\n"
         if vorn:
             self.inhalt.append(befehl)
@@ -50,7 +52,7 @@ class SichtDok(RohDok):
         self.seiten_eintraege += f" /Annots [{ref}]"
 
     def _xobjekt(self, name: str, ref: str) -> None:
-        self.ressourcen += f" /XObject << /{name} {ref} >>"
+        self.xobjekte[name] = ref
 
     def bytes(self) -> bytes:   # noqa: C901 - wie RohDok.bytes, plus Seiten-Eintraege
         objekte: list[bytes] = [b"", b""]
@@ -70,7 +72,12 @@ class SichtDok(RohDok):
 
         for i, nr in enumerate(zusatz):
             objekte[nr - 1] = ersetze(self.objekte[i].decode("latin-1")).encode("latin-1")
-        res = ersetze(self.ressourcen)
+        res = self.ressourcen
+        if self.xobjekte:
+            res += " /XObject << " + " ".join(f"/{n} {r}" for n, r in self.xobjekte.items()) + " >>"
+        if self.schattierungen:
+            res += " /Shading << " + " ".join(f"/{n} {d}" for n, d in self.schattierungen.items()) + " >>"
+        res = ersetze(res)
         extra = ersetze(self.seiten_eintraege)
         ids = []
         for k, s in enumerate(self.seiten):
