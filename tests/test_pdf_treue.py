@@ -47,7 +47,9 @@ NBSP_SCHRIFT = ("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding <
 
 
 def test_trenner_geschuetztes_leerzeichen_und_leerzeichen(tmp_path):
-    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=zeile(56, 64, "Wert 5\xa0kW hier"), schrift=NBSP_SCHRIFT)]))
+    # /nbspace hat in dieser Schrift keine Breite: der Abstand kommt (wie oft in echten PDFs) aus der TJ-Verschiebung
+    inhalt = "BT /F1 11 Tf 0 g 56 700 Td [(Wert 5\240) -278 (kW hier)] TJ ET\n"
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt, schrift=NBSP_SCHRIFT)]))
     assert [(t.old, t.trenner) for t in alle_tokens(a)] == [("Wert", " "), ("5", "\xa0"), ("kW", " "), ("hier", " ")]
 
 
@@ -56,6 +58,18 @@ def test_leerzeichen_zeichen_trennt_auch_bei_kleiner_luecke(tmp_path):
     inhalt = "BT /F1 11 Tf 0 g -2.2 Tw 56 700 Td (eng gesetzt hier) Tj ET\n"
     a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
     assert [t.old for t in alle_tokens(a)] == ["eng", "gesetzt", "hier"]
+
+
+def test_phantom_leerzeichen_ohne_vorschub_trennen_kein_wort(tmp_path):
+    """Wie LibreOffice an weichen Trennstellen: ein Leerzeichen, das das Zeichen davor ueberdeckt (kein Vorschub), und
+    Leerzeichen, die erst NACH dem Trennstrich gezeichnet werden, trennen das Wort nicht."""
+    inhalt = ("BT /F1 11 Tf 0 g 56 700 Td [(Die Batte) 278 ( ) (rie hier)] TJ ET\n"
+              "BT /F1 11 Tf 0 g 56 685 Td [(ist zu pro) -80 (-) 333 ( ) 278 ( )] TJ ET\n"
+              "BT /F1 11 Tf 0 g 56 670 Td (tokollieren und fertig.) Tj ET\n")
+    a = lese(tmp_path, roh_pdf([RohSeite(inhalt=inhalt)]))
+    woerter = [t.old for t in alle_tokens(a)]
+    assert "Batterie" in woerter and "protokollieren" in woerter, woerter
+    assert token(a, "protokollieren").trennstelle == 3
 
 
 def test_luecke_ohne_leerzeichen_trennt_weiter(tmp_path):
