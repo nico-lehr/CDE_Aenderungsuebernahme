@@ -86,3 +86,6 @@ tabellen:                    # Tabellen mit Rahmenlinien
 ueberschriften_design:       # alle Ueberschriften blau = Gestaltung, nicht "neu"
   min_anzahl: 3              # so viele Ueberschriften muessen vorhanden sein
   max_anteil_text: 0.5       # Anteil markierter Woerter im uebrigen Text, bis zu dem das als Gestaltung gilt
+
+sicht:                       # Schema 3 / ADR 0004: zweiter Leser (pdfium) und Farb-Inventur (src/sicht.py); Welle 2
+  aktiv: false

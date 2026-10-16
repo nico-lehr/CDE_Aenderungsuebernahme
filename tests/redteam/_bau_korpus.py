@@ -165,7 +165,7 @@ def messe_mit_fertigem_ergebnis(ordner: Path, vorher: list[list[Any]], nachher: 
     schreibe_xlsx(ordner / "nachher.xlsx", nachher)
     fertig = schreibe_xlsx(ordner / "fertig.xlsx", ergebnis)
 
-    def kopiere(aend, vor, out, freigaben=None):
+    def kopiere(aend, vor, out, freigaben=None, **_):
         shutil.copyfile(fertig, out)
 
     with mock.patch.object(messen, "uebernehmen", kopiere):
@@ -206,7 +206,7 @@ def messe_mit_sabotage(ordner: Path, sabotage: Callable[[Any], None]) -> dict[st
     (nur im Messwerkzeug; das Tool selbst bleibt unberuehrt). Der Wiederholungslauf (Idempotenz) bleibt echt."""
     echt = messen.uebernehmen
 
-    def mit(aend, vorher, out, freigaben=None):
+    def mit(aend, vorher, out, freigaben=None, **_):
         r = echt(aend, vorher, out, freigaben)
         if Path(out).name == "ergebnis_auto.xlsx":
             wb = load_workbook(str(out))

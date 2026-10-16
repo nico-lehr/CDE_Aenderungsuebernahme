@@ -60,3 +60,22 @@ matcher:                      # Bewertung eines Treffers (src/matcher.py)
 anwenden:                     # Schreiben in die Excel (src/applier.py)
   markierung_farbe: FFF2CC    # Hintergrund, wenn markierung.geaenderte_zellen = gelb
   kommentar_autor: CDE-Tool   # Autor der Zellkommentare, wenn markierung.geaenderte_zellen = kommentar
+
+# --- Schema 3 / ADR 0004: Gegenprobe ---------------------------------------------------------------
+normalform:                   # Vergleichsform "streng, aber fair" (src/gegenprobe.py): Gross/Klein und Satzzeichen zaehlen
+  # Zeichen, die beim Vergleich ganz wegfallen: weiches Trennzeichen, Nullbreiten, Hochzahlen (Fussnoten-Marken)
+  entfernen: ["­", "​", "‌", "‍", "⁠", "﻿",
+              "¹", "²", "³", "⁰", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"]
+  # Varianten, die als gleich gelten (Anfuehrungszeichen, Striche)
+  ersetzen: {"„": "\"", "“": "\"", "”": "\"", "«": "\"", "»": "\"",
+             "‚": "'", "‘": "'", "’": "'", "‹": "'", "›": "'",
+             "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "―": "-", "−": "-"}
+  leerraum: [" ", " ", " ", " ", "\t", "\n", "\r"]   # zaehlen als ein Leerzeichen
+  kein_leerzeichen_vor: ".,;:!?)]}"
+  kein_leerzeichen_nach: "([{"
+  listenzeichen: ["•", "·", "▪", "◦", "‣", "-", "*"]   # optionales Aufzaehlungszeichen am Absatzanfang
+
+neue_zeile:                   # Etappe 2 (src/zeilen.py): neue Zeile "wie ein Mensch" aus der Nachbarzeile gleichen Typs
+  konstanten_kopieren: true   # Spalten mit immer gleichem Wert (z. B. "Status offen") uebernehmen (Entscheidung Nico)
+zeilen:
+  listen_summen_erweitern: true   # SUMME/ANZAHL ueber den ganzen Datenblock waechst mit neuen Zeilen mit (mit Hinweis)

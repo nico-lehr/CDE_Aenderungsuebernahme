@@ -7,6 +7,7 @@ import pytest
 
 from src import config, runs
 from src.api.app import app, pruefe_bindung
+from src.models import SCHEMA_VERSION
 from tests.fixtures.szenario import erzeuge
 
 
@@ -172,7 +173,7 @@ def test_schema_aus_der_zukunft_beim_ansehen_und_uebernehmen(client, tmp_path):
     rid = _neuer_lauf(client, tmp_path)
     pj = runs.lauf_dir(rid) / "plan.json"
     j = json.loads(pj.read_text(encoding="utf-8"))
-    j["schema_version"] = 3
+    j["schema_version"] = SCHEMA_VERSION + 1
     pj.write_text(json.dumps(j), encoding="utf-8")
     for r in (client.get(f"/api/lauf/{rid}"), client.post(f"/api/lauf/{rid}/uebernehmen", json={"freigaben": []})):
         assert r.status_code == 409 and "neueren Programmversion" in r.get_json()["fehler"]

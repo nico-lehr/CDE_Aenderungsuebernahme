@@ -23,7 +23,7 @@ from . import config
 from .excel_model import Kandidat, ExcelModell, zahl_als_text
 from .matcher import Matcher, Treffer
 from .models import (ADD, DEL, HOCH, KEEP, MITTEL, MOD, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN,
-                     Aenderung, Operation, PdfBlock, PdfToken)
+                     Absatz, Aenderung, Operation, PdfBlock, PdfToken)
 from .pdf_reader import PdfAnalyse, hinweis_text
 from .textutil import kopf_zerlegen, norm, section_nummer
 
@@ -123,6 +123,7 @@ class Plan:
     ignoriert: list[dict] = field(default_factory=list)
     markierte_woerter: int = 0
     luecken: list[dict] = field(default_factory=list)   # Schema 2: Dinge, die nicht gelesen werden konnten
+    absaetze: list[Absatz] = field(default_factory=list)   # Schema 3: PDF-Absaetze fuer die Gegenprobe (ADR 0004)
 
 
 def _bbox(tokens: list[PdfToken]) -> tuple[float, float, float, float]:

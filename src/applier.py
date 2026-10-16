@@ -32,7 +32,7 @@ from . import config
 from .fehler import DateiVorhanden
 from .excel_model import ExcelModell, zahl_als_text
 from .models import (MITTEL, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN, WIRKUNG_ABWEICHUNG, WIRKUNG_KEINE, WIRKUNG_OK,
-                     Aenderung, Operation)
+                     Absatz, Aenderung, Operation)
 from .planner import neutext_probleme, zahl_aus_text
 from .textutil import norm
 
@@ -241,7 +241,8 @@ def _verschiebe_verbunden(ws, ab: int, delta: int) -> None:
 
 def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Path,
                 freigaben: set[str] | None = None, cfg: dict | None = None,
-                xl: ExcelModell | None = None) -> UebernahmeErgebnis:
+                xl: ExcelModell | None = None, abwahl: set[str] | None = None,
+                absaetze: list[Absatz] | None = None) -> UebernahmeErgebnis:
     """Trägt alle Aenderungen mit Status 'uebernommen' sowie freigegebene 'pruefen' ein.
 
     Die Aenderung-Objekte werden aktualisiert (Konflikte -> nicht_uebernommen,
@@ -249,6 +250,8 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     nachweisbare Wirkung werden zurueckgestuft).
 
     `xl`: schon gebautes Modell derselben Quell-Excel (spart das erneute Einlesen); ohne Angabe wird es gebaut.
+    `abwahl`: IDs automatischer Aenderungen, die ein Mensch abgewaehlt hat (Schema 3; wird in Welle 2 verdrahtet).
+    `absaetze`: PDF-Absaetze aus dem Plan fuer die Gegenprobe A3 (Schema 3, ADR 0004); None = Plan ohne Absaetze (Schema <= 2).
     Eine vorhandene Zieldatei wird nie ueberschrieben (Regel 29): dann gibt es einen DateiVorhanden-Fehler (auch FileExistsError)."""
     cfg = cfg or config.lade("zuordnung")
     anw = cfg.get("anwenden") or config.lade("zuordnung")["anwenden"]

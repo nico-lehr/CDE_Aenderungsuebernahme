@@ -216,7 +216,7 @@ _EL_OFFEN = [("h", "1 Eins"), ("p", "Der Nachweis erfolgt durch ein Messprotokol
 def _alle_pruefen_ohne_freigabe_anwenden():
     echt = messen.uebernehmen
 
-    def bruch(aend, vorher, out, freigaben=None):
+    def bruch(aend, vorher, out, freigaben=None, **_):
         if Path(out).name == "ergebnis_auto.xlsx":                  # der Automatik-Lauf bekommt heimlich alle Freigaben
             freigaben = {a.id for a in aend if a.status == PRUEFEN}
         return echt(aend, vorher, out, freigaben)
@@ -293,7 +293,7 @@ def _ampel(bericht: dict, nr: int, name_teil: str) -> str:
 def _stuerzt_im_wiederholungslauf(sabotage=None):
     echt = messen.uebernehmen
 
-    def mit(aend, vorher, out, freigaben=None):
+    def mit(aend, vorher, out, freigaben=None, **_):
         if Path(out).name == "ergebnis_auto2.xlsx":
             raise ValueError("Absturz im Wiederholungslauf")
         r = echt(aend, vorher, out, freigaben)

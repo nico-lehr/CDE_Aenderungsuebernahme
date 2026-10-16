@@ -16,7 +16,7 @@ def _aenderung() -> Aenderung:
 
 
 def test_schema_version_und_gelesene_versionen():
-    assert SCHEMA_VERSION == 2
+    assert SCHEMA_VERSION == 3          # Schema 3 (ADR 0004): Gegenprobe; neue Felder nur mit Standardwert
     assert 1 in GELESENE_SCHEMAS and SCHEMA_VERSION in GELESENE_SCHEMAS
 
 

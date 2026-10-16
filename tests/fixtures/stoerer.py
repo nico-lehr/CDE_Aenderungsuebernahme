@@ -30,7 +30,7 @@ from .pdf_writer import zustand
 
 # Arten, die das Tool als Luecke melden kann (Kopie von models.LUECKEN_ARTEN; ein Test vergleicht beide)
 LUECKEN_ARTEN = ("scan_seite", "mehrspaltig", "tabelle", "bild", "unbekannte_farbe",
-                 "nicht_lesbarer_text", "sonstiges")
+                 "nicht_lesbarer_text", "unerklaerte_markierung", "sonstiges")
 
 BLAUTOENE = ["1F4E9F", "2E75B6", "0070C0", "2F5597", "4472C4"]
 ROTTOENE = ["C00000", "E06666", "CC0000", "FF3333"]

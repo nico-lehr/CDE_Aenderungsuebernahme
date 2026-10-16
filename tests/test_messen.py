@@ -13,7 +13,7 @@ import pytest
 from openpyxl import load_workbook
 
 from src import cli, config, messen, runs
-from src.models import PRUEFEN
+from src.models import PRUEFEN, SCHEMA_VERSION
 from tests.fixtures.pdf_writer import baue_pdf
 from tests.fixtures.szenario import baue_excel, zustaende
 
@@ -67,7 +67,7 @@ def sabotiere_ergebnis(monkeypatch, wirkung):
     original = messen.uebernehmen
     zaehler = {"n": 0}
 
-    def falsch(aenderungen, quelle, ziel, freigaben=None, cfg=None):
+    def falsch(aenderungen, quelle, ziel, freigaben=None, cfg=None, **_):
         res = original(aenderungen, quelle, ziel, freigaben, cfg)
         zaehler["n"] += 1
         if zaehler["n"] == 1:
@@ -123,7 +123,7 @@ def test_original_veraenderung_wird_gemeldet(tmp_path, monkeypatch):
     p = baue_paar(tmp_path, "synth_0005")
     original = messen.uebernehmen
 
-    def boese(aenderungen, quelle, ziel, freigaben=None, cfg=None):
+    def boese(aenderungen, quelle, ziel, freigaben=None, cfg=None, **_):
         Path(quelle).write_bytes(Path(quelle).read_bytes() + b"x")      # veraendert das Original
         return original(aenderungen, quelle, ziel, freigaben, cfg)
     monkeypatch.setattr(messen, "uebernehmen", boese)
@@ -183,7 +183,7 @@ def test_zweiter_lauf_der_etwas_aendert_wird_erkannt(tmp_path, monkeypatch):
     original = messen.uebernehmen
     zaehler = {"n": 0}
 
-    def unsauber(aenderungen, quelle, ziel, freigaben=None, cfg=None):
+    def unsauber(aenderungen, quelle, ziel, freigaben=None, cfg=None, **_):
         res = original(aenderungen, quelle, ziel, freigaben, cfg)
         zaehler["n"] += 1
         if zaehler["n"] == 2:                      # zweiter Lauf (Idempotenz-Pruefung) aendert wieder etwas
@@ -447,7 +447,7 @@ def test_paar_ordner_und_korpus_hinweise(tmp_path, capsys):
     assert "Regel 11" in out
     b = json.loads(next(config.pfad("messung_dir").glob("001_test/bericht.json")).read_text(encoding="utf-8"))
     assert [p["name"] for p in b["paare"]] == ["echt_0001"] and b["generator_version"] == "7"
-    assert b["korpus"] == "test" and b["schema_version"] == 2 and b["format"] == 1
+    assert b["korpus"] == "test" and b["schema_version"] == SCHEMA_VERSION and b["format"] == 1
     assert {"paare", "soll_zellen", "bilanz_stimmig", "vollstaendig", "stille_fehler", "auto_richtig", "auto_gesamt",
             "abdeckung_ohne_nachfrage", "lese_luecke_woerter", "idempotent", "kollateral"} <= set(b["gesamt"])
     assert set(b["fehlerarten"]) == set(messen.FEHLERARTEN)
@@ -604,7 +604,7 @@ def test_falsche_angewendete_aenderung_neben_offener_wird_je_aenderung_gefunden(
     zweite_aenderung_offen(monkeypatch)
     original = messen.uebernehmen
 
-    def falsch(aend, quelle, ziel, freigaben=None, cfg=None):
+    def falsch(aend, quelle, ziel, freigaben=None, cfg=None, **_):
         res = original(aend, quelle, ziel, freigaben, cfg)
         if Path(ziel).name == "ergebnis_auto.xlsx":
             zellen_aendern(Path(ziel), {"C2": load_workbook(str(ziel))["CDE"]["C2"].value.replace("Laub", "Kraut")})
@@ -671,7 +671,7 @@ def test_regel27_pruefen_ohne_freigabe_angewendet_ist_stiller_fehler(tmp_path, m
     zweite_aenderung_offen(monkeypatch)
     original = messen.uebernehmen
 
-    def mit_heimlicher_freigabe(aend, quelle, ziel, freigaben=None, cfg=None):
+    def mit_heimlicher_freigabe(aend, quelle, ziel, freigaben=None, cfg=None, **_):
         if Path(ziel).name == "ergebnis_auto.xlsx":
             freigaben = {a.id for a in aend if a.status == PRUEFEN}
         return original(aend, quelle, ziel, freigaben, cfg)
@@ -801,7 +801,7 @@ def test_absturz_im_wiederholungslauf_behaelt_die_funde_des_ersten_laufs(tmp_pat
     original = messen.uebernehmen
     zaehler = {"n": 0}
 
-    def falsch_dann_absturz(aend, quelle, ziel, freigaben=None, cfg=None):
+    def falsch_dann_absturz(aend, quelle, ziel, freigaben=None, cfg=None, **_):
         res = original(aend, quelle, ziel, freigaben, cfg)
         zaehler["n"] += 1
         if zaehler["n"] == 1:
@@ -1156,7 +1156,7 @@ def test_zahl_wird_text_in_nicht_verwalteter_spalte_ist_strukturbefund(monkeypat
 def _sabotiere_vorschlags_excel(monkeypatch, wirkung):
     original = messen.uebernehmen
 
-    def mit(aend, quelle, ziel, freigaben=None, cfg=None):
+    def mit(aend, quelle, ziel, freigaben=None, cfg=None, **_):
         res = original(aend, quelle, ziel, freigaben, cfg)
         if Path(ziel).name == "ergebnis_alle.xlsx":
             wb = load_workbook(str(ziel))

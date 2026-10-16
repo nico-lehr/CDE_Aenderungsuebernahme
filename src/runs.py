@@ -29,6 +29,7 @@ from . import config
 from .applier import uebernehmen
 from . import layouts
 from .fehler import NichtGefunden, NutzerFehler
+from .gegenprobe import absaetze_aus_liste
 from .excel_model import ExcelModell, profil_kontext
 from .models import GELESENE_SCHEMAS
 from .pdf_reader import analysiere_pdf
@@ -243,6 +244,7 @@ def analysiere(run_id: str, profil: str | None = None) -> dict[str, Any]:
         "warnungen": plan.warnungen, "ignoriert": plan.ignoriert,
         "luecken": plan.luecken,
         "farben": pa.farben, "aenderungen": [a.zu_dict() for a in plan.aenderungen],
+        "absaetze": [ab.zu_dict() for ab in plan.absaetze],   # Schema 3: fuer die Gegenprobe nach dem Speichern
     }
     _schreibe_json_atomar(d / "plan.json", daten)
     return daten
@@ -355,6 +357,7 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[st
         raise LaufFehler("Die gespeicherte Excel passt nicht mehr zur Analyse. Bitte neuen Lauf starten.", 409)
     try:
         aenderungen = [aenderung_aus_dict(a) for a in plan["aenderungen"]]
+        absaetze = absaetze_aus_liste(plan.get("absaetze"))       # Schema <= 2: None (alte Nachkontrolle)
     except (KeyError, TypeError, ValueError, AttributeError):
         raise _beschaedigt() from None
     freig = set(freigaben or [])
@@ -366,7 +369,7 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[st
         stamm = Path(info["excel"]).stem
         ziel = ordner / f"{stamm}_aktualisiert{Path(info['excel']).suffix}"
         with profil_kontext(_profil_des_plans(plan)):          # der Applier liest die Excel selbst: gleicher Aufbau wie bei der Analyse
-            res = uebernehmen(aenderungen, quelle, ziel, freig)
+            res = uebernehmen(aenderungen, quelle, ziel, freig, absaetze=absaetze)
         markierte = plan["bilanz"]["woerter_im_pdf"]
         luecken = plan.get("luecken")
         bil = bilanz(aenderungen, markierte, plan.get("ignoriert", []), luecken if isinstance(luecken, list) else [])

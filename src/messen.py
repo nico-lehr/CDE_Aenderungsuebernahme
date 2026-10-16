@@ -1718,7 +1718,7 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
         vor_status = {a.id: a.status for a in plan.aenderungen}
         aend_auto = copy.deepcopy(plan.aenderungen)
         e_auto = tmp / "ergebnis_auto.xlsx"
-        uebernehmen(aend_auto, vorher, e_auto, None)
+        uebernehmen(aend_auto, vorher, e_auto, None, absaetze=plan.absaetze)
         bil_auto = bilanz(aend_auto, plan.markierte_woerter, plan.ignoriert, plan.luecken)
         # B: alle "pruefen" freigegeben (Qualitaet der Vorschlaege)
         e_alle = None
@@ -1726,7 +1726,8 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
             try:
                 aend_alle = copy.deepcopy(plan.aenderungen)
                 e_alle = tmp / "ergebnis_alle.xlsx"
-                uebernehmen(aend_alle, vorher, e_alle, {a.id for a in aend_alle if a.status == PRUEFEN})
+                uebernehmen(aend_alle, vorher, e_alle, {a.id for a in aend_alle if a.status == PRUEFEN},
+                            absaetze=plan.absaetze)
             except Exception as exc:
                 e_alle = None
                 ausfaelle.append(("vorschlaege", type(exc).__name__))
@@ -1735,7 +1736,7 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
         try:
             e_auto2 = tmp / "ergebnis_auto2.xlsx"
             plan2 = plane(analysiere_pdf(pdf), ExcelModell(e_auto))
-            uebernehmen(plan2.aenderungen, e_auto, e_auto2, None)
+            uebernehmen(plan2.aenderungen, e_auto, e_auto2, None, absaetze=plan2.absaetze)
             idempotent = _lese_excel(e_auto2) == _lese_excel(e_auto)
         except Exception as exc:
             idempotent = None
