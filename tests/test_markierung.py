@@ -185,10 +185,11 @@ def test_markiere_ersetzung_einfuegung_loeschung():
     t = "Die Pumpe läuft leise."
     m = markiere_ops([Stueck(NORMAL, t)], _ops(("e", 4, 9, "Kessel", "A1"), ("i", 15, " heute", "A2"),
                                                 ("e", 15, 21, "", "A3")))
-    assert _fs(m.stuecke) == [(NORMAL, "Die "), (ALT, "Pumpe"), (NEU, "Kessel"), (NORMAL, " läuft"), (NEU, " heute"),
-                              (ALT, " leise"), (NORMAL, ".")]
-    assert ansicht(m.stuecke, ALT) == t and ansicht(m.stuecke, NEU) == "Die Kessel läuft heute."
-    assert all(s.behalten for s in m.stuecke if s.format == NORMAL) and not any(s.behalten for s in m.stuecke if s.format != NORMAL)
+    # Leerraum am Rand von Einfuegung und Loeschung ist nie markiert (Nacharbeit: wie im PDF)
+    assert _fs(m.stuecke) == [(NORMAL, "Die "), (ALT, "Pumpe"), (NEU, "Kessel"), (NORMAL, " läuft "), (NEU, "heute"),
+                              (NORMAL, " "), (ALT, "leise"), (NORMAL, ".")]
+    assert normalform(ansicht(m.stuecke, ALT))[0] == t and normalform(ansicht(m.stuecke, NEU))[0] == "Die Kessel läuft heute."
+    assert not any(s.behalten for s in m.stuecke if s.format != NORMAL)
     assert [z[2] for z in m.zeichen if z[2] >= 0] == list(range(len(t)))       # jedes Original-Zeichen steht noch da
 
 
@@ -242,8 +243,12 @@ def test_klassen_stuecke_fuer_die_anzeige():
 
 
 def test_zusammenfassen_trennt_behaltene_und_markierte_stuecke():
-    st = zusammenfassen([Stueck(NORMAL, "a", None, True), Stueck(NORMAL, "b", None, False), Stueck(NORMAL, "c", None, False)])
+    # alt: schon durchgestrichen (behalten) und neu durchgestrichen bleiben getrennt -- sie sehen verschieden aus
+    st = zusammenfassen([Stueck(ALT, "a", None, True), Stueck(ALT, "b", None, False), Stueck(ALT, "c", None, False)])
     assert [(s.text, s.behalten) for s in st] == [("a", True), ("bc", False)]
+    # normal mit gleicher Schrift sieht gleich aus (vorhandener Text + neuer Leerraum): ein Lauf
+    st = zusammenfassen([Stueck(NORMAL, "a", None, True), Stueck(NORMAL, " ", None, False, "A1"), Stueck(NORMAL, "b", None, True)])
+    assert [(s.text, s.behalten, s.aenderung) for s in st] == [("a b", False, "A1")]
 
 
 # ---------------------------------------------------------------- A3 mit Markierung (src/gegenprobe.py)
@@ -332,3 +337,111 @@ def test_zufall_markierte_ops_bestehen_die_gegenprobe_und_verlieren_nichts():
         assert "".join(z[0] for z in m.zeichen if z[2] >= 0) == t                  # Original vollstaendig, in Reihenfolge
         assert normalform(ansicht(m.stuecke, ALT))[0] == normalform(t)[0]        # (Leerraum aus dem PDF zwischen Alt und Neu)
         assert normalform(ansicht(m.stuecke, NEU))[0] == normalform(zustand(laeufe, {"A1"}))[0]
+
+
+# ================================================================ Nacharbeit: Markierung aus den PDF-Laeufen projizieren
+from src.markierung import projiziere                                     # noqa: E402
+
+# Die fuenf Muster aus der Messung an echten Paaren (nur Formen; Woerter und Zahlen erfunden).
+# (Excel-Text, PDF-Absatz in Kurzschrift, Soll mit {-alt-} / {+neu+})
+MUSTER = [
+    ("nach NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711."),
+    ("nach  NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711."),      # doppelter Leerraum
+    ("Feuchte: [0 bis 100] Prozent", "Feuchte: {-[-}|0 bis 100|{-]-} Prozent", "Feuchte: {-[-}0 bis 100{-]-} Prozent"),
+    ("und NORM 4712. Danach", "und {-NORM-} {-4712-}|. Danach", "und {-NORM 4712-}. Danach"),
+    ("Teil 60364‑6 mit Pumpe alt.", "Teil 60364-6 mit Pumpe {-alt-}|{+neu+}|.", "Teil 60364‑6 mit Pumpe {-alt-}{+neu+}."),
+    ("Temperatur [20] Grad", "Temperatur {-[20]-}|{+21+} Grad", "Temperatur {-[20]-}{+21+} Grad"),
+]
+
+
+def _kurz(stuecke) -> str:
+    return "".join({"normal": s.text, "alt": "{-" + s.text + "-}", "neu": "{+" + s.text + "+}"}[s.format] for s in stuecke)
+
+
+@pytest.mark.parametrize("excel, pdf, soll", MUSTER)
+def test_projektion_markiert_genau_was_das_pdf_markiert(excel, pdf, soll):
+    laeufe = _lauf(pdf)
+    proj = projiziere([excel], laeufe, {"A1"})
+    assert proj is not None
+    m = markiere_ops([Stueck(NORMAL, excel)], [], bereiche=[(0, len(excel), proj[0])])
+    assert _kurz(m.stuecke) == soll
+    assert "".join(z[0] for z in m.zeichen if z[2] >= 0) == excel              # jedes Excel-Zeichen steht unveraendert da
+    ab = Absatz("P1", "CDE", [(2, 3, 0, len(excel))], laeufe)
+    assert pruefe_absatz_markiert(ab, {(2, 3): (excel, m.zeichen)}, {"A1"}) is None    # A3 markiert gilt streng weiter
+
+
+def test_projektion_ueber_zwei_zellen_und_ohne_zuordnung():
+    laeufe = _lauf("{-2.3-} {+2.4+} Pumpe {+neu+}")
+    proj = projiziere(["2.3", "Pumpe"], laeufe, {"A1"})
+    nummer = markiere_ops([Stueck(NORMAL, "2.3")], [], bereiche=[(0, 3, proj[0])])
+    titel = markiere_ops([Stueck(NORMAL, "Pumpe")], [], bereiche=[(0, 5, proj[1])])
+    assert _kurz(nummer.stuecke) == "{-2.3-} {+2.4+}" and _kurz(titel.stuecke) == "Pumpe {+neu+}"
+    assert projiziere(["Ganz anderer Text"], laeufe, {"A1"}) is None           # passt nicht: bei den Operationen bleiben
+
+
+def test_projektion_nicht_angewendete_aenderung_bleibt_normal():
+    laeufe = [Lauf("k", "Die"), Lauf("s", " "), Lauf("d", "alte", "A1"), Lauf("s", " "), Lauf("a", "neue", "A1"),
+              Lauf("s", " "), Lauf("k", "Pumpe"), Lauf("s", " "), Lauf("a", "heute", "A2")]
+    proj = projiziere(["Die alte Pumpe"], laeufe, {"A2"})
+    m = markiere_ops([Stueck(NORMAL, "Die alte Pumpe")], [], bereiche=[(0, 14, proj[0])])
+    assert _kurz(m.stuecke) == "Die alte Pumpe {+heute+}"
+
+
+def test_projektion_neben_operationen_in_derselben_zelle():
+    t = "Erster Satz alt.\nZweiter Satz."
+    proj = projiziere([t[:16]], _lauf("Erster Satz {-alt-}|{+neu+}|."), {"A1"})
+    op = Operation("ersetzen", "CDE", 2, 3, len(t), len(t), "\nDritter Satz.", seq=1, aenderung="A2")  # neuer Absatz ohne PDF-Absatz
+    m = markiere_ops([Stueck(NORMAL, t)], [op], bereiche=[(0, 16, proj[0])])
+    assert _kurz(m.stuecke) == "Erster Satz {-alt-}{+neu+}.\nZweiter Satz.\n{+Dritter Satz.+}"
+    with pytest.raises(ValueError):                                         # Operation mitten im projizierten Bereich
+        markiere_ops([Stueck(NORMAL, t)], [Operation("ersetzen", "CDE", 2, 3, 3, 5, "x", aenderung="A3")],
+                     bereiche=[(0, 16, proj[0])])
+
+
+def test_operationen_ohne_projektion_markieren_keinen_rand_leerraum():
+    # Rueckfallweg (kein PDF-Absatz): gemeinsamer Anfang/Ende an Leerraum-Grenzen und Leerraum am Rand bleiben unmarkiert
+    fall = [("nach  NORM 4711.", ("e", 4, 6, " ZUSATZ-EN ", "A1"), "nach {+ZUSATZ-EN+} NORM 4711."),
+            ("Feuchte: [0 bis 100] Prozent", ("e", 8, 10, " ", "A1"), "Feuchte: {-[-}0 bis 100] Prozent"),
+            ("und NORM 4712. Danach", ("e", 3, 13, "", "A1"), "und {-NORM 4712-}. Danach"),
+            ("Teil 60364‑6 mit Pumpe alt.", ("e", 5, 26, "60364-6 mit Pumpe neu", "A1"),
+             "Teil 60364‑6 mit Pumpe {-alt-}{+neu+}."),
+            ("Wert und Rest", ("e", 0, 4, "Werte", "A1"), "{-Wert-}{+Werte+} und Rest"),        # ganzes Wort wie im PDF
+            ("a  b", ("e", 1, 3, " ", "A1"), "a  b")]                                       # reiner Leerraum: nie markiert
+    for text, spec, soll in fall:
+        assert _kurz(markiere_ops([Stueck(NORMAL, text)], _ops(spec)).stuecke) == soll, text
+
+
+def test_zufall_projektion_excel_bleibt_pdf_markierung_genau():
+    """Zufaellige Absaetze mit Excel-eigenen Schreibweisen (doppelter Leerraum, U+2011, geschuetztes Leerzeichen): jedes
+    Excel-Zeichen bleibt, markiert ist genau der Text der PDF-Laeufe, kein Leerraum am Rand einer Markierung, A3 besteht."""
+    rnd = random.Random(23)
+    woerter = ["Ventil", "Pumpe", "Druck", "60364-6", "Anlage", "[20]", "Zebrafink", "Wert:", "Prüfung"]
+    for _ in range(400):
+        laeufe: list[Lauf] = []
+        for i in range(rnd.randint(1, 8)):
+            if laeufe:
+                laeufe.append(Lauf("s", " "))
+            art = rnd.choice("kkkkda")
+            if art == "d" and rnd.random() < 0.4:                # Ersetzung, mal mit, mal ohne Leerraum dazwischen
+                laeufe += [Lauf("d", rnd.choice(woerter), "A1")] + ([Lauf("s", " ")] if rnd.random() < 0.5 else []) \
+                    + [Lauf("a", rnd.choice(woerter), "A1")]
+            else:
+                laeufe.append(Lauf(art, rnd.choice(woerter), "A1" if art in "da" else ""))
+        if not any(l.art in "da" for l in laeufe):
+            continue
+        alt_pdf = zustand(laeufe, set())
+        excel = "".join(rnd.choice([" ", "  ", " "]) if c == " " else ("‑" if c == "-" and rnd.random() < 0.5
+                                                                             else c) for c in alt_pdf)
+        proj = projiziere([excel], laeufe, {"A1"})
+        assert proj is not None, (excel, alt_pdf)
+        m = markiere_ops([Stueck(NORMAL, excel)], [], bereiche=[(0, len(excel), proj[0])])
+        assert "".join(z[0] for z in m.zeichen if z[2] >= 0) == excel
+        neu = "".join(z[0] for z in m.zeichen if z[1] == NEU)
+        assert neu.replace(" ", "") == "".join(l.text for l in laeufe if l.art == "a")
+        assert "".join(z[0] for z in m.zeichen if z[1] == ALT).replace(" ", "").replace(" ", "").replace("‑", "-") \
+            == "".join(l.text for l in laeufe if l.art == "d")
+        for s in m.stuecke:
+            if s.format != NORMAL:
+                assert s.text == s.text.strip(), (excel, _kurz(m.stuecke))
+        ab = Absatz("P1", "CDE", [(2, 3, 0, len(excel))], laeufe)
+        assert pruefe_absatz_markiert(ab, {(2, 3): (excel, m.zeichen)}, {"A1"}) is None, (excel, _kurz(m.stuecke))

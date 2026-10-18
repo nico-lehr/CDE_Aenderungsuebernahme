@@ -595,10 +595,13 @@ def test_markiert_einfuegung_und_loeschung_mit_alten_markierungen(tmp_path):
     z = load_workbook(str(tmp_path / "out.xlsx"), rich_text=True)["CDE"]["C2"]
     laeufe = [(b.text, b.font.color.rgb if b.font.color is not None else None, bool(b.font.strike)) for b in z.value]
     # Ansichten nach Nicos Regel (ADR 0005 Nachtrag): neu = hellrot FFFF0000, alt = durchgestrichen, fruehere Farben normal
-    assert "".join(x for x, f, s in laeufe if f != "FFFF0000" or s) == t
-    assert "".join(x for x, f, s in laeufe if not s) == "Die Pumpe läuft im Keller heute."
-    assert ("läuft", "FFC00000", False) in laeufe                               # alte Markierung bleibt, wie sie war
-    assert "".join(x for x, f, s in laeufe if s and f == "FF00B0F0") == " leise" and (" heute", "FFFF0000", False) in laeufe
+    from src.gegenprobe import normalform
+    alt = "".join(x for x, f, s in laeufe if f != "FFFF0000" or s)
+    assert "".join(x for x, f, s in laeufe if not s) == "Die Pumpe läuft  im Keller heute."
+    assert normalform(alt)[0] == normalform(t)[0] and alt.replace(" .", ".") == t     # nur der Leerraum vor "heute" ist neu
+    assert ("läuft ", "FFC00000", False) in laeufe                              # alte Markierung bleibt genau, wie sie war
+    # markiert ist genau, was das PDF markiert: kein Leerraum gestrichen oder rot
+    assert "".join(x for x, f, s in laeufe if s and f == "FF00B0F0") == "leise" and ("heute", "FFFF0000", False) in laeufe
 
 
 @pytest.mark.markierung_an
@@ -650,7 +653,8 @@ def test_markiert_neuer_absatz_in_bestehender_zelle(tmp_path):
     uebernehmen([ae], p, tmp_path / "out.xlsx", cfg=_cfg(True), absaetze=[])
     _bestanden(ae)
     _, (alt, neu, st) = _laeufe_der_zelle(tmp_path / "out.xlsx", 2, 3)
-    assert alt == t and neu == "Erster Satz.\nNeuer Satz dazwischen.\nZweiter Satz."
+    assert alt == "Erster Satz.\n\nZweiter Satz." and neu == "Erster Satz.\nNeuer Satz dazwischen.\nZweiter Satz."
+    assert [s.text for s in st if s.format == NEU] == ["Neuer Satz dazwischen."]   # der Zeilenumbruch ist nicht rot
     falsch = _neuer_absatz(len("Erster Satz."), " Neuer Satz dazwischen.", "Neuer Satz dazwischen.")
     uebernehmen([falsch], p, tmp_path / "out2.xlsx", absaetze=[])
     _durchgefallen(falsch, "gegenprobe_neuer_absatz")
@@ -746,3 +750,66 @@ def test_markiert_ende_zu_ende_und_zweiter_lauf_aendert_nichts(tmp_path, layout)
     assert not [a for a in plan2.aenderungen if a.status == UEBERNOMMEN]
     assert pruefe_treue(tmp_path / "out.xlsx", tmp_path / "out2.xlsx") == []
     assert any("schon_eingetragen" in a.pruefcodes or "schon" in a.grund for a in plan2.aenderungen)
+
+
+def _gelesen(p, r, c) -> str:
+    """Zelle aus der Datei in Kurzschrift: {-x-} = durchgestrichen, {+x+} = rot (FFFF0000), sonst normal."""
+    from openpyxl.cell.rich_text import CellRichText, TextBlock
+    z = load_workbook(str(p), rich_text=True)["CDE"].cell(r, c)
+    if not isinstance(z.value, CellRichText):
+        return str(z.value)
+    out = ""
+    for b in z.value:
+        f = b.font if isinstance(b, TextBlock) else None
+        text = b.text if isinstance(b, TextBlock) else str(b)
+        if f is not None and f.strike:
+            out += "{-" + text + "-}"
+        elif f is not None and f.color is not None and f.color.rgb == "FFFF0000":
+            out += "{+" + text + "+}"
+        else:
+            out += text
+    return out
+
+
+@pytest.mark.markierung_an
+def test_markiert_wie_das_pdf_auch_bei_unsauberen_operationen(tmp_path):
+    """Nacharbeit (Messung an echten Paaren, nur Formen): die Operationen des Plans greifen oft weiter als die Aenderung
+    (Leerraum, Klammern, Schreibvarianten). Markiert wird trotzdem genau, was das PDF markiert; Excel-eigene Zeichen
+    (doppelter Leerraum, U+2011) bleiben unveraendert. Woerter und Zahlen erfunden."""
+    faelle = [  # Excel, PDF-Kurzschrift, Operationen (start, ende, text) wie im Ist, Soll
+        ("nach  NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", [(4, 6, " ZUSATZ-EN ")], "nach {+ZUSATZ-EN+} NORM 4711."),
+        ("nach NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", [(4, 5, " ZUSATZ-EN ")], "nach {+ZUSATZ-EN+} NORM 4711."),
+        ("Feuchte: [0 bis 100] Prozent", "Feuchte: {-[-}|0 bis 100|{-]-} Prozent", [(8, 10, " "), (19, 21, " ")],
+         "Feuchte: {-[-}0 bis 100{-]-} Prozent"),
+        ("und NORM 4712. Danach", "und {-NORM-} {-4712-}|. Danach", [(3, 13, "")], "und {-NORM 4712-}. Danach"),
+        ("Teil 60364‑6 mit Pumpe alt.", "Teil 60364-6 mit Pumpe {-alt-}|{+neu+}|.", [(5, 26, "60364-6 mit Pumpe neu")],
+         "Teil 60364‑6 mit Pumpe {-alt-}{+neu+}."),
+        ("Temperatur [20] Grad", "Temperatur {-[20]-}|{+21+} Grad", [(11, 16, "21 ")], "Temperatur {-[20]-}{+21+} Grad"),
+    ]
+    p = _register(tmp_path, [f[0] for f in faelle])
+    aen, absaetze = [], []
+    for k, (excel, pdf, ops, _) in enumerate(faelle):
+        aid, zeile = f"A{k}", k + 2
+        laeufe = [Lauf(x.art, x.text, aid if x.aenderung else "", x.optional) for x in L(pdf)]
+        absaetze.append(Absatz(f"P{k}", "CDE", [(zeile, 3, 0, len(excel))], laeufe))
+        aen.append(_ae(aid, [Operation("ersetzen", "CDE", zeile, 3, s, e, text, seq=i, aenderung=aid, erwartet=excel[s:e])
+                             for i, (s, e, text) in enumerate(ops)]))
+    uebernehmen(aen, p, tmp_path / "out.xlsx", absaetze=absaetze)
+    for k, (excel, _, _, soll) in enumerate(faelle):
+        _bestanden(aen[k])
+        assert _gelesen(tmp_path / "out.xlsx", k + 2, 3) == soll, k
+
+
+@pytest.mark.markierung_an
+def test_markiert_projektion_haelt_falschen_plan_weiter_auf(tmp_path):
+    """Die Markierung kommt aus dem PDF, der Plan wird trotzdem geprueft: ergeben seine Operationen nicht den Text, den das
+    PDF verlangt, kommt nichts in die Datei (auch wenn die Projektion fuer sich richtig waere)."""
+    t = "Die Steuerung meldet alle Werte an die alte Leitstelle."
+    p = _register(tmp_path, [t])
+    laeufe = [Lauf(x.art, x.text, "A1" if x.aenderung else "") for x in
+              L("Die Steuerung meldet alle Werte an die {-alte-} {+neue+} Leitstelle.")]
+    s = t.index("Werte")
+    ae = _ae("A1", [_ers(s, s + 5, "neue", "A1", t)])                          # absichtlich das FALSCHE Wort
+    uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[_absatz(laeufe, 0, len(t))])
+    _durchgefallen(ae, "gegenprobe_text")
+    assert _zelle(tmp_path / "out.xlsx", 2, 3) == t

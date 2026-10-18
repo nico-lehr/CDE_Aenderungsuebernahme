@@ -291,13 +291,15 @@ def _klassen_gleich(soll: list[tuple[str, str, bool]], ist: list[tuple[str, str]
 
 
 def pruefe_absatz_markiert(absatz: Absatz, zellen: dict[tuple[int, int], tuple[str, list[tuple[str, str, int, int, str]]]],
-                           angewendet: set[str], cfg: dict | None = None, trenner: str = "") -> str | None:
+                           angewendet: set[str], cfg: dict | None = None, trenner: str = "",
+                           klassen: bool = True) -> str | None:
     """A3 mit Markierung: Steht der Absatz nach dem Schreiben so in der Excel, wie das PDF es verlangt?
 
     zellen: (zeile, spalte) -> (Originaltext in der Sicht des Excel-Modells, Zeichen der Zelle nach dem Schreiben als
     (zeichen, klasse, pos, luecke, aenderung) -- siehe markierung.Markierung). Rueckgabe None = in Ordnung, sonst ein Code:
     gegenprobe_zelle | gegenprobe_verlust (ein Zeichen des Originals fehlt) | gegenprobe_aussen (eigene Markierung ausserhalb
-    des Absatzes) | gegenprobe_alt | gegenprobe_text | gegenprobe_umbruch | gegenprobe_format."""
+    des Absatzes) | gegenprobe_alt | gegenprobe_text | gegenprobe_umbruch | gegenprobe_format.
+    klassen=False: ohne den Vergleich der Formatklassen (Pruefung des Plans: stimmt der Text, den die Operationen ergeben?)."""
     eigene = absatz.aenderungen
     aktiv = set(angewendet) & eigene
     ist: list[tuple[str, str]] = []
@@ -337,6 +339,6 @@ def pruefe_absatz_markiert(absatz: Absatz, zellen: dict[tuple[int, int], tuple[s
         return "gegenprobe_umbruch"
     if not gleich(neu_soll, neu_ist, opt_neu, cfg):
         return "gegenprobe_text"
-    if not _klassen_gleich(zustand_markiert_zeichen(absatz.laeufe, aktiv, trenner), ist, cfg):
+    if klassen and not _klassen_gleich(zustand_markiert_zeichen(absatz.laeufe, aktiv, trenner), ist, cfg):
         return "gegenprobe_format"
     return None

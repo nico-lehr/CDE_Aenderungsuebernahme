@@ -789,9 +789,38 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                                  "oder die gestrichene Zeile markieren lassen (geloeschte_section = markieren).")
         aktiv = [a for a in aktiv if a.id in nach_id]
 
+    # --- Markierung aus dem PDF (Nacharbeit Auftrag 003): je Absatz die PDF-Laeufe auf die Excel-Zeichen projizieren ----
+    # Markiert wird genau, was im PDF markiert ist; Excel-eigene Zeichen (Leerraum, U+2011 ...) bleiben unveraendert. Gelingt
+    # die Zuordnung nicht, gelten die Operationen (wie bisher). Die Operationen pruefen weiter den Plan (Text wie im PDF?).
+    def projektionen() -> dict[tuple[str, int, int], list]:
+        out: dict[tuple[str, int, int], list] = {}
+        if not farbig or not absaetze:
+            return out
+        angewendet = set(nach_id)
+        mit_ops = {k for k, ops in je_zelle.items() if any(o.aenderung in nach_id for o in ops)}
+        for ab in absaetze:
+            eigene = ab.aenderungen & angewendet
+            if not eigene or ab.blatt not in wb.sheetnames:
+                continue
+            texte: list[str] = []
+            for z, sp, a, e in ab.zellen:
+                tz = sichttext(ab.blatt, z, sp)
+                if not 0 <= a <= e <= len(tz):
+                    break
+                texte.append(tz[a:e])
+            else:
+                res = mk.projiziere(texte, ab.laeufe, eigene, cfg)
+                if res is None or any((ab.blatt, z, sp) not in mit_ops and any(kl != mk.NORMAL or p < 0 for _, kl, p, _, _ in ent)
+                                      for (z, sp, _, _), ent in zip(ab.zellen, res)):
+                    continue                    # Markierung in einer Zelle ohne Operation: lieber bei den Operationen bleiben
+                for (z, sp, a, e), ent in zip(ab.zellen, res):
+                    out.setdefault((ab.blatt, z, sp), []).append((a, e, ent, eigene))
+        return out
+
     # --- Inhalt jeder geaenderten Zelle planen (ohne zu schreiben) ------------------------------------
     def baue_zellen() -> dict[tuple[str, int, int], dict]:
         out: dict[tuple[str, int, int], dict] = {}
+        proj = projektionen()
         for (blatt, zeile, spalte), ops in je_zelle.items():
             ops = [o for o in ops if o.aenderung in nach_id]
             if not ops:
@@ -814,7 +843,16 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                     info.update(farbe=mk.NEU, wert=zahl, zeichen=_zahl_zeichen(orig, t, aid), neu=t)
             elif farbig:
                 vorher = [mk.Stueck(mk.NORMAL, orig)] if _ist_zahlzelle(zelle) else mk.stuecke_aus_zelle(zelle)
-                m = mk.markiere_ops(vorher, ops, sv, zwischen, cfg)
+                m = m_ops = mk.markiere_ops(vorher, ops, sv, zwischen, cfg)
+                bereiche = proj.get((blatt, zeile, spalte), []) if not _ist_zahlzelle(zelle) else []
+                if bereiche:
+                    pids = set().union(*(b[3] for b in bereiche))
+                    try:
+                        m = mk.markiere_ops(vorher, [o for o in ops if o.aenderung not in pids], sv, zwischen, cfg,
+                                            bereiche=[(a, e, ent) for a, e, ent, _ in bereiche])
+                        info["zeichen_ops"] = m_ops.zeichen        # fuer die Pruefung des Plans
+                    except ValueError:
+                        m = m_ops
                 info.update(mark=m, zeichen=m.zeichen, neu=m.text, zellschrift=zelle.font)
             out[(blatt, zeile, spalte)] = info
         return out
@@ -828,14 +866,20 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             if not ab.aenderungen & angewendet:
                 continue
             daten: dict[tuple[int, int], tuple[str, list]] = {}
+            plan: dict[tuple[int, int], tuple[str, list]] = {}            # Zeichen nach den Operationen des Plans
             for z, sp, _, _ in ab.zellen:
                 info = zell_info.get((ab.blatt, z, sp))
                 if info is not None:
                     daten[(z, sp)] = (info["orig"], info["zeichen"])
+                    plan[(z, sp)] = (info["orig"], info.get("zeichen_ops", info["zeichen"]))
                 elif ab.blatt in wb.sheetnames:
                     t = absatz_orig.get((ab.blatt, z, sp), "")
-                    daten[(z, sp)] = (t, [(c, mk.NORMAL, i, i, "") for i, c in enumerate(t)])
-            code = pruefe_absatz_markiert(ab, daten, angewendet, cfg, trenner)
+                    daten[(z, sp)] = plan[(z, sp)] = (t, [(c, mk.NORMAL, i, i, "") for i, c in enumerate(t)])
+            code = None
+            if plan != daten:          # projiziert: der Plan selbst muss den Text ergeben, den das PDF verlangt
+                code = pruefe_absatz_markiert(ab, plan, angewendet, cfg, trenner, klassen=False)
+            if code is None:
+                code = pruefe_absatz_markiert(ab, daten, angewendet, cfg, trenner)
             for aid in sorted(ab.aenderungen & angewendet):
                 if code is None:
                     gut.add(aid)
