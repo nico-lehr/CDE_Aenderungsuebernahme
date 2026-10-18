@@ -10,14 +10,19 @@ Schema 3 (ADR 0004): Gegenprobe. plan.json bekommt `absaetze` (die PDF-Absaetze 
 NACH dem Speichern gegen das PDF geprueft werden kann, nicht nur gegen den eigenen Plan); Aenderung bekommt
 gruppe/pruefcodes/soll_absatz/ist_absatz/zweitmeinung, Operation formeln/leer_spalten. Alles mit Standardwert,
 Schema 1 und 2 bleiben lesbar.
+
+Schema 4 (ADR 0006/0007, Auftrag 003): Word-Aenderungsverfolgung und CDE wie Nico. Aenderung bekommt bereich
+("" = in der CDE, "ausserhalb" = Vorspann/Revisionstabelle u. a., gehoert nicht in die CDE), stuecke (die fertigen
+Ergebnis-Laeufe der Zielzelle fuer die Anzeige: [[format, text], ...] mit format normal|alt|neu) und grund_einfach
+(ein Satz in einfachem Deutsch). Alles mit Standardwert, Schema 1-3 bleiben lesbar.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-SCHEMA_VERSION = 3
-GELESENE_SCHEMAS = (1, 2, 3)   # Versionen, die beim Laden akzeptiert werden
+SCHEMA_VERSION = 4
+GELESENE_SCHEMAS = (1, 2, 3, 4)   # Versionen, die beim Laden akzeptiert werden
 
 # Status eines Wortes im PDF
 KEEP, DEL, ADD, MOD = "keep", "del", "add", "mod"
@@ -152,6 +157,9 @@ class Aenderung:
     soll_absatz: str = ""              # Schema 3: der ganze Absatz, wie ihn das PDF nach der Aenderung verlangt ("PDF sagt")
     ist_absatz: str = ""               # Schema 3: der Absatz, wie er vorher in der Excel steht ("Excel hat")
     zweitmeinung: dict[str, Any] = field(default_factory=dict)   # Schema 3: optionale KI-Zweitmeinung (nur Hinweis/Bremse)
+    bereich: str = ""                  # Schema 4: "" = in der CDE | "ausserhalb" = gehoert nicht in die CDE (kein offener Punkt)
+    stuecke: list[list[str]] = field(default_factory=list)   # Schema 4: Ergebnis der Zielzelle [[format, text], ...] (Anzeige)
+    grund_einfach: str = ""            # Schema 4: Grund/Status in einem Satz, einfaches Deutsch (Dashboard)
 
     def zu_dict(self) -> dict[str, Any]:
         from dataclasses import asdict

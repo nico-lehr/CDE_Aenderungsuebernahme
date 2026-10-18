@@ -544,7 +544,7 @@ def _klasse_rgb(r: float, g: float, b: float) -> str:
         return "gelb"
     if grad < 165:
         return "gruen"
-    if grad < 200:
+    if grad < 190:                  # Excel "Hellblau" (00B0F0, ~196 Grad) zaehlt als blau (ADR 0005, Nachtrag 18.10.)
         return "tuerkis"
     if grad < 255:
         return "blau"

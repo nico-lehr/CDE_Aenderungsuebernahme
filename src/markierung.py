@@ -64,8 +64,8 @@ def zustand_markiert(laeufe: Iterable[Lauf], angewendet: set[str], cfg: dict | N
 
     Entfaellt-Laeufe (d) einer angewendeten Aenderung bleiben stehen (Format alt), Neu-Laeufe (a) werden rot (Format neu),
     nicht angewendete a-Laeufe fehlen, nicht angewendete d-Laeufe bleiben normaler Text. Folgt auf ein Alt-Stueck direkt ein
-    Neu-Stueck (verschmolzene Ersetzung), steht dazwischen der konfigurierte Trenner (Vorgabe: ein Leerzeichen)."""
-    trenner = str(konfig(cfg).get("trenner", " "))
+    Neu-Stueck (verschmolzene Ersetzung), steht dazwischen der konfigurierte Trenner (Vorgabe: nichts, wie im PDF)."""
+    trenner = str(konfig(cfg).get("trenner", ""))
     sichtbar: list[Lauf] = []
     for l in laeufe:
         if l.art == "a" and l.aenderung not in angewendet:
@@ -179,7 +179,7 @@ def hat_markierung(stuecke: Iterable[Stueck]) -> bool:
 def _farbe(format_: str, cfg: dict | None) -> str | None:
     k = konfig(cfg)
     if format_ == ALT:
-        return str(k.get("alt_farbe", "FF0000FF"))
+        return str(k.get("alt_farbe", "FF00B0F0"))
     if format_ == NEU:
         return str(k.get("neu_farbe", "FFFF0000"))
     return None

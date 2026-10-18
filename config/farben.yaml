@@ -1,6 +1,12 @@
 # config/farben.yaml -- Wie Aenderungen im PDF erkannt werden.
-# Legende (Stand Auftrag): blau = neu hinzugekommen, rot oder durchgestrichen = entfaellt.
+# Legende (ADR 0006): "Linie entscheidet". modus:
+#   auto  = Word-Aenderungsverfolgung erkannt (Markup-Leiste oder farbige Unter- UND Durchstreichung) -> linie, sonst farbe (Standard)
+#   linie = durchgestrichen -> entfaellt (jede Farbe), farbig unterstrichen -> neu, Farbe ohne Linie -> normal (mit Hinweis)
+#   farbe = durchgestrichen -> entfaellt, rot oder blau ohne Strich -> neu (Nicos Regel fuer von Hand markierte PDFs, ADR 0005)
+#   alt   = blau -> neu, rot -> entfaellt (nur fuer die erfundenen Korpora von Auftrag 001/002; KORPUS.json nennt die Legende)
+# Die Zeilen blau/rot/durchgestrichen gelten nur im Modus "alt".
 legende:
+  modus: auto
   blau: neu          # neu | entfaellt | ignorieren
   rot: entfaellt
   durchgestrichen: entfaellt

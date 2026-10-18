@@ -31,8 +31,15 @@ def test_ersetzung_alt_direkt_vor_neu():
     assert stuecke("darf {-12-} {+7+} ms") == [(NORMAL, "darf "), (ALT, "12"), (NORMAL, " "), (NEU, "7"), (NORMAL, " ms")]
 
 
-def test_verschmolzene_ersetzung_bekommt_den_trenner():
-    assert stuecke("x {-alt-}|{+neu+} y") == [(NORMAL, "x "), (ALT, "alt"), (NORMAL, " "), (NEU, "neu"), (NORMAL, " y")]
+def test_verschmolzene_ersetzung_ohne_trenner_wie_im_pdf():
+    # Nico, 18.10.: Alt und Neu stehen genau so hintereinander wie im PDF (kein zusaetzliches Leerzeichen)
+    assert stuecke("x {-alt-}|{+neu+} y") == [(NORMAL, "x "), (ALT, "alt"), (NEU, "neu"), (NORMAL, " y")]
+
+
+def test_konfigurierter_trenner_wird_eingefuegt():
+    cfg = {"markierung": {"aenderungen": "farbe", "trenner": " "}}
+    st = [(s.format, s.text) for s in zustand_markiert(L("x {-alt-}|{+neu+} y"), {"D", "N"}, cfg)]
+    assert st == [(NORMAL, "x "), (ALT, "alt"), (NORMAL, " "), (NEU, "neu"), (NORMAL, " y")]
 
 
 def test_einfuegung_rot_loeschung_blau_durchgestrichen_stehen_lassen():
@@ -102,7 +109,7 @@ def test_schreiben_rundreise_behaelt_schrift_fuellung_und_formate(tmp_path):
     assert z2.fill.fgColor.rgb.endswith("EEEEEE")
     blocke = [b for b in z2.value]
     assert all(getattr(b.font, "rFont", "Arial") == "Arial" and getattr(b.font, "sz", 12) == 12 for b in blocke if hasattr(b, "font"))
-    assert blocke[1].font.strike and blocke[1].font.color.rgb.endswith("0000FF")
+    assert blocke[1].font.strike and blocke[1].font.color.rgb.endswith("00B0F0")
     assert blocke[3].font.color.rgb.endswith("FF0000") and not blocke[3].font.strike
 
 
@@ -112,7 +119,7 @@ def test_ganze_zelle_ein_format_wird_zellschrift_kein_rich_text(tmp_path):
     assert z.value == "Ganz neue Zeile" and z.font.color.rgb.endswith("FF0000") and z.font.name == "Arial"
     wb2, z2 = _zelle("B2")
     schreibe(z2, [Stueck(ALT, "Ganz weg")])
-    assert z2.font.strike and z2.font.color.rgb.endswith("0000FF")
+    assert z2.font.strike and z2.font.color.rgb.endswith("00B0F0")
     assert ansichten(z2)[:2] == ("Ganz weg", "")
 
 
@@ -145,6 +152,6 @@ def test_libreoffice_zeigt_rot_blau_und_strich(tmp_path):
     with pdfplumber.open(tmp_path / "m.pdf") as pdf:
         seite = pdf.pages[0]
         farben = {c["text"]: c["non_stroking_color"] for c in seite.chars if c["text"] in "altneu"}
-        assert tuple(farben["a"]) == (0.0, 0.0, 1.0)      # alt = blau
+        assert tuple(round(v, 2) for v in farben["a"]) == (0.0, 0.69, 0.94)   # alt = Hellblau 00B0F0
         assert tuple(farben["n"]) == (1.0, 0.0, 0.0)      # neu = rot
         assert len(seite.lines) + len(seite.rects) >= 1   # Durchstreichung

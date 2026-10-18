@@ -281,7 +281,7 @@ def test_muster_trenner_reihenfolge_und_farben_an_handgebauter_nachher_excel(tmp
     assert en["trenner"] == {" ": 1, "¶": 1, "kein": 1}
     assert en["trenner_ort"] == {"eigenes_stueck": 2, "kein": 1}
     assert en["reihenfolge"] == {"alt_vor_neu": 2, "neu_vor_alt": 1}
-    assert en["stueck_farben"]["alt"] == {"#0000ff": 6} and en["stueck_farben"]["neu"] == {"#ff0000": 3}
+    assert en["stueck_farben"]["alt"] == {"#00b0f0": 6} and en["stueck_farben"]["neu"] == {"#ff0000": 3}
     assert en["strich_anteil"]["blau"] == 1.0 and en["strich_anteil"]["rot"] == 0.0
     assert en["farbe_strich"]["blau|strich"] == 6 and en["farbe_strich"]["rot|-"] == 3
     assert en["geaenderte_rollen"] == {"section": 1, "titel": 1, "inhalt": 3, "andere": 1}
@@ -289,7 +289,7 @@ def test_muster_trenner_reihenfolge_und_farben_an_handgebauter_nachher_excel(tmp
     assert en["zellen"]["alt_ansicht_stimmt"] == {"ja": 4, "nur_leerraum": 2}     # C2 und C3: der Trenner zwischen neu und alt ist zusaetzlicher Leerraum
     g = en["gestrichene_zeilen"]
     assert g["anzahl"] == 1 and g["alle_durchgestrichen"] == 1 and g["inhalt_noch_da"] == 1
-    assert g["zellfarben"] == {"#0000ff": 3}
+    assert g["zellfarben"] == {"#00b0f0": 3}
     assert en["zeilen"]["gestrichen_markiert"] == 1 and en["zeilen"]["entfernt"] == 0
     assert en["masse"]["zeilenhoehe_geaendert_ja"] is False and en["masse"]["spaltenbreite_geaendert_ja"] is False
 

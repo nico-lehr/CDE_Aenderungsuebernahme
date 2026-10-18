@@ -17,3 +17,12 @@ def _markierung_aus(request, monkeypatch):
     if request.node.get_closest_marker("markierung_an") is None:
         monkeypatch.setitem(config.lade("zuordnung")["markierung"], "aenderungen", "keine")
     yield
+
+
+@pytest.fixture(autouse=True)
+def _legende_alt(request, monkeypatch):
+    """Die frueheren Tests und Korpora nutzen die alte Legende (blau = neu, rot = entfaellt). Tests mit
+    @pytest.mark.legende_neu laufen mit dem Standard aus config/farben.yaml (ADR 0006: Linie entscheidet)."""
+    if request.node.get_closest_marker("legende_neu") is None:
+        monkeypatch.setitem(config.lade("farben")["legende"], "modus", "alt")
+    yield

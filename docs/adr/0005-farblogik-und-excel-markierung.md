@@ -30,4 +30,15 @@ rote Schrift ohne Strich = neu, sonst normal.
 - Die frühere Entscheidung „gestrichene Section ⇒ Zeile löschen“ ist ersetzt (nur noch Option `zeile_entfernen`).
 - Generator, Messung (Format-Treue je Lauf), Gegenprobe, Excel-Modell und Dashboard müssen mit markierten Zellen umgehen (Auftrag 002b, Etappe 2a/2b).
 - Alle älteren Tests laufen mit `markierung.aenderungen: keine` (conftest-Weiche); Tests mit `@pytest.mark.markierung_an` prüfen den neuen Standard.
-- Die echte Farbwahl (Hex), der Trenner und die Darstellung neuer/gestrichener Zeilen in der CDE werden vom Steckbrief bestätigt; bis dahin gelten die Vorgaben in `config/zuordnung.yaml`.
+
+## Nachtrag 18.10.2026 – bestätigt an Nicos echten Beispielen (Auftrag 003)
+Zwei echte Paare (PDF + fertige CDE von Hand) wurden in der Sitzung nur gemessen, nie gespeichert. Ergebnis (nur Formen, keine Inhalte):
+- **Farben in der CDE:** alt = `FF00B0F0` (Excel-Standardfarbe „Hellblau“) **+ durchgestrichen**, neu = `FFFF0000`. Keine Unterstreichung nötig (beim Kopieren aus Word
+  mitgekommene Unterstreichung ist Zufall). In einem Beispiel passen 46 geänderte Absätze genau zu dieser Regel.
+- **Kein Trenner:** Die Zelle zeigt den PDF-Absatz „inline“: Alt und Neu stehen genau so hintereinander wie im PDF (Reihenfolge und Leerzeichen aus dem PDF),
+  `markierung.trenner: ""` (Nico, 18.10.: „Wie im PDF“). Das ersetzt „ein Leerzeichen“ oben.
+- **Grundschrift** (z. B. fett) steckt in jedem Lauf; **Markierungen früherer Runden** (andere Farben, z. B. dunkelblau/dunkelrot) bleiben unangetastet und zählen beim
+  Lesen als normaler Text, außer sie sind durchgestrichen (dann alt).
+- **Ganz gestrichener Absatz/Listenpunkt:** Zeile bleibt, Text hellblau durchgestrichen (Nico, 18.10.); Nummern-Änderungen der Folgepunkte wie im PDF markiert.
+- **Excel weicht im Absatz anderswo vom PDF ab:** fertiger Vorschlag zum Abhaken, nie automatisch (Nico, 18.10.; Regel 27).
+- Das PDF-Lesen dazu (Linie entscheidet, Word-Markup-Leiste) steht in ADR 0006, das verlustfreie Schreiben in ADR 0007.

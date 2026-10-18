@@ -16,8 +16,19 @@ def _aenderung() -> Aenderung:
 
 
 def test_schema_version_und_gelesene_versionen():
-    assert SCHEMA_VERSION == 3          # Schema 3 (ADR 0004): Gegenprobe; neue Felder nur mit Standardwert
-    assert 1 in GELESENE_SCHEMAS and SCHEMA_VERSION in GELESENE_SCHEMAS
+    assert SCHEMA_VERSION == 4          # Schema 4 (ADR 0006/0007): bereich/stuecke/grund_einfach; neue Felder nur mit Standardwert
+    assert 1 in GELESENE_SCHEMAS and 3 in GELESENE_SCHEMAS and SCHEMA_VERSION in GELESENE_SCHEMAS
+
+
+def test_schema4_felder_haben_standardwerte_und_schema3_bleibt_lesbar():
+    from src.protokoll import aenderung_aus_dict
+    d = _aenderung().zu_dict()
+    for k in ("bereich", "stuecke", "grund_einfach"):
+        d.pop(k)
+    a = aenderung_aus_dict(d)
+    assert a.bereich == "" and a.stuecke == [] and a.grund_einfach == ""
+    a.stuecke = [["normal", "Die Pumpe "], ["alt", "alt"], ["neu", "neu"]]
+    assert aenderung_aus_dict(a.zu_dict()).stuecke == a.stuecke
 
 
 def test_schema1_aenderung_ohne_neue_felder_wird_gelesen():
