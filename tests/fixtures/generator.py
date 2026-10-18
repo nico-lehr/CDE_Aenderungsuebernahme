@@ -47,6 +47,27 @@ EX_TEST_SEEDS = (1001, 1030)   # frueherer Testkorpus, ab v2 offen als Entwicklu
 TEST_SEED_MIN = 2000        # reservierter, ungesehener Testkorpus "test": nur Seeds >= 2000
 KORPORA = ("entwicklung", "ex_test", "test")
 ERZEUGER = ("writer", "libreoffice")
+# Generator v3 (18.10.2026, ADR 0006): Word-PDF mit Aenderungsverfolgung + CDE-Register, eigenes Modul word_markup.py
+KORPORA_V3 = ("nachbau_word",)          # nur Seeds < 1000 (Regel 11); Standard-Seeds 301-360
+ALLE_KORPORA = KORPORA + KORPORA_V3
+PROFILE_V3 = ("word_markup",)
+# Wie das Tool einen Korpus lesen und schreiben soll (KORPUS.json; fehlt die Angabe, gilt der Standard der Korpora v1/v2)
+KORPUS_STANDARD = {"legende": "alt", "nachher_format": "sauber"}
+KORPUS_EINSTELLUNGEN = {"nachbau_word": {"legende": "auto", "nachher_format": "markiert"}}
+
+
+def version_fuer(korpus: str) -> str:
+    """Generator-Version eines Korpus: nachbau_word = "3", alle anderen = GENERATOR_VERSION ("2")."""
+    return "3" if korpus in KORPORA_V3 else GENERATOR_VERSION
+
+
+def korpus_einstellungen(korpus: str) -> dict[str, str]:
+    """Legende und nachher-Format eines Korpus (fuer KORPUS.json und die Messung)."""
+    return dict(KORPUS_EINSTELLUNGEN.get(korpus, KORPUS_STANDARD))
+
+
+def _ist_v3(profil: str | dict) -> bool:
+    return (profil in PROFILE_V3) if isinstance(profil, str) else profil.get("basis") in PROFILE_V3
 FORMAT = 1
 TYPEN = ("text_ersetzt", "text_eingefuegt", "text_geloescht", "absatz_neu", "absatz_geloescht",
          "section_neu", "section_geloescht")
@@ -1087,10 +1108,11 @@ def _eintraege(ctx: Kontext, pos: _Pos) -> list[dict[str, Any]]:
 # ====================================================================== Hauptfunktion
 def pruefe_korpus_seed(korpus: str, seed: int) -> None:
     """Regel 11: Korpora und Seed-Bereiche bleiben getrennt.
-    entwicklung: Seeds < 1000 · ex_test: frueherer Testkorpus (das Skript erlaubt nur 1001-1030) · test: nur Seeds >= 2000."""
-    if korpus not in KORPORA:
-        raise ValueError(f"korpus muss einer von {', '.join(KORPORA)} sein")
-    if korpus == "entwicklung" and seed >= SEED_GRENZE:
+    entwicklung und nachbau_word (Generator v3): Seeds < 1000 · ex_test: frueherer Testkorpus (das Skript erlaubt nur 1001-1030) ·
+    test: nur Seeds >= 2000."""
+    if korpus not in ALLE_KORPORA:
+        raise ValueError(f"korpus muss einer von {', '.join(ALLE_KORPORA)} sein")
+    if korpus in ("entwicklung", *KORPORA_V3) and seed >= SEED_GRENZE:
         raise ValueError(f"Entwicklungs-Seeds muessen unter {SEED_GRENZE} liegen (Regel 11)")
     if korpus == "test" and seed < TEST_SEED_MIN:
         raise ValueError(f"Test-Seeds muessen ab {TEST_SEED_MIN} liegen (Regel 11)")
@@ -1106,9 +1128,21 @@ def erzeuge_paar(seed: int, profil: str | dict = "standard", ziel: Path | str = 
     erzeuger "writer" (eigener PDF-Schreiber) oder "libreoffice" (Flat-ODT -> soffice; fehlt soffice: LibreOfficeFehlt).
              Excel-Dateien und Wahrheit sind fuer beide gleich (aus dem Modell), nur das PDF entsteht anders.
     version  "2" (Standard) oder "1" (nur um archivierte v1-Paare nachzubauen, z. B. Red-Team R3).
+    Generator v3: profil="word_markup" (oder {"basis": "word_markup", "name": ..., "zeilen": (min, max), ...}) baut ein Word-PDF mit
+             Aenderungsverfolgung und eine CDE-Registerliste (tests/fixtures/word_markup.py); nur im Korpus "nachbau_word".
     Bestehende Paar-Ordner werden nie ueberschrieben (FileExistsError, Regel 29).
     """
     pruefe_korpus_seed(korpus, seed)
+    if _ist_v3(profil) or korpus in KORPORA_V3:
+        if not (_ist_v3(profil) and korpus in KORPORA_V3):
+            raise ValueError("Profil word_markup gehoert zum Korpus nachbau_word (Generator v3) und umgekehrt")
+        if erzeuger != "writer":
+            raise ValueError("Generator v3 (word_markup) zeichnet das PDF selbst: nur erzeuger='writer'")
+        from . import word_markup
+        if isinstance(profil, str):
+            return word_markup.erzeuge(seed, ziel, korpus)
+        cfg = {k: v for k, v in profil.items() if k not in ("basis", "name")}
+        return word_markup.erzeuge(seed, ziel, korpus, cfg, str(profil.get("name", "word_markup")))
     if erzeuger not in ERZEUGER:
         raise ValueError(f"erzeuger muss einer von {', '.join(ERZEUGER)} sein")
     if version not in VERSIONEN:

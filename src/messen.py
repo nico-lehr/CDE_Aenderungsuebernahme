@@ -1,5 +1,6 @@
-"""Messwerkzeug: python -m src.cli messen --korpus entwicklung|ex_test|test [--paar NAME] [--ordner PFAD] [--mit-vorschlaegen]
-                                         [--vergleich [--gegen NNN]]
+"""Messwerkzeug: python -m src.cli messen --korpus entwicklung|ex_test|test|nachbau_word [--paar NAME] [--ordner PFAD]
+                                         [--mit-vorschlaegen] [--vergleich [--gegen NNN]] [--legende L] [--nachher-format F]
+              Rueckbau-Messung (nur PDF + nachher.xlsx):  ... messen --nachher [--ordner PFAD] [--paar NAME]
 
 Ein Paar = aenderungen.pdf + vorher.xlsx + nachher.xlsx (Format: docs/paar_format.md).
 Das Tool laeuft auf PDF + vorher; das Ergebnis wird mit "nachher" verglichen.
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import contextlib
 import copy
 import datetime
 import hashlib
@@ -32,11 +34,12 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Callable
 
 from openpyxl import load_workbook
-from openpyxl.cell.rich_text import CellRichText
+from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 from openpyxl.utils.cell import coordinate_from_string
 
@@ -51,7 +54,7 @@ from .protokoll import bilanz
 BERICHT_FORMAT = 1
 FEHLERARTEN = ("pdf_falsch_gelesen", "layout_falsch", "zuordnung_falsch", "plan_falsch", "bilanz_kaputt", "unklar")
 STILLE_ARTEN = ("uebernommen_aber_falsch", "kollateral", "bilanz", "nachkontrolle_ok_aber_falsch",
-                "keine_wirkung", "luecke_nicht_gemeldet", "regel27_verstoss", "datentyp_gewechselt")
+                "keine_wirkung", "luecke_nicht_gemeldet", "regel27_verstoss", "datentyp_gewechselt", "format_falsch")
 STRUKTUR_ARTEN = ("blatt", "sichtbarkeit", "zeile_versteckt", "spalte_versteckt", "verbunden", "validierung",
                   "zahlenformat", "schrift", "datentyp", "bedingte_formatierung", "hyperlink", "kommentar",
                   "benannter_bereich", "autofilter", "tabelle", "fixierung", "spaltenbreite", "zeilenhoehe")
@@ -76,7 +79,16 @@ RESTARBEIT_TEILE = ("pruefen", "nicht_uebernommen", "leere_zellen_neue_zeilen", 
 RESTARBEIT_RICHTWERT = 12        # docs/ziel_v2.md: berichten, Richtwert hoechstens 12 je 100 Aenderungen
 ABLEITBAR_ZIEL = 0.85            # docs/ziel_v2.md (Etappe 2): Abdeckung ableitbarer Zellen mindestens 85 % (bis dahin nur Hinweis)
 ERZEUGER_KENNUNGEN = ("writer", "libreoffice")
-KORPORA = ("entwicklung", "ex_test", "test")
+KORPORA = ("entwicklung", "ex_test", "test", "nachbau_word")
+# Legende und nachher-Format je Korpus (KORPUS.json, Auftrag 003): fehlt die Angabe, gilt der Standard der Korpora v1/v2
+LEGENDEN = ("alt", "auto", "linie", "farbe")
+NACHHER_FORMATE = ("sauber", "markiert")
+KORPUS_STANDARD = {"legende": "alt", "nachher_format": "sauber"}
+KORPUS_VORGABE = {"entwicklung": KORPUS_STANDARD, "ex_test": KORPUS_STANDARD, "test": KORPUS_STANDARD,
+                  "nachbau_word": {"legende": "auto", "nachher_format": "markiert"}}
+# Rueckbau-Messung (messen --nachher): Kategorien je Zelle
+RUECKBAU_KATEGORIEN = ("gleich", "gleich_bis_leerraum", "tool_fehlt_vorschlag_offen", "tool_fehlt_gar_nicht", "tool_extra",
+                       "verschieden")
 RESTARBEIT_FORMEL = ("Restarbeit je 100 Änderungen = 100 × (Änderungen „prüfen“ + Änderungen „nicht übernommen“ + leere Zellen in "
                      "neuen Zeilen, die laut nachher gefüllt sein müssten + Wörter in gemeldeten Lücken ÷ 10) ÷ Änderungen. "
                      "Sie schätzt, wie viel Handarbeit nach dem Lauf bleibt (10 Lücken-Wörter ≈ eine Änderung).")
@@ -87,6 +99,7 @@ _PDF_BLIND = _LEER_SPEZIAL | frozenset("­​‌‍⁠﻿")     # Zeichen, die e
 PLAUSI_BILD_ANTEIL = 0.05  # ein Bild zaehlt als Hinweis, wenn es mindestens so viel der Seitenflaeche deckt (kein Logo)
 ZEILEN_AEHNLICH = 0.6       # ab hier gelten zwei Zeilen als "dieselbe Zeile, veraendert"
 BLOCK_MAX = 4000            # groessere Austausch-Bloecke werden nur nach Position gepaart
+EXCEL_MAX_ZEILE = 1048576   # letzte Zeile eines Excel-Blatts (Bereiche bis dorthin wachsen beim Einfuegen nicht weiter)
 DATEIEN = ("aenderungen.pdf", "vorher.xlsx", "nachher.xlsx")
 
 _UNSICHTBAR = dict.fromkeys(map(ord, "­​‌‍﻿"), None)
@@ -104,8 +117,118 @@ def _k(text: str) -> str:
 def _s(text: str) -> str:
     """STRENGE Vergleichsform einer Zelle (RT-135): jedes Zeichen zaehlt -- doppelte und geschuetzte Leerzeichen, weiche und
     unsichtbare Zeichen, Ligaturen, Absatzgrenzen. Nur die Zeilenenden werden vereinheitlicht. Eine Zelle ohne sichtbaren
-    Inhalt gilt als leer. `textutil.norm` ist nur fuer Wort-Vergleiche da (Zuordnung Aenderung <-> Zelle)."""
-    return text.replace("\r\n", "\n").replace("\r", "\n") if _k(text) else ""
+    Inhalt gilt als leer. `textutil.norm` ist nur fuer Wort-Vergleiche da (Zuordnung Aenderung <-> Zelle).
+    Markierte Zelle (`_FText`, nur bei nachher_format "markiert"): die Formatklassen je Zeichen gehoeren zur Vergleichsform --
+    gleicher Text mit anderer Markierung ist eine andere Zelle."""
+    t = text.replace("\r\n", "\n").replace("\r", "\n") if _k(text) else ""
+    kl = getattr(text, "klassen", None)
+    return t + "\x00" + _lauflaengen(kl) if t and kl else t
+
+
+def _s_text(text: Any) -> str:
+    """Wie `_s`, aber nur der Text (ohne Formatklassen) -- fuer den Vergleich mit Plan-Werten des Tools."""
+    t = text if isinstance(text, str) else _zelltext(text)
+    return str(t).replace("\r\n", "\n").replace("\r", "\n") if _k(str(t)) else ""
+
+
+def _ohne_format(key: str) -> str:
+    """Vergleichsform ohne angehaengte Formatklassen."""
+    return key.split("\x00", 1)[0]
+
+
+class _FText(str):
+    """Zelltext mit Formatklasse je Zeichen (nur nachher_format "markiert", ADR 0005): '-' normal, 'a' alt (durchgestrichen,
+    jede Farbe), 'n' neu (Schrift in der Neu-Farbe der Markierung, ohne Strich). Nur fuer Zellen mit mindestens einem markierten
+    Zeichen; der Text selbst bleibt ein gewoehnlicher str (Woerter, Laenge, Vergleich ohne Format)."""
+    klassen: str
+
+    def __new__(cls, text: str, klassen: str) -> "_FText":
+        o = super().__new__(cls, text)
+        o.klassen = klassen
+        return o
+
+
+def _lauflaengen(klassen: str) -> str:
+    """'--aan' -> '-2a2n1' (kurz, damit die Zeilen-Aehnlichkeit vom Text bestimmt bleibt)."""
+    return "".join(f"{k}{sum(1 for _ in g)}" for k, g in groupby(klassen))
+
+
+def _klassen(text: Any) -> str:
+    """Formatklassen eines Zelltexts ('-' je Zeichen, wenn er keine Markierung traegt)."""
+    kl = getattr(text, "klassen", None)
+    return kl if kl else "-" * len(str(text))
+
+
+def _ansicht(text: Any, welche: str) -> str:
+    """'alt' = normal + alt (Original), 'neu' = normal + neu (Stand nach der Aenderung); ohne Markierung der Text selbst."""
+    kl = getattr(text, "klassen", None)
+    if not kl:
+        return str(text)
+    weg = "n" if welche == "alt" else "a"
+    return "".join(c for c, k in zip(text, kl) if k != weg)
+
+
+def _stuecke(text: Any) -> list[tuple[str, str]]:
+    """[(normal|alt|neu, Text)] eines Zelltexts (fuer die Formen in Schablonen)."""
+    namen = {"-": "normal", "a": "alt", "n": "neu"}
+    out: list[tuple[str, str]] = []
+    for c, k in zip(str(text), _klassen(text)):
+        if out and out[-1][0] == namen[k]:
+            out[-1] = (out[-1][0], out[-1][1] + c)
+        else:
+            out.append((namen[k], c))
+    return out
+
+
+def _gleich_bis_leerraum(ist: Any, soll: Any) -> bool:
+    """Gleiche sichtbare Zeichen mit gleicher Formatklasse; nur Leerraum (Anzahl, Art, Zeilenumbruch) darf abweichen."""
+    def form(t: Any) -> list[tuple[str, str]]:
+        return [(c, k) for c, k in zip(unicodedata.normalize("NFC", str(t)), _klassen(t)) if not c.isspace()
+                and c not in "­​‌‍﻿"]
+    return form(ist) == form(soll)
+
+
+def _farb_rgb(farbe: Any) -> str | None:
+    if farbe is None or getattr(farbe, "type", "rgb") != "rgb":
+        return None
+    rgb = getattr(farbe, "rgb", None)
+    return rgb[-6:].upper() if isinstance(rgb, str) and len(rgb) in (6, 8) else None
+
+
+def _markierungsfarben() -> tuple[str, str]:
+    """(alt, neu) der Markierung dieser Runde laut config/zuordnung.yaml (ADR 0005: FF00B0F0 + Strich, FFFF0000)."""
+    m = config.lade("zuordnung").get("markierung", {}) or {}
+    return str(m.get("alt_farbe", "FF00B0F0"))[-6:].upper(), str(m.get("neu_farbe", "FFFF0000"))[-6:].upper()
+
+
+def _formatklasse(schrift: Any, neu_rgb: str) -> str:
+    """Formatklasse einer Schrift fuer die Format-Treue: durchgestrichen = alt (jede Farbe), Neu-Farbe ohne Strich = neu, sonst
+    normal (auch Markierungen frueherer Runden in anderen Farben)."""
+    if schrift is None:
+        return "-"
+    if getattr(schrift, "strike", None):
+        return "a"
+    return "n" if _farb_rgb(getattr(schrift, "color", None)) == neu_rgb else "-"
+
+
+def _zelltext_formatiert(zelle: Any, neu_rgb: str) -> str:
+    """Zelltext mit Formatklassen (`_FText`), wenn ein Zeichen markiert ist; sonst wie `_zelltext`."""
+    v = zelle.value
+    if v is None:
+        return ""
+    if isinstance(v, CellRichText):
+        teile = [(b.text, _formatklasse(b.font, neu_rgb)) if isinstance(b, TextBlock) else (str(b), _formatklasse(zelle.font, neu_rgb))
+                 for b in v]
+    else:
+        teile = [(_zelltext(v), _formatklasse(zelle.font, neu_rgb))]
+    if all(k == "-" for _t, k in teile):
+        return "".join(t for t, _k in teile)
+    text, kl = [], []
+    for t, k in teile:
+        t = t.replace("\r\n", "\n").replace("\r", "\n")
+        text.append(t)
+        kl.append(k * len(t))
+    return _FText("".join(text), "".join(kl))
 
 
 def _zelltext(v: Any) -> str:
@@ -140,9 +263,11 @@ def _typ_von(zelle: Any) -> str:
     return "text"
 
 
-def _lese_excel_mit_typen(pfad: Path) -> tuple[list[list[list[str]]], list[list[list[str]]]]:
-    """Alle Blaetter als Zeilen: (Zelltexte, Datentypen) -- beide gleich geformt. Formeln stehen als Text."""
+def _lese_excel_mit_typen(pfad: Path, formate: bool = False) -> tuple[list[list[list[str]]], list[list[list[str]]]]:
+    """Alle Blaetter als Zeilen: (Zelltexte, Datentypen) -- beide gleich geformt. Formeln stehen als Text.
+    formate=True (nachher_format "markiert"): markierte Zellen kommen als `_FText` mit Formatklasse je Zeichen."""
     wb = load_workbook(str(pfad), rich_text=True)
+    neu_rgb = _markierungsfarben()[1]
     try:
         texte: list[list[list[str]]] = []
         typen: list[list[list[str]]] = []
@@ -150,7 +275,7 @@ def _lese_excel_mit_typen(pfad: Path) -> tuple[list[list[list[str]]], list[list[
             t_zeilen: list[list[str]] = []
             y_zeilen: list[list[str]] = []
             for row in ws.iter_rows():
-                t_zeilen.append([_zelltext(c.value) for c in row])
+                t_zeilen.append([_zelltext_formatiert(c, neu_rgb) if formate else _zelltext(c.value) for c in row])
                 y_zeilen.append([_typ_von(c) for c in row])
             texte.append(t_zeilen)
             typen.append(y_zeilen)
@@ -159,9 +284,14 @@ def _lese_excel_mit_typen(pfad: Path) -> tuple[list[list[list[str]]], list[list[
         wb.close()
 
 
-def _lese_excel(pfad: Path) -> list[list[list[str]]]:
+def _lese_excel(pfad: Path, formate: bool = False) -> list[list[list[str]]]:
     """Alle Blaetter als Zeilen mit Zelltexten (Formeln als Text)."""
-    return _lese_excel_mit_typen(pfad)[0]
+    return _lese_excel_mit_typen(pfad, formate)[0]
+
+
+def _mit_format(blaetter: list[list[list[str]]]) -> list[list[list[tuple[str, str | None]]]]:
+    """Vergleichbare Form einer gelesenen Excel samt Formatklassen (Idempotenz im Modus "markiert")."""
+    return [[[(str(c), getattr(c, "klassen", None)) for c in z] for z in b] for b in blaetter]
 
 
 def _blattnamen(pfad: Path) -> list[str]:
@@ -487,8 +617,11 @@ class _Auswertung:
     def __init__(self, v_blaetter, n_blaetter, e_blaetter, e_alle_blaetter, namen: list[str], aenderungen, plan,
                  pdf_analyse, bil_auto, bil_plan, idempotent: bool | None, luecken_erwartet: list[dict] | None,
                  vor_status: dict[str, str] | None = None, pdf_zeichen: set[str] | None = None,
-                 typen: tuple[list, list] | None = None) -> None:
+                 typen: tuple[list, list] | None = None, markiert: bool = False) -> None:
         self.namen = namen
+        # nachher_format "markiert": die Zellen tragen Formatklassen (alt/neu/normal); Woerter zaehlen je Ansicht (ADR 0005)
+        self.markiert = markiert
+        self._polster = [self._polster_muster(b) for b in v_blaetter]
         # Datentypen (nachher, Ergebnis) je Blatt/Zeile/Spalte; None = nicht gemessen (Tests, die nur Texte liefern)
         self.TN, self.TE = typen if typen is not None else (None, None)
         self.typ_falsch_ist: set[Any] = set()     # Ist-Schluessel verwalteter Zellen, deren Datentyp vom Soll abweicht
@@ -633,8 +766,9 @@ class _Auswertung:
                                        "ist": ist, "erreicht": erreicht, "art": art, "typ_falsch": typ_falsch, "ist_key": key,
                                        "vorher": v, "verwaltet": self._verwaltet(bi, c),
                                        "klasse": klasse, "blind": ("z", z, c) in s.blind,
-                                       "klasse2": self._klasse2(bi, c, art, klasse, v, inhalt, self._vorher_keys(bi, z))})
-                self.soll_woerter[key] = _wort_diff(v, inhalt)
+                                       "klasse2": self._klasse2(bi, c, art, klasse, v, inhalt, self._vorher_keys(bi, z)),
+                                       **self._format_vergleich(ist if ist_da else None, inhalt)})
+                self.soll_woerter[key] = _wort_diff(_ansicht(v, "neu"), _ansicht(inhalt, "neu"))
             for si, (anker, zellen, keys) in enumerate(s.neue):
                 for c, k in enumerate(keys, 1):
                     if not k:
@@ -661,8 +795,9 @@ class _Auswertung:
                                            "vorher": "", "verwaltet": self._verwaltet(bi, c),
                                            "klasse": klasse, "si": si,
                                            "blind": ("n", si, c) in s.blind,
-                                           "klasse2": self._klasse2(bi, c, "neu", klasse, "", zellen[c - 1], keys)})
-                    self.soll_woerter[key] = ([], _wort_liste(zellen[c - 1]))
+                                           "klasse2": self._klasse2(bi, c, "neu", klasse, "", zellen[c - 1], keys),
+                                           **self._format_vergleich(ist if (ii is not None and ort[si]) else None, zellen[c - 1])})
+                    self.soll_woerter[key] = ([], _wort_liste(_ansicht(zellen[c - 1], "neu")))
 
         # Ist-Aenderungen (Auto): jede veraenderte Zelle bzw. neue Zeile
         self.ist = self._ist_liste(self.I)
@@ -672,13 +807,24 @@ class _Auswertung:
         self.ist_woerter: dict[Any, tuple[Counter, Counter]] = {}
         for it in self.ist:
             if it["art"] == "neu":
-                self.ist_woerter[it["key"]] = (Counter(), Counter(_wort_liste(it["inhalt"])))
+                self.ist_woerter[it["key"]] = (Counter(), Counter(_wort_liste(_ansicht(it["inhalt"], "neu"))))
             else:
-                entf, dazu = _wort_diff(self._vorher(it["bi"], it["zeile"], it["spalte"]), it["inhalt"])
+                entf, dazu = _wort_diff(_ansicht(self._vorher(it["bi"], it["zeile"], it["spalte"]), "neu"),
+                                        _ansicht(it["inhalt"], "neu"))
                 self.ist_woerter[it["key"]] = (Counter(entf), Counter(dazu))
 
+    def _format_vergleich(self, ist: Any, soll: Any) -> dict[str, Any]:
+        """Format-Treue einer Soll-Zelle (nur "markiert"): stimmt der Text, wird Zeichen fuer Zeichen die Formatklasse
+        (normal/alt/neu) verglichen. -> text_gleich, format_gleich, zeichen, zeichen_gleich."""
+        if not self.markiert or ist is None or not _s_text(soll) or _s_text(ist) != _s_text(soll):
+            return {"text_gleich": False, "format_gleich": False, "zeichen": 0, "zeichen_gleich": 0}
+        a, b = _klassen(ist), _klassen(soll)
+        gleich = sum(1 for x, y in zip(a, b) if x == y)
+        return {"text_gleich": True, "format_gleich": a == b, "zeichen": len(b), "zeichen_gleich": gleich}
+
     def _ist_liste(self, diffs: list[Diff]) -> list[dict[str, Any]]:
-        """Alle Zellen, die im Ergebnis anders sind als vorher, mit der Angabe, ob sie laut nachher richtig sind."""
+        """Alle Zellen, die im Ergebnis anders sind als vorher, mit der Angabe, ob sie laut nachher richtig sind
+        (`richtig`: Text und -- bei "markiert" -- Formatklassen; `text_richtig`: nur der Text)."""
         out: list[dict[str, Any]] = []
         for bi, d in enumerate(diffs):
             s = self.S[bi]
@@ -686,7 +832,8 @@ class _Auswertung:
                 soll = s.zellen.get((z, c))
                 richtig = soll is not None and _s(soll) == _s(inhalt)
                 out.append({"key": ("z", bi, z, c), "bi": bi, "zeile": z, "spalte": c, "inhalt": inhalt,
-                            "richtig": richtig, "art": "weg" if z in d.weg else "zelle"})
+                            "richtig": richtig, "text_richtig": soll is not None and _s_text(soll) == _s_text(inhalt),
+                            "art": "weg" if z in d.weg else "zelle"})
             paar, ort = _neu_abgleich(s.neue, d.neue, self._paar_spalten(bi))
             rev = {ii: si for si, ii in paar.items()}
             for ii, (anker, zellen, keys) in enumerate(d.neue):
@@ -694,9 +841,11 @@ class _Auswertung:
                 for c, k in enumerate(keys, 1):
                     if not k:
                         continue
-                    richtig = si is not None and ort[si] and c - 1 < len(s.neue[si][2]) and s.neue[si][2][c - 1] == k
+                    passt = si is not None and ort[si] and c - 1 < len(s.neue[si][2])
+                    richtig = passt and s.neue[si][2][c - 1] == k
                     out.append({"key": ("n", bi, anker, keys, c), "bi": bi, "zeile": anker, "spalte": c,
-                                "inhalt": zellen[c - 1], "richtig": richtig, "art": "neu", "ist_index": ii})
+                                "inhalt": zellen[c - 1], "richtig": richtig, "art": "neu", "ist_index": ii,
+                                "text_richtig": passt and _ohne_format(s.neue[si][2][c - 1]) == _ohne_format(k)})
         return out
 
     # ------------------------------------------------------------------ Fehler eintragen
@@ -786,34 +935,64 @@ class _Auswertung:
         spalten = {column_index_from_string(lay[k]) for k in ("section_spalte", "titel_spalte", "inhalt_spalte") if lay.get(k)}
         return spalte in spalten
 
-    def _blind(self, soll: str, vorher: str) -> str:
+    _POLSTER = re.compile(r"^(?:\d{1,3}|[A-Za-z]{1,3})[.)]([\t  ]* [\t  ]*)")
+
+    @classmethod
+    def _polster_muster(cls, blatt: list[list[str]]) -> set[str]:
+        """Polster zwischen Listennummer und Text (mit geschuetzten Leerzeichen), die in vorher am Zellanfang vorkommen
+        (z. B. "a." + 15 geschuetzte Leerzeichen + " "). Ein Mensch uebernimmt sie fuer eine neue Zeile von der Nachbarzeile;
+        sie sind also aus der Excel ableitbar, auch wenn das PDF sie nicht traegt."""
+        out: set[str] = set()
+        for zeile in blatt:
+            for c in zeile:
+                m = cls._POLSTER.match(str(c)) if c else None
+                if m:
+                    out.add(m.group(1))
+        return out
+
+    def _blind(self, soll: str, vorher: str, polster: set[str] | None = None) -> str:
         """Das Soll so, wie ein PDF-Leser es hoechstens sehen kann: geschuetzte Leerzeichen und unsichtbare Zeichen, die im
         PDF GAR NICHT vorkommen, koennen in NEUEM Text nicht uebernommen werden (Text, der schon in `vorher` stand, bleibt).
-        Nur diese Richtung: steht so ein Zeichen im ERGEBNIS, aber nicht im Soll, bleibt es ein Fehler (RT-135)."""
+        Nur diese Richtung: steht so ein Zeichen im ERGEBNIS, aber nicht im Soll, bleibt es ein Fehler (RT-135).
+        Ausnahme: ein Listen-Polster am Zellanfang, das genau so schon in vorher vorkommt (`_polster_muster`), bleibt streng.
+        Formatklassen einer markierten Zelle bleiben erhalten."""
         if self.pdf_zeichen is None or not any(ch in _PDF_BLIND for ch in soll):
             return soll
         blind = {ch for ch in set(soll) if ch in _PDF_BLIND and ch not in self.pdf_zeichen}
         if not blind:
             return soll
-        out = []
-        for tag, _i1, _i2, j1, j2 in SequenceMatcher(None, vorher, soll, autojunk=False).get_opcodes():
-            stueck = soll[j1:j2]
-            if tag != "equal":
-                stueck = "".join((" " if ch in _LEER_SPEZIAL else "") if ch in blind else ch for ch in stueck)
-            out.append(stueck)
-        return "".join(out)
+        schutz = range(0)
+        m = self._POLSTER.match(str(soll))
+        if m and polster and m.group(1) in polster:
+            schutz = range(m.start(1), m.end(1))
+        kl = getattr(soll, "klassen", None)
+        text: list[str] = []
+        klassen: list[str] = []
+        for tag, _i1, _i2, j1, j2 in SequenceMatcher(None, str(vorher), str(soll), autojunk=False).get_opcodes():
+            for j in range(j1, j2):
+                ch = soll[j]
+                if tag != "equal" and ch in blind and j not in schutz:
+                    ch = " " if ch in _LEER_SPEZIAL else ""
+                if ch:
+                    text.append(ch)
+                    klassen.append(kl[j] if kl else "-")
+        neu = "".join(text)
+        if neu == str(soll):
+            return soll
+        return _FText(neu, "".join(klassen)) if kl else neu
 
     def _soll_pdf_blind(self, bi: int, s: "Diff") -> None:
+        polster = self._polster[bi] if bi < len(self._polster) else set()
         for (z, c), t in list(s.zellen.items()):
-            p = self._blind(t, self._vorher(bi, z, c))
-            if p != t:
+            p = self._blind(t, self._vorher(bi, z, c), polster)
+            if p is not t:
                 s.zellen[(z, c)] = p
                 s.blind.add(("z", z, c))
         for si, (anker, zellen, keys) in enumerate(list(s.neue)):
-            neu = tuple(self._blind(t, "") for t in zellen)
-            if neu != tuple(zellen):
+            neu = tuple(self._blind(t, "", polster) for t in zellen)
+            if any(a is not b for a, b in zip(zellen, neu)):
                 s.neue[si] = (anker, neu, tuple(_s(t) for t in neu))
-                s.blind.update(("n", si, c) for c, (a, b) in enumerate(zip(zellen, neu), 1) if a != b)
+                s.blind.update(("n", si, c) for c, (a, b) in enumerate(zip(zellen, neu), 1) if a is not b)
 
     def _klasse(self, bi: int, spalte: int, art: str, vorher: str, soll: str) -> str:
         """Einordnung einer Soll-Zelle (RT-142):
@@ -904,9 +1083,9 @@ class _Auswertung:
                 if _s(ist) != _s(self._erwartet(bi, op.zeile, op.spalte)):
                     return False
             elif op.art == "zeile_einfuegen":
-                gesucht = {c: _s(t) for c, t in op.zellen.items() if _s(t)}
+                gesucht = {c: _s_text(t) for c, t in op.zellen.items() if _s_text(t)}
                 treffer = [it for it in self.e_alle if it["art"] == "neu" and it["bi"] == bi and it["key"][3] and
-                           all(c - 1 < len(it["key"][3]) and it["key"][3][c - 1] == t for c, t in gesucht.items())]
+                           all(c - 1 < len(it["key"][3]) and _ohne_format(it["key"][3][c - 1]) == t for c, t in gesucht.items())]
                 if not treffer or not all(it["richtig"] for it in treffer):
                     return False
             else:                                   # Zeile loeschen/leeren: laut Soll muss die Zeile weg bzw. leer sein
@@ -919,7 +1098,25 @@ class _Auswertung:
     def _unerklaert(ist: str, soll: str, erlaubt: Counter) -> Counter:
         """Woerter, in denen sich `ist` und `soll` unterscheiden und die NICHT zu den erlaubten (offenen) Aenderungen gehoeren.
         Leer = die Zelle weicht nur um offene Aenderungen ab. Ein Unterschied ohne Wortunterschied (Leerraum, unsichtbare
-        Zeichen, Satzzeichen am Rand) ist nie "erklaert"."""
+        Zeichen, Satzzeichen am Rand) ist nie "erklaert".
+        Markierte Zellen: verglichen werden beide Ansichten (alt = normal + alt, neu = normal + neu) je fuer sich -- eine offene
+        Aenderung fehlt dann in der Neu-Ansicht als neues Wort und in der Alt-Ansicht gar nicht. Stimmen beide Ansichten und weicht
+        die Zelle trotzdem ab (Reihenfolge oder Markierung an gleichem Text), ist das nie erklaert."""
+        if _s(ist) == _s(soll):
+            return Counter()
+        if getattr(ist, "klassen", None) or getattr(soll, "klassen", None):
+            out: Counter = Counter()
+            for welche in ("neu", "alt"):
+                out.update(_Auswertung._unerklaert_text(_ansicht(ist, welche), _ansicht(soll, welche), erlaubt))
+            if not out and _s(_ansicht(ist, "neu")) == _s(_ansicht(soll, "neu")) \
+                    and _s(_ansicht(ist, "alt")) == _s(_ansicht(soll, "alt")):
+                out["\x00format"] += 1
+            return out
+        return _Auswertung._unerklaert_text(ist, soll, erlaubt)
+
+    @staticmethod
+    def _unerklaert_text(ist: str, soll: str, erlaubt: Counter) -> Counter:
+        """`_unerklaert` fuer Texte ohne Formatklassen."""
         if _s(ist) == _s(soll):
             return Counter()
         a, b = _TOKEN.findall(_s(ist)), _TOKEN.findall(_s(soll))      # Woerter UND Leerraum als eigene Stuecke
@@ -942,11 +1139,18 @@ class _Auswertung:
             rest -= woerter
         return out
 
+    @staticmethod
+    def _locker_gleich(a: Any, b: Any) -> bool:
+        """Lockerer Vergleich; markierte Zellen je Ansicht (eine andere Markierung ist nie nur "Textform")."""
+        if getattr(a, "klassen", None) or getattr(b, "klassen", None):
+            return all(_k(_ansicht(a, w)) == _k(_ansicht(b, w)) for w in ("alt", "neu"))
+        return _k(a) == _k(b)
+
     def _nur_textform_key(self, key: Any) -> bool:
         """Unterscheiden sich Ist und Soll NUR in Leerraum/unsichtbaren Zeichen/Absatzgrenzen (lockerer Vergleich waere gleich)?"""
         if key[0] == "z":
             _, bi, z, c = key
-            return _k(self._tatsaechlich(bi, z, c)) == _k(self._erwartet(bi, z, c))
+            return self._locker_gleich(self._tatsaechlich(bi, z, c), self._erwartet(bi, z, c))
         if key[0] == "n" and len(key) == 5:
             _, bi, _anker, _keys, c = key
             it = next((i for i in self.ist if i["key"] == key), None)
@@ -957,7 +1161,7 @@ class _Auswertung:
             if si is None:
                 return False
             soll = self.S[bi].neue[si][1]
-            return c - 1 < len(soll) and _k(it["inhalt"]) == _k(soll[c - 1])
+            return c - 1 < len(soll) and self._locker_gleich(it["inhalt"], soll[c - 1])
         return False
 
     def _wirkung_vorhanden(self, ae: Any, vorher: str, ergebnis: str, angewendet: list[str] | tuple[str, ...] = ()) -> bool:
@@ -967,7 +1171,7 @@ class _Auswertung:
         hinausgeht -- fuegt eine angewendete Nachbar-Aenderung zufaellig dasselbe Wort ein, ist das keine Wirkung der offenen.
         Bringt die offene Aenderung neue Woerter UND nimmt alte weg, muessen beide Seiten zu sehen sein."""
         neu, alt = self.ae_woerter[ae.id]
-        vw, ew = Counter(_wort_liste(vorher)), Counter(_wort_liste(ergebnis))
+        vw, ew = Counter(_wort_liste(_ansicht(vorher, "neu"))), Counter(_wort_liste(_ansicht(ergebnis, "neu")))
         ohne = Counter(vw)                       # Wortbestand, wenn NUR die angewendeten Aenderungen gewirkt haetten
         for i in angewendet:
             if i == ae.id or i not in self.ae_woerter:
@@ -998,8 +1202,8 @@ class _Auswertung:
         gesperrt = any(a.status == PRUEFEN and any("unbekannte_farbe" in str(c) for c in (a.pruefcodes or [])) for a in offene)
         if "\x00format" in self._unerklaert(ist, soll, Counter(erlaubt) + self.farbe_gemeldet):
             return False
-        a, b = _wort_liste(ist), _wort_liste(soll)
-        neu_im_soll = Counter(b) - Counter(_wort_liste(vorher))
+        a, b = _wort_liste(_ansicht(ist, "neu")), _wort_liste(_ansicht(soll, "neu"))
+        neu_im_soll = Counter(b) - Counter(_wort_liste(_ansicht(vorher, "neu")))
         rest_offen = Counter(erlaubt)
         rest_farbe = Counter(self.farbe_gemeldet) & neu_im_soll
         farbe_fehlt = 0
@@ -1033,8 +1237,8 @@ class _Auswertung:
         muessen dort im Ergebnis stehen UND laut Soll genau so stehen; sonst bleibt es ein stiller Fehler."""
         s, i = self.S[bi], self.I[bi]
         for vz in set(i.zuordnung) & set(s.zuordnung):
-            if all((vz, c) in i.zellen and _s(i.zellen[(vz, c)]) == t and (vz, c) in s.zellen and _s(s.zellen[(vz, c)]) == t
-                   for c, t in gesucht.items()):
+            if all((vz, c) in i.zellen and _s_text(i.zellen[(vz, c)]) == t and (vz, c) in s.zellen
+                   and _s_text(s.zellen[(vz, c)]) == t for c, t in gesucht.items()):
                 return True
         return False
 
@@ -1199,6 +1403,8 @@ class _Auswertung:
                     stumm(key, bi, z, c, "uebernommen_aber_falsch", schuld)
                     if any(nach_id[i].nachkontrolle == "ok" for i in schuld):
                         stumm(key, bi, z, c, "nachkontrolle_ok_aber_falsch", schuld)
+                    if self.markiert and _s_text(tat) == _s_text(erw):
+                        stumm(key, bi, z, c, "format_falsch", schuld)      # Text richtig, Markierung (Formatklasse) falsch
             if _s(tat) == _s(self._vorher(bi, z, c)):
                 stumm(key, bi, z, c, "keine_wirkung", ids)
 
@@ -1207,9 +1413,9 @@ class _Auswertung:
         erklaert_neu: set[Any] = set()
         r27_neu: set[tuple[int, int]] = set()                          # (Blatt, Index der neuen Zeile im Ergebnis)
         for aid, bi, zellen, nk in neu_ops:
-            gesucht = {c: _s(t) for c, t in zellen.items() if _s(t)}
+            gesucht = {c: _s_text(t) for c, t in zellen.items() if _s_text(t)}
             treffer = [it for it in ist_neu_zellen if it["bi"] == bi and it["key"][3] and
-                       all(c - 1 < len(it["key"][3]) and it["key"][3][c - 1] == t for c, t in gesucht.items())]
+                       all(c - 1 < len(it["key"][3]) and _ohne_format(it["key"][3][c - 1]) == t for c, t in gesucht.items())]
             ref = (bi, min(zellen) if zellen else 0)
             if not gesucht:
                 continue
@@ -1229,6 +1435,8 @@ class _Auswertung:
                     stumm(it["key"], bi, it["zeile"], it["spalte"], "uebernommen_aber_falsch", [aid])
                     if nk == "ok":
                         stumm(it["key"], bi, it["zeile"], it["spalte"], "nachkontrolle_ok_aber_falsch", [aid])
+                    if self.markiert and it.get("text_richtig"):
+                        stumm(it["key"], bi, it["zeile"], it["spalte"], "format_falsch", [aid])
 
         # Regel 27 (2), an der WIRKUNG erkannt: eine richtige Aenderung steht im Ergebnis, obwohl keine uebernommene Aenderung
         # darauf zielt, wohl aber eine offene -- auch wenn der Status das nicht verraet.
@@ -1239,12 +1447,12 @@ class _Auswertung:
                 bi = self.bi_von_name.get(op.blatt)
                 if bi is None or op.art != "zeile_einfuegen":
                     continue
-                gesucht = {c: _s(t) for c, t in op.zellen.items() if _s(t)}
+                gesucht = {c: _s_text(t) for c, t in op.zellen.items() if _s_text(t)}
                 if not gesucht:
                     continue
                 for it in ist_neu_zellen:
                     if it["bi"] == bi and it["key"] not in erklaert_neu and it["key"][3] and \
-                            all(c - 1 < len(it["key"][3]) and it["key"][3][c - 1] == t for c, t in gesucht.items()):
+                            all(c - 1 < len(it["key"][3]) and _ohne_format(it["key"][3][c - 1]) == t for c, t in gesucht.items()):
                         r27_wirkung[ae.id] = (bi, it["zeile"], it["spalte"])
                         r27_neu.add((bi, it["ist_index"]))
                         erklaert_neu.add(it["key"])
@@ -1479,7 +1687,14 @@ class _Auswertung:
                 if richtig is not None:
                     z["messbar"] += 1
                     z["richtig_nach_freigabe"] += int(richtig)
+        # --- Format-Treue (nur "markiert"): Soll-Zellen der Haupt-Spalten, deren Text das Tool richtig geschrieben hat -------------
+        fmt = [e for e in haupt if e.get("text_gleich")]
         return {
+            "markiert": self.markiert,
+            "format_treue_zellen_geprueft": len(fmt),
+            "format_treue_zellen_gleich": sum(1 for e in fmt if e["format_gleich"]),
+            "format_treue_zeichen": sum(e["zeichen"] for e in fmt),
+            "format_treue_zeichen_gleich": sum(e["zeichen_gleich"] for e in fmt),
             "soll_klassen": klassen2,
             "soll_klassen_erreicht": klassen2_erreicht,
             "restarbeit": {"pruefen": sum(1 for a in self.aend if a.status == PRUEFEN),
@@ -1665,12 +1880,15 @@ def _validierungen(ws: Any, abb: dict[int, int | None] | None) -> tuple[set, int
 
 
 def _zeile_abb(abb: dict[int, int | None], r: int, vmax: int) -> int | None:
-    """Zeile `r` der Arbeitsmappe vorher -> Zeile im Ergebnis. Unterhalb der letzten belegten Zeile gilt deren Verschiebung."""
+    """Zeile `r` der Arbeitsmappe vorher -> Zeile im Ergebnis. Unterhalb der letzten belegten Zeile gilt deren Verschiebung;
+    ein Bereich bis zur letzten Excel-Zeile ("R8:R1048576") bleibt dort (Excel deckelt beim Einfuegen)."""
     if r in abb:
         return abb[r]
+    if r >= EXCEL_MAX_ZEILE:
+        return r
     if r > vmax:
         basis = abb.get(vmax)
-        return None if basis is None else r + (basis - vmax)
+        return None if basis is None else min(EXCEL_MAX_ZEILE, r + (basis - vmax))
     return None
 
 
@@ -1950,13 +2168,79 @@ def _struktur_befund(vorher: Path, ergebnis: Path, diffs: list[Diff]) -> dict[st
             "datentyp_orte": orte}
 
 
+# ---- Legende und nachher-Format je Korpus (Auftrag 003) ---------------------------------------------------------------------
+def korpus_einstellungen(eltern: Path, korpus: str | None = None) -> dict[str, str]:
+    """Legende und nachher-Format eines Korpus aus seiner KORPUS.json. Fehlt dort eine Angabe, gilt der Standard der Korpora
+    v1/v2 (legende "alt", nachher_format "sauber"). Ohne KORPUS.json: Vorgabe des genannten Korpus (KORPUS_VORGABE), sonst
+    {} -- dann gilt die Konfiguration wie sie ist (z. B. echte Paare unter --ordner)."""
+    p = eltern / "KORPUS.json"
+    daten: dict[str, Any] | None = None
+    if p.is_file():
+        try:
+            roh = json.loads(p.read_text(encoding="utf-8"))
+            daten = roh if isinstance(roh, dict) else {}
+        except (OSError, ValueError):
+            daten = {}
+    if daten is None:
+        return dict(KORPUS_VORGABE.get(korpus or "", {}))
+    legende = daten.get("legende") if daten.get("legende") in LEGENDEN else KORPUS_STANDARD["legende"]
+    fmt = daten.get("nachher_format") if daten.get("nachher_format") in NACHHER_FORMATE else KORPUS_STANDARD["nachher_format"]
+    return {"legende": legende, "nachher_format": fmt}
+
+
+_FEHLT = object()
+
+
+@contextlib.contextmanager
+def konfig_ueberschreibung(einstellungen: dict[str, str] | None):
+    """Setzt `legende.modus` (config/farben.yaml) und `markierung.aenderungen` (config/zuordnung.yaml) NUR fuer die Dauer der
+    Messung eines Paars: markiert -> farbe, sauber -> keine. Danach gilt wieder der vorige Wert (nichts wird global gesetzt)."""
+    alt: list[tuple[dict, str, Any]] = []
+    try:
+        e = einstellungen or {}
+        if e.get("legende"):
+            d = config.lade("farben").setdefault("legende", {})
+            alt.append((d, "modus", d.get("modus", _FEHLT)))
+            d["modus"] = e["legende"]
+        if e.get("nachher_format"):
+            d = config.lade("zuordnung").setdefault("markierung", {})
+            alt.append((d, "aenderungen", d.get("aenderungen", _FEHLT)))
+            d["aenderungen"] = "farbe" if e["nachher_format"] == "markiert" else "keine"
+        yield
+    finally:
+        for d, k, v in reversed(alt):
+            if v is _FEHLT:
+                d.pop(k, None)
+            else:
+                d[k] = v
+
+
+def _wirksam() -> dict[str, str]:
+    """Legende und nachher-Format, die gerade gelten (fuer den Bericht)."""
+    leg = str((config.lade("farben").get("legende") or {}).get("modus", "alt"))
+    farbe = str((config.lade("zuordnung").get("markierung") or {}).get("aenderungen", "keine")) == "farbe"
+    return {"legende": leg, "nachher_format": "markiert" if farbe else "sauber"}
+
+
 def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Path | None = None,
-               schablonen: bool = False) -> dict[str, Any]:
+               schablonen: bool = False, einstellungen: dict[str, str] | None = None) -> dict[str, Any]:
     """Misst ein Paar. Gibt die Kennzahlen (ohne Dokumentinhalt) zurueck; wirft bei kaputter Eingabe.
     Faellt nur ein Teil der Messung aus (Wiederholungslauf, Vorschlaege, Struktur), bleiben die Funde des ersten Laufs erhalten:
     das Paar gilt dann als "abgestuerzt" (teilweise gemessen), die Funde zaehlen weiter.
     ergebnis_kopie: nur fuer Tests -- kopiert die Ergebnis-Excel (nur Automatik) dorthin.
-    schablonen: ergaenzt `fehler_schablonen` (Formen Soll/Ist je stillem Fehler und falschem Vorschlag, ohne Klartext)."""
+    schablonen: ergaenzt `fehler_schablonen` (Formen Soll/Ist je stillem Fehler und falschem Vorschlag, ohne Klartext).
+    einstellungen: {"legende", "nachher_format"} fuer diesen Lauf (None = aus KORPUS.json des Eltern-Ordners, siehe
+    `korpus_einstellungen`; {} = Konfiguration wie sie ist). "markiert" vergleicht zusaetzlich die Formatklassen je Zeichen."""
+    einst = korpus_einstellungen(ordner.parent) if einstellungen is None else einstellungen
+    with konfig_ueberschreibung(einst):
+        wirksam = _wirksam()
+        res = _messe_paar(ordner, mit_vorschlaegen, ergebnis_kopie, schablonen, wirksam["nachher_format"] == "markiert")
+    res.update(wirksam)
+    return res
+
+
+def _messe_paar(ordner: Path, mit_vorschlaegen: bool, ergebnis_kopie: Path | None, schablonen: bool,
+                markiert: bool) -> dict[str, Any]:
     pdf, vorher, nachher = (ordner / n for n in DATEIEN)
     for p in (pdf, vorher, nachher):
         if not p.is_file():
@@ -1994,19 +2278,23 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
             e_auto2 = tmp / "ergebnis_auto2.xlsx"
             plan2 = plane(analysiere_pdf(pdf), ExcelModell(e_auto))
             uebernehmen(plan2.aenderungen, e_auto, e_auto2, None, absaetze=plan2.absaetze)
-            idempotent = _lese_excel(e_auto2) == _lese_excel(e_auto)
+            if markiert:                               # auch die Markierung darf sich beim zweiten Lauf nicht aendern
+                idempotent = _mit_format(_lese_excel(e_auto2, True)) == _mit_format(_lese_excel(e_auto, True))
+            else:
+                idempotent = _lese_excel(e_auto2) == _lese_excel(e_auto)
         except Exception as exc:
             idempotent = None
             ausfaelle.append(("idempotenz", type(exc).__name__))
 
         if ergebnis_kopie is not None:
             shutil.copy2(e_auto, ergebnis_kopie)
-        v_bl, (n_bl, n_typ), (e_bl, e_typ) = _lese_excel(vorher), _lese_excel_mit_typen(nachher), _lese_excel_mit_typen(e_auto)
-        e_alle_bl = _lese_excel(e_alle) if e_alle else None
+        v_bl, (n_bl, n_typ), (e_bl, e_typ) = (_lese_excel(vorher, markiert), _lese_excel_mit_typen(nachher, markiert),
+                                              _lese_excel_mit_typen(e_auto, markiert))
+        e_alle_bl = _lese_excel(e_alle, markiert) if e_alle else None
         plausi, pdf_zeichen = _pdf_pruefung(pdf)
         auswertung = _Auswertung(v_bl, n_bl, e_bl, e_alle_bl, _blattnamen(vorher), aend_auto, plan, pa, bil_auto,
                                  bil_plan, idempotent, (erwartet or {}).get("luecken"), vor_status, pdf_zeichen,
-                                 (n_typ, e_typ))
+                                 (n_typ, e_typ), markiert=markiert)
         # Struktur zuerst (liefert die Zellen mit Datentyp-Wechsel), dann die Auswertung
         struktur: dict[str, Any] | None
         try:
@@ -2056,6 +2344,10 @@ def messe_paar(ordner: Path, mit_vorschlaegen: bool = False, ergebnis_kopie: Pat
     res["luecken_pruefbar"] = bool(erwartet) and isinstance(erwartet.get("luecken"), list)
 
     res["original_unveraendert"] = all(_sha(p) == hashes_vorher[p.name] for p in (pdf, vorher, nachher))
+    # vom Leser gewaehlte Legende (bei "auto" je Dokument entschieden) und Markup-Leiste -- nur feste Kennungen (Regel 16)
+    erkannt = str(getattr(pa, "legende_modus", "") or "")
+    res["legende_erkannt"] = erkannt if erkannt in LEGENDEN else ("unbekannt" if not erkannt else "sonstige")
+    res["markup_leiste_erkannt"] = bool(getattr(pa, "markup_leiste", False))
     res["dauer_sekunden"] = round(time.monotonic() - t0, 2)
     res["profil_angenommen"] = True                      # ohne erwartet.json/Profil: Standard-Aufbau angenommen (siehe fasse_zusammen)
     res["erzeuger"] = _erzeuger(erwartet)
@@ -2114,7 +2406,7 @@ def _fehler_schablonen(aw: "_Auswertung", erzeuger: str, maximal: int = 40) -> t
             if e is not None:
                 soll, ist = e["soll"], e["ist"] or ""
         typ = next((nach_id[i].typ for i in f.aenderungen if i in nach_id), "")
-        stille.append(sb.fehler_eintrag("stiller_fehler", f.art, typ, erzeuger, soll, ist))
+        stille.append(_schablonen_eintrag("stiller_fehler", f.art, typ, erzeuger, soll, ist))
     falsche: list[dict[str, Any]] = []
     if aw.e_alle is not None and aw.e_alle_diffs is not None:
         vorhanden = {(i["key"], _s(i["inhalt"])) for i in aw.ist}
@@ -2122,14 +2414,36 @@ def _fehler_schablonen(aw: "_Auswertung", erzeuger: str, maximal: int = 40) -> t
             if it["richtig"] or (it["key"], _s(it["inhalt"])) in vorhanden:
                 continue
             ae = next((a for a in aw.aend if aw._trifft_offen(a, it)), None)
-            falsche.append(sb.fehler_eintrag("falscher_vorschlag", "", ae.typ if ae else "", erzeuger,
-                                             _soll_von_item(aw, it, aw.e_alle_diffs), it["inhalt"]))
+            falsche.append(_schablonen_eintrag("falscher_vorschlag", "", ae.typ if ae else "", erzeuger,
+                                               _soll_von_item(aw, it, aw.e_alle_diffs), it["inhalt"]))
     auswahl: list[dict[str, Any]] = []
     for i in range(max(len(stille), len(falsche))):           # abwechselnd, damit beide Quellen vorkommen
         auswahl += [lst[i] for lst in (stille, falsche) if i < len(lst)]
     auswahl = auswahl[:maximal]
     ok = [e for e in auswahl if not sb.pruefe_eintrag(e)]
     return ok, len(auswahl) - len(ok)
+
+
+def _formen(text: Any, pos: int) -> list[dict[str, str]]:
+    """Formen eines Zelltexts rund um die Stelle `pos`, je Lauf mit Formatklasse (kein Klartext)."""
+    from . import steckbrief as sb
+    return [{"f": k, "form": f} for k, f in sb.fenster(_stuecke(text), pos)]
+
+
+def _erste_abweichung(soll: Any, ist: Any) -> int:
+    a, b = list(zip(str(soll), _klassen(soll))), list(zip(str(ist), _klassen(ist)))
+    return next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+
+
+def _schablonen_eintrag(quelle: str, art: str, typ: str, erzeuger: str, soll: Any, ist: Any) -> dict[str, Any]:
+    """Wie `steckbrief.fehler_eintrag`, aber markierte Zellen behalten ihre Formatklassen je Lauf ("-", "a", "n")."""
+    from . import steckbrief as sb
+    if not (getattr(soll, "klassen", None) or getattr(ist, "klassen", None)):
+        return sb.fehler_eintrag(quelle, art, typ, erzeuger, soll, ist)
+    e = sb.fehler_eintrag(quelle, art, typ, erzeuger, "", "")
+    pos = _erste_abweichung(soll, ist)
+    e["soll"], e["ist"] = _formen(soll, pos), _formen(ist, pos)
+    return e
 
 
 def _erzeuger(erwartet: dict[str, Any] | None) -> str:
@@ -2367,6 +2681,18 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
             e["erreicht_auto"] += p["erreicht_auto"]
     for e in je_stoerer.values():
         e["abdeckung_ohne_nachfrage"] = _anteil(e.pop("erreicht_auto"), e.pop("soll_zellen"))
+    # --- Format-Treue (Auftrag 003): nur Paare mit nachher_format "markiert" ---------------------------------------------------
+    f_zellen, f_gleich = s("format_treue_zellen_geprueft"), s("format_treue_zellen_gleich")
+    gesamt["paare_markiert"] = sum(1 for p in paare if p.get("markiert"))
+    gesamt["format_treue_zellen_geprueft"] = f_zellen
+    gesamt["format_treue_zellen_gleich"] = f_gleich
+    gesamt["format_treue_zeichen"] = s("format_treue_zeichen")
+    gesamt["format_treue_zeichen_gleich"] = s("format_treue_zeichen_gleich")
+    gesamt["format_treue"] = _anteil(f_gleich, f_zellen)
+    gesamt["format_treue_zeichen_anteil"] = _anteil(gesamt["format_treue_zeichen_gleich"], gesamt["format_treue_zeichen"])
+    gesamt["stille_fehler_format"] = stille_art.get("format_falsch", 0)
+    gesamt["legende_erkannt"] = dict(sorted(Counter(p.get("legende_erkannt") or "unbekannt" for p in gemessen).items()))
+    gesamt["markup_leiste_erkannt"] = sum(1 for p in gemessen if p.get("markup_leiste_erkannt"))
     n = len(paare)                       # alle Paare
     m = len(gemessen)                    # davon voll messbar
     voll = n > 0 and not gesamt["paare_abgestuerzt"]
@@ -2412,6 +2738,13 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
          "wert": f"{_prozent(gesamt['treffergenauigkeit_aenderungen'])} ({ae_korrekt} von {ae_korrekt + ae_falsch})",
          "ziel": "100 %", "einheit": "Änderungen",
          "ampel": _ampel(None if not (ae_korrekt + ae_falsch) else ae_falsch == 0, luecke=lue)},
+        {"nr": 3, "name": "Format-Treue (markierte Zellen: Zeichen für Zeichen normal/alt/neu)",
+         "wert": f"{_prozent(gesamt['format_treue'])} ({f_gleich} von {f_zellen})", "ziel": "100 %", "einheit": "Zellen",
+         "ampel": ("nicht gemessen" if not gesamt["paare_markiert"] else _hinweis(gesamt["format_treue"], lambda x: x >= 1.0)),
+         "detail": f"Nur Paare mit nachher_format „markiert“ ({gesamt['paare_markiert']} Paare): Soll-Zellen der Haupt-Spalten, deren "
+                   f"Text das Tool richtig geschrieben hat; je Zeichen zählt die Klasse (alt = durchgestrichen, neu = Neu-Farbe ohne "
+                   f"Strich, sonst normal). Zeichen: {_prozent(gesamt['format_treue_zeichen_anteil'])}. Eine automatisch geschriebene "
+                   f"Zelle mit falscher Klasse ist zusätzlich ein stiller Fehler (Art format_falsch: {gesamt['stille_fehler_format']})"},
         {"nr": 3, "name": "Genauigkeit der Vorschläge (nach Freigabe)", "wert": _prozent(gesamt["vorschlags_genauigkeit"]),
          "ziel": "mindestens 95 %", "einheit": "Zellen",
          "ampel": _ampel(None if gesamt["vorschlags_genauigkeit"] is None else gesamt["vorschlags_genauigkeit"] >= 0.95,
@@ -2482,8 +2815,13 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
     gesamt["kriterien_nicht_ok"] = sum(1 for k in kriterien if k["ampel"] == "NICHT ok")
     gesamt["ziel_verfehlt"] = gesamt["kriterien_nicht_ok"] > 0
 
+    def einheitlich(feld: str) -> str:
+        werte = sorted({str(p[feld]) for p in paare if p.get(feld)})
+        return werte[0] if len(werte) == 1 else ("gemischt" if werte else "unbekannt")
+
     return {"format": BERICHT_FORMAT, "korpus": korpus, "generator_version": generator_version,
-            "schema_version": SCHEMA_VERSION, "gesamt": gesamt, "fehlerarten": fehlerarten, "je_stoerer": je_stoerer,
+            "schema_version": SCHEMA_VERSION, "legende": einheitlich("legende"), "nachher_format": einheitlich("nachher_format"),
+            "gesamt": gesamt, "fehlerarten": fehlerarten, "je_stoerer": je_stoerer,
             "je_erzeuger": je_erzeuger, "kriterien": kriterien, "paare": paare}
 
 
@@ -2508,7 +2846,7 @@ def _zahl(x: float | None) -> str:
 # ---------------------------------------------------------------- Vergleich mit einem frueheren Bericht (--vergleich)
 VERGLEICH_HAUPT = ("stille_fehler", "regel27_verstoesse", "kollateral", "treffergenauigkeit_auto", "vorschlags_genauigkeit",
                    "abdeckung_ohne_nachfrage", "standard_abdeckung", "abdeckung_alle", "abdeckung_ableitbar", "lese_luecke_anteil",
-                   "idempotent", "restarbeit_je_100", "aenderungen_zu_pruefen", "aenderungen_nicht_uebernommen")
+                   "idempotent", "restarbeit_je_100", "aenderungen_zu_pruefen", "aenderungen_nicht_uebernommen", "format_treue")
 
 
 def _numerisch(x: Any) -> bool:
@@ -2570,6 +2908,10 @@ def _md(b: dict[str, Any]) -> str:
     z = [f"# Messbericht {b['korpus']}", "",
          f"Paare: {g['paare']} (davon nicht oder nicht vollständig messbar: {g['paare_abgestuerzt']}) · Soll-Zellen (Haupt-Spalten): "
          f"{g['soll_zellen']} · Schema {b['schema_version']} · Generator-Version: {b['generator_version'] or 'unbekannt'}", "",
+         f"Legende: {b.get('legende', 'unbekannt')} · nachher-Format: {b.get('nachher_format', 'unbekannt')} (aus KORPUS.json bzw. "
+         f"Aufruf; „markiert“ = nachher.xlsx trägt die Markierung, die Format-Treue wird mitgemessen) · vom Leser gewählte Legende "
+         f"(Paare): {', '.join(f'{k} {n}' for k, n in (g.get('legende_erkannt') or {}).items()) or '-'} · Markup-Leiste erkannt: "
+         f"{g.get('markup_leiste_erkannt', 0)} Paare", "",
          "Dieser Bericht enthält keine Texte aus Dokumenten, nur Zahlen, Positionen und Fehlerarten.", "",
          "## Kriterien (docs/ziel_v1.md)", "",
          "Die Spalte „Einheit“ sagt, WAS gezählt wird (Zellen, Änderungen, Paare, Wörter ...): Zahlen verschiedener Einheiten "
@@ -2722,6 +3064,8 @@ def schreibe_bericht(bericht: dict[str, Any], korpus: str) -> Path:
 def _konsole(b: dict[str, Any], ziel: Path, vorschlaege: bool) -> None:
     g = b["gesamt"]
     print(f"Messung {b['korpus']}: {g['paare']} Paare, {g['soll_zellen']} Soll-Zellen (Haupt-Spalten)")
+    print(f"Legende: {b.get('legende', 'unbekannt')} · nachher-Format: {b.get('nachher_format', 'unbekannt')} · vom Leser gewählt: "
+          + (", ".join(f"{k} {n}" for k, n in (g.get("legende_erkannt") or {}).items()) or "-"))
     if g["paare_abgestuerzt"]:
         print(f"Achtung: {g['paare_abgestuerzt']} Paar(e) konnten nicht (vollständig) gemessen werden "
               f"({g['paare_teilweise_gemessen']} davon teilweise: ihre Funde zählen mit). Die Ampeln stehen dann nicht auf „ok“.")
@@ -2801,6 +3145,282 @@ def _konsole(b: dict[str, Any], ziel: Path, vorschlaege: bool) -> None:
         print("Ergebnis: kein Kriterium verfehlt (Exit-Code 0).")
 
 # ======================================================================================
+# 5b. Rueckbau-Messung (messen --nachher): Paare mit nur PDF + nachher.xlsx (z. B. Nicos echte Paare)
+# ======================================================================================
+def _rueck_art(schrift: Any, alt_rgb: str, neu_rgb: str) -> str:
+    """Markierung der LETZTEN Runde: alt = Alt-Farbe + durchgestrichen, neu = Neu-Farbe ohne Strich; alles andere bleibt
+    (auch Markierungen frueherer Runden in anderen Farben)."""
+    if schrift is None:
+        return "sonst"
+    rgb = _farb_rgb(getattr(schrift, "color", None))
+    if getattr(schrift, "strike", None) and rgb == alt_rgb:
+        return "alt"
+    if not getattr(schrift, "strike", None) and rgb == neu_rgb:
+        return "neu"
+    return "sonst"
+
+
+def _rueck_teile(zelle: Any, alt_rgb: str, neu_rgb: str) -> list[tuple[str, str, Any]] | None:
+    """[(Text, alt|neu|sonst, Laufschrift oder None)] einer Zelle; None = leer."""
+    v = zelle.value
+    if v is None:
+        return None
+    if isinstance(v, CellRichText):
+        return [(b.text, _rueck_art(b.font, alt_rgb, neu_rgb), b.font) if isinstance(b, TextBlock)
+                else (str(b), _rueck_art(zelle.font, alt_rgb, neu_rgb), None) for b in v]
+    return [(v if isinstance(v, str) else _zelltext(v), _rueck_art(zelle.font, alt_rgb, neu_rgb), None)]
+
+
+def _ohne_markierung(f: Any) -> Any:
+    """Dieselbe Schrift ohne Farbe und Strich (Zellschrift bzw. Laufschrift)."""
+    from openpyxl.cell.text import InlineFont
+    from openpyxl.styles import Font
+    if f is None:
+        return None
+    if isinstance(f, InlineFont):
+        return InlineFont(rFont=f.rFont, sz=f.sz, b=f.b, i=f.i, u=f.u, family=f.family, charset=f.charset, scheme=f.scheme,
+                          vertAlign=f.vertAlign)
+    return Font(name=f.name, sz=f.sz, b=f.b, i=f.i, u=f.u, family=f.family, charset=f.charset, scheme=f.scheme,
+                vertAlign=f.vertAlign)
+
+
+def _zelle_zurueck(zelle: Any, teile: list[tuple[str, str, Any]]) -> None:
+    """Rueckbau einer Zelle: Alt-Laeufe werden normaler Text, Neu-Laeufe fallen weg, alles andere bleibt unangetastet."""
+    if not isinstance(zelle.value, CellRichText):
+        art = teile[0][1]
+        if art == "neu":
+            zelle.value = None
+        zelle.font = _ohne_markierung(zelle.font)
+        return
+    rest = [(t, a, f) for t, a, f in teile if a != "neu" and t]
+    if not rest:
+        zelle.value = None
+        return
+    schriften = [_ohne_markierung(f) if a == "alt" else f for _t, a, f in rest]
+    if all(f is None or (_farb_rgb(getattr(f, "color", None)) is None and not getattr(f, "strike", None)) for f in schriften):
+        zelle.value = "".join(t for t, _a, _f in rest)               # nur noch Grundschrift: einfacher Text (wie vor der Runde)
+        return
+    zelle.value = CellRichText(*[TextBlock(f, t) if f is not None else t for (t, _a, _f), f in zip(rest, schriften)])
+
+
+def baue_vorher_zurueck(nachher: Path, ziel: Path) -> dict[str, int]:
+    """Baut aus einer markierten nachher.xlsx den Stand VOR dieser Runde zurueck (nur Markierungen der letzten Runde laut
+    config/zuordnung.yaml markierung.alt_farbe/neu_farbe): alt (+ Strich) -> normaler Text, neu (ohne Strich) -> weg. Zeilen, deren
+    laengste Zelle ganz neu ist und die nichts Altes tragen, sind neue Zeilen und entfallen. Zellen ohne diese Markierung bleiben
+    unangetastet. Nur fuer die Zellen-Messung: Zeichnungen u. ae. gehen beim Speichern mit openpyxl verloren."""
+    alt_rgb, neu_rgb = _markierungsfarben()
+    wb = load_workbook(str(nachher), rich_text=True)
+    zahl: Counter = Counter()
+    try:
+        for ws in wb.worksheets:
+            neue_zeilen: list[int] = []
+            for row in ws.iter_rows():
+                laengste: tuple[int, bool] | None = None
+                altes = False
+                for c in row:
+                    teile = _rueck_teile(c, alt_rgb, neu_rgb)
+                    text = "".join(t for t, _a, _f in teile or [])
+                    if not teile or not text.strip():
+                        continue
+                    arten = {a for t, a, _f in teile if t}
+                    ganz_neu = arten == {"neu"}
+                    if laengste is None or len(text) > laengste[0]:
+                        laengste = (len(text), ganz_neu)
+                    altes |= not ganz_neu and bool(arten & {"alt", "neu"})
+                    if arten & {"alt", "neu"}:
+                        _zelle_zurueck(c, teile)
+                        zahl["zellen"] += 1
+                if laengste and laengste[1] and not altes:
+                    neue_zeilen.append(row[0].row)
+            for r in sorted(neue_zeilen, reverse=True):
+                ws.delete_rows(r)
+                zahl["zeilen"] += 1
+        wb.save(str(ziel))
+    finally:
+        wb.close()
+    return {"zellen_zurueckgebaut": zahl["zellen"], "zeilen_entfernt": zahl["zeilen"]}
+
+
+def _rueckbau_kategorie(aw: "_Auswertung", e: dict[str, Any]) -> str:
+    if e["erreicht"]:
+        return "gleich"
+    platz = e["ist_da"] and e["ist"] is not None
+    if e["art"] == "neu":
+        platz = platz and bool(aw.neu_abgleich[e["bi"]][1].get(e["si"]))
+    if platz and _gleich_bis_leerraum(e["ist"], e["soll"]):
+        return "gleich_bis_leerraum"
+    if not e["ist_da"]:
+        entf, dazu = aw.soll_woerter[e["key"]]
+        verwandt = aw._zugehoerig(Counter(dazu), Counter(entf)) + [a for a in aw.aend if any(
+            z.bi == e["bi"] and z.zeile == e["zeile"] and z.spalte in (None, e["spalte"]) for z in aw.ziele_von[a.id])]
+        return "tool_fehlt_vorschlag_offen" if any(a.status == PRUEFEN for a in verwandt) else "tool_fehlt_gar_nicht"
+    return "verschieden"
+
+
+def _rueckbau_form(text: Any, pos: int) -> list[dict[str, str]]:
+    return _formen(text, pos) if text else []
+
+
+def messe_nachher(ordner: Path, einstellungen: dict[str, str] | None = None, maximal: int = 40) -> dict[str, Any]:
+    """Rueckbau-Messung eines Paars, das nur aenderungen.pdf + nachher.xlsx hat (ein vorhandenes vorher.xlsx wird ignoriert):
+    vorher zurueckbauen, Tool laufen lassen, Zelle fuer Zelle mit nachher vergleichen. Ergebnis: nur Zahlen, Positionen und
+    Formen (Schablonen), nie Text (Regel 16)."""
+    from . import steckbrief as sb
+    pdf, nachher = ordner / "aenderungen.pdf", ordner / "nachher.xlsx"
+    for p in (pdf, nachher):
+        if not p.is_file():
+            raise FileNotFoundError(p.name)
+    einst = dict(korpus_einstellungen(ordner.parent) if einstellungen is None else einstellungen)
+    einst["nachher_format"] = "markiert"                 # Rueckbau setzt eine markierte nachher.xlsx voraus
+    hash_vorher = {p.name: _sha(p) for p in (pdf, nachher)}
+    t0 = time.monotonic()
+    with konfig_ueberschreibung(einst), tempfile.TemporaryDirectory(prefix="cde_rueckbau_") as tmp_name:
+        wirksam = _wirksam()
+        tmp = Path(tmp_name)
+        rueck = tmp / "vorher_rueckbau.xlsx"
+        stats = baue_vorher_zurueck(nachher, rueck)
+        pa = analysiere_pdf(pdf)
+        plan = plane(pa, ExcelModell(rueck))
+        bil_plan = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
+        vor_status = {a.id: a.status for a in plan.aenderungen}
+        aend = copy.deepcopy(plan.aenderungen)
+        ergebnis = tmp / "ergebnis.xlsx"
+        uebernehmen(aend, rueck, ergebnis, None, absaetze=plan.absaetze)
+        bil = bilanz(aend, plan.markierte_woerter, plan.ignoriert, plan.luecken)
+        _plausi, pdf_zeichen = _pdf_pruefung(pdf)
+        aw = _Auswertung(_lese_excel(rueck, True), _lese_excel(nachher, True), _lese_excel(ergebnis, True), None,
+                         _blattnamen(rueck), aend, plan, pa, bil, bil_plan, None, None, vor_status, pdf_zeichen, markiert=True)
+    kat: Counter = Counter()
+    kat_haupt: Counter = Counter()
+    schablonen: list[dict[str, Any]] = []
+    belegt: set[Any] = set()
+    for e in aw.einheiten:
+        belegt.add(e["ist_key"] if e["art"] == "neu" else e["key"])
+        k = _rueckbau_kategorie(aw, e)
+        kat[k] += 1
+        if e["klasse"] == "haupt":
+            kat_haupt[k] += 1
+        if k != "gleich":
+            pos = _erste_abweichung(e["soll"], e["ist"] or "")
+            schablonen.append({"kategorie": k, "blatt": e["bi"] + 1, "zeile": e["zeile"], "spalte": e["spalte"],
+                               "neue_zeile": e["art"] == "neu", "soll": _rueckbau_form(e["soll"], pos),
+                               "ist": _rueckbau_form(e["ist"] or "", pos)})
+    for it in aw.ist:
+        if it["key"] in belegt:
+            continue
+        kat["tool_extra"] += 1
+        if aw._verwaltet(it["bi"], it["spalte"]):
+            kat_haupt["tool_extra"] += 1
+        schablonen.append({"kategorie": "tool_extra", "blatt": it["bi"] + 1, "zeile": it["zeile"], "spalte": it["spalte"],
+                           "neue_zeile": it["art"] == "neu", "soll": [], "ist": _rueckbau_form(it["inhalt"], 0)})
+    # reihum je Kategorie, damit jede Art von Abweichung vorkommt; Positivliste: nur Formen (wie --schablonen)
+    je_kat = [[s for s in schablonen if s["kategorie"] == k] for k in RUECKBAU_KATEGORIEN]
+    schablonen = [lst[i] for i in range(max((len(x) for x in je_kat), default=0)) for lst in je_kat if i < len(lst)]
+    form_spec = sb.FEHLER_SCHABLONE.felder["soll"]
+    gut: list[dict[str, Any]] = []
+    for s in schablonen[:maximal]:
+        fehler: list[str] = []
+        form_spec.pruefe(s["soll"], "soll", fehler)
+        form_spec.pruefe(s["ist"], "ist", fehler)
+        if not fehler:
+            gut.append(s)
+    return {"name": ordner.name, "rueckbau": stats, "zellen": {k: int(kat.get(k, 0)) for k in RUECKBAU_KATEGORIEN},
+            "zellen_haupt": {k: int(kat_haupt.get(k, 0)) for k in RUECKBAU_KATEGORIEN},
+            "aenderungen": len(aend), "aenderungen_nach_status": {s: sum(1 for a in aend if a.status == s)
+                                                                 for s in (UEBERNOMMEN, PRUEFEN, NICHT)},
+            "bilanz_stimmt": bool(bil.get("stimmt")), "schablonen": gut,
+            "schablonen_verworfen": min(len(schablonen), maximal) - len(gut),
+            "schablonen_weitere": max(0, len(schablonen) - maximal),
+            "original_unveraendert": all(_sha(p) == hash_vorher[p.name] for p in (pdf, nachher)),
+            "dauer_sekunden": round(time.monotonic() - t0, 2), **wirksam}
+
+
+def fasse_rueckbau_zusammen(paare: list[dict[str, Any]], korpus: str) -> dict[str, Any]:
+    gemessen = [p for p in paare if "abgestuerzt" not in p]
+    gesamt = {"paare": len(paare), "paare_gemessen": len(gemessen),
+              "zellen": {k: sum(p["zellen"][k] for p in gemessen) for k in RUECKBAU_KATEGORIEN},
+              "zellen_haupt": {k: sum(p["zellen_haupt"][k] for p in gemessen) for k in RUECKBAU_KATEGORIEN},
+              "zellen_zurueckgebaut": sum(p["rueckbau"]["zellen_zurueckgebaut"] for p in gemessen),
+              "zeilen_entfernt": sum(p["rueckbau"]["zeilen_entfernt"] for p in gemessen),
+              "aenderungen": sum(p["aenderungen"] for p in gemessen),
+              "aenderungen_nach_status": {s: sum(p["aenderungen_nach_status"][s] for p in gemessen)
+                                          for s in (UEBERNOMMEN, PRUEFEN, NICHT)},
+              "original_unveraendert": sum(1 for p in gemessen if p["original_unveraendert"])}
+    alle = sum(gesamt["zellen"].values())
+    gesamt["anteil_gleich"] = _anteil(gesamt["zellen"]["gleich"] + gesamt["zellen"]["gleich_bis_leerraum"], alle)
+    return {"format": BERICHT_FORMAT, "art": "rueckbau", "korpus": korpus, "schema_version": SCHEMA_VERSION,
+            "legende": sorted({p.get("legende", "") for p in gemessen}) or [], "nachher_format": "markiert",
+            "kategorien": list(RUECKBAU_KATEGORIEN), "gesamt": gesamt, "paare": paare}
+
+
+def _md_rueckbau(b: dict[str, Any]) -> str:
+    g = b["gesamt"]
+    z = [f"# Rückbau-Messung {b['korpus']}", "",
+         f"Paare: {g['paare']} (gemessen {g['paare_gemessen']}) · Legende: {', '.join(b['legende']) or 'unbekannt'} · "
+         f"nachher-Format: markiert", "",
+         "Vorher wurde aus nachher.xlsx zurückgebaut (Markierung der letzten Runde: alt → normaler Text, neu → weg). Das Tool lief auf "
+         "PDF + zurückgebautem vorher; verglichen wird Zelle für Zelle mit nachher. Dieser Bericht enthält keine Texte, nur Zahlen, "
+         "Positionen und Formen.", "",
+         f"Rückbau: {g['zellen_zurueckgebaut']} Zellen zurückgebaut, {g['zeilen_entfernt']} neue Zeilen entfernt · Änderungen des Tools: "
+         f"{g['aenderungen']} ({', '.join(f'{k} {n}' for k, n in g['aenderungen_nach_status'].items())})", "",
+         "| Kategorie | alle Zellen | Haupt-Spalten |", "|---|---|---|"]
+    for k in RUECKBAU_KATEGORIEN:
+        z.append(f"| {k} | {g['zellen'][k]} | {g['zellen_haupt'][k]} |")
+    z += ["", f"Anteil gleich (inkl. nur Leerraum verschieden): {_prozent(g['anteil_gleich'])}", "", "## Paare", "",
+          "| Paar | " + " | ".join(RUECKBAU_KATEGORIEN) + " |", "|---" * (len(RUECKBAU_KATEGORIEN) + 1) + "|"]
+    for p in b["paare"]:
+        if "abgestuerzt" in p:
+            z.append(f"| {p['name']} | nicht messbar ({p['abgestuerzt']}) |" + " |" * (len(RUECKBAU_KATEGORIEN) - 1))
+            continue
+        z.append(f"| {p['name']} | " + " | ".join(str(p["zellen"][k]) for k in RUECKBAU_KATEGORIEN) + " |")
+    laeufe = lambda ls: " ‖ ".join(f"{x['f']}:{x['form']}" for x in ls) or "(leer)"          # noqa: E731
+    for p in b["paare"]:
+        if not p.get("schablonen"):
+            continue
+        z += ["", f"### Schablonen {p['name']}", "", "| Kategorie | Blatt | Zeile | Spalte | Soll | Ist |", "|---|---|---|---|---|---|"]
+        for s in p["schablonen"]:
+            z.append(f"| {s['kategorie']} | {s['blatt']} | {s['zeile']}{' (neu)' if s['neue_zeile'] else ''} | {s['spalte']} | "
+                     f"`{laeufe(s['soll'])}` | `{laeufe(s['ist'])}` |")
+        if p.get("schablonen_weitere"):
+            z.append(f"\nWeitere Abweichungen ohne Schablone: {p['schablonen_weitere']}")
+    return "\n".join(z) + "\n"
+
+
+def _main_nachher(eltern: Path, kandidaten: list[Path], korpus: str, einstellungen: dict[str, str] | None) -> int:
+    paare: list[dict[str, Any]] = []
+    for d in kandidaten:
+        try:
+            p = messe_nachher(d, einstellungen)
+        except Exception as exc:                  # ein kaputtes Paar bricht die Messung nicht ab
+            p = {"name": d.name, "abgestuerzt": type(exc).__name__}
+        paare.append(p)
+        print(f"  Paar {d.name}: {'nicht messbar' if 'abgestuerzt' in p else 'gemessen'}", flush=True)
+    b = fasse_rueckbau_zusammen(paare, korpus)
+    basis = config.pfad("messung_dir")
+    basis.mkdir(parents=True, exist_ok=True)
+    nummern = [int(m.group(1)) for x in basis.iterdir() if (m := re.match(r"^(\d{3,})_", x.name))]
+    nr = max(nummern, default=0) + 1
+    while True:                                   # append-only (Regel 29)
+        ziel = basis / f"{nr:03d}_{korpus}_rueckbau"
+        try:
+            ziel.mkdir(exist_ok=False)
+            break
+        except FileExistsError:
+            nr += 1
+    with open(ziel / "bericht.json", "x", encoding="utf-8") as f:
+        json.dump(b, f, ensure_ascii=False, indent=1)
+    with open(ziel / "bericht.md", "x", encoding="utf-8") as f:
+        f.write(_md_rueckbau(b))
+    g = b["gesamt"]
+    print(f"Rückbau-Messung {korpus}: {g['paare']} Paare (gemessen {g['paare_gemessen']})")
+    for k in RUECKBAU_KATEGORIEN:
+        print(f"  {k:<28} {g['zellen'][k]:>6} Zellen  (Haupt-Spalten {g['zellen_haupt'][k]})")
+    print(f"  Anteil gleich: {_prozent(g['anteil_gleich'])}")
+    print(f"Bericht: {ziel / 'bericht.md'}")
+    return 0
+
+
+# ======================================================================================
 # 6. Einstieg
 # ======================================================================================
 def _lade_korpus_info(eltern: Path) -> str:
@@ -2821,6 +3441,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="Bericht um den Abschnitt Fehler-Schablonen ergaenzen: Formen (kein Text) von Soll und Ist je stillem Fehler/falschem Vorschlag")
     ap.add_argument("--vergleich", action="store_true", help="Deltas gegen den letzten Bericht desselben Korpus ausgeben")
     ap.add_argument("--gegen", metavar="NNN", help="mit --vergleich: gegen den Bericht mit dieser Nummer vergleichen")
+    ap.add_argument("--legende", choices=list(LEGENDEN),
+                    help="Legende fuer diesen Lauf (statt KORPUS.json; ohne beides: Korpus-Vorgabe bzw. config/farben.yaml)")
+    ap.add_argument("--nachher-format", choices=list(NACHHER_FORMATE),
+                    help="markiert = nachher.xlsx traegt die Markierung (Lauf mit markierung.aenderungen: farbe, Format-Treue); "
+                         "sauber = ohne (Lauf mit keine)")
+    ap.add_argument("--nachher", action="store_true",
+                    help="Rueckbau-Messung fuer Paare mit nur aenderungen.pdf + nachher.xlsx: vorher aus der Markierung zurueckbauen, "
+                         "Tool laufen lassen, Zelle fuer Zelle vergleichen (nur Zahlen und Schablonen)")
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:                       # argparse beendet selbst; wir geben den Code zurueck
@@ -2833,6 +3461,18 @@ def main(argv: list[str] | None = None) -> int:
         kandidaten = [eltern / a.paar] if (eltern / a.paar).is_dir() and Path(a.paar).name == a.paar else []
     else:
         kandidaten = sorted(d for d in eltern.iterdir() if d.is_dir() and not d.name.startswith("."))
+    # Legende und nachher-Format: Aufruf > KORPUS.json > Vorgabe des Korpus (nur ohne --ordner) > Konfiguration
+    einst = korpus_einstellungen(eltern, None if a.ordner else a.korpus)
+    if a.legende:
+        einst["legende"] = a.legende
+    if a.nachher_format:
+        einst["nachher_format"] = a.nachher_format
+    if a.nachher:
+        kandidaten = [d for d in kandidaten if (d / "aenderungen.pdf").is_file() and (d / "nachher.xlsx").is_file()]
+        if not kandidaten:
+            print("Es wurden keine Paare gefunden. Fuer --nachher braucht jedes Paar aenderungen.pdf und nachher.xlsx.")
+            return 2
+        return _main_nachher(eltern, kandidaten, a.korpus, einst)
     if not kandidaten:
         print("Es wurden keine Paare gefunden. Jedes Paar ist ein Ordner mit aenderungen.pdf, vorher.xlsx und nachher.xlsx.")
         return 2
@@ -2850,7 +3490,7 @@ def main(argv: list[str] | None = None) -> int:
     paare: list[dict[str, Any]] = []
     for d in kandidaten:
         try:
-            p = messe_paar(d, a.mit_vorschlaegen, schablonen=a.schablonen)
+            p = messe_paar(d, a.mit_vorschlaegen, schablonen=a.schablonen, einstellungen=einst)
         except Exception as exc:                  # ein kaputtes Paar bricht die Messung nicht ab
             p = _fehlgeschlagen(d.name, exc)
         p["name"] = d.name

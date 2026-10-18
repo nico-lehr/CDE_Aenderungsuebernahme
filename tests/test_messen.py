@@ -1130,11 +1130,13 @@ def test_zahl_wird_text_an_unveraenderter_zelle_in_verwalteter_spalte_ist_stille
     p = baue_paar(tmp_path, "synth_6102")
     for datei in ("vorher.xlsx", "nachher.xlsx"):
         zellen_aendern(p / datei, {"A4": 3})                                  # Section-Nummer der dritten Section als Zahl
+    original = messen.uebernehmen
     sabotiere_ergebnis(monkeypatch, lambda ziel, aend, q: zellen_aendern(ziel, {"A4": "3"}))
     res = messen.messe_paar(p)
     assert res["stille_fehler"] == 1 and res["stille_fehler_nach_art"].get("datentyp_gewechselt") == 1
     assert res["struktur_nach_art"]["datentyp"] == 0                          # verwaltete Spalte: stiller Fehler, kein Strukturbefund
-    monkeypatch.undo()
+    # nur die Sabotage zuruecknehmen (monkeypatch.undo() hob auch die Weichen aus conftest.py auf: Gegenprobe im selben Modus)
+    monkeypatch.setattr(messen, "uebernehmen", original)
     ohne = baue_paar(tmp_path, "synth_6103")
     for datei in ("vorher.xlsx", "nachher.xlsx"):
         zellen_aendern(ohne / datei, {"A4": 3})
@@ -1359,12 +1361,20 @@ def test_ende_zu_ende_zeilen_einfuegen_mit_eigenschaften_oberhalb_und_mitgezogen
     assert res["stille_fehler"] == 0
 
 
+@pytest.mark.schreiber_openpyxl          # prueft das fruehere Speichern (openpyxl zieht Bereiche NICHT mit), ADR 0007
 def test_ende_zu_ende_nicht_mitgezogenes_wird_in_der_vorschlags_excel_als_angekuendigt_gezaehlt(tmp_path):
     res = messen.messe_paar(_paar_zum_einfuegen(tmp_path, unten=True), mit_vorschlaegen=True)
     assert res["pruefen_zellen"] >= 1 and res["struktur_geaendert"] == 0          # die Automatik hat nichts angefasst
     assert res["struktur_vorschlaege_geaendert"] == 0                             # der Plan hatte jede Abweichung vorab gemeldet
     assert {a for a, n in res["struktur_vorschlaege_angekuendigt_nach_art"].items() if n} == \
         {"bedingte_formatierung", "autofilter", "benannter_bereich"}
+
+
+def test_ende_zu_ende_patch_schreiber_zieht_bereiche_in_der_vorschlags_excel_mit(tmp_path):
+    """Gegenstueck mit dem verlustfreien Schreiber (ADR 0007, Standard): Bereiche ziehen mit, die Messung sieht keine Abweichung."""
+    res = messen.messe_paar(_paar_zum_einfuegen(tmp_path, unten=True), mit_vorschlaegen=True)
+    assert res["pruefen_zellen"] >= 1 and res["struktur_geaendert"] == 0
+    assert res["struktur_vorschlaege_geaendert"] == 0 and res["struktur_vorschlaege_angekuendigt"] == 0
 
 
 # ---- Ende zu Ende mit Sabotage am Ergebnis des Tools: jede neue Eigenschaft meldet sich im Paar-Ergebnis und in der Ampel ---------
@@ -1632,3 +1642,26 @@ def test_eingefuegte_zeile_als_gepaarte_zeile_nur_wenn_ergebnis_und_soll_gleich(
     assert not b._neu_als_gepaarte_zeile(0, {3: "Neuer Text"})
     c = _ausw(S=[SimpleNamespace(zuordnung={}, zellen={})], I=[gleiche])    # Soll sieht dort keine gepaarte Zeile
     assert not c._neu_als_gepaarte_zeile(0, {3: "Neuer Text"})
+
+
+# ---------------------------------------------------------------------------------------
+# Auftrag 003: Legende und nachher-Format je Korpus, Struktur bis zur letzten Excel-Zeile
+# ---------------------------------------------------------------------------------------
+def test_alte_korpora_messen_mit_legende_alt_und_nachher_sauber(tmp_path, capsys):
+    """Ohne Angabe in KORPUS.json (alle Korpora v1/v2) gilt legende "alt" und nachher_format "sauber" -- im Bericht genannt."""
+    korpus = korpus_dir()
+    baue_paar(korpus, "synth_9900")
+    (korpus / "KORPUS.json").write_text(json.dumps({"generator_version": "2", "korpus": "entwicklung"}), encoding="utf-8")
+    assert messen.main(["--korpus", "entwicklung"]) == 0
+    b = json.loads(next(config.pfad("messung_dir").glob("*_entwicklung/bericht.json")).read_text(encoding="utf-8"))
+    assert b["legende"] == "alt" and b["nachher_format"] == "sauber" and b["gesamt"]["paare_markiert"] == 0
+    assert b["paare"][0]["markiert"] is False
+    assert next(k for k in b["kriterien"] if k["name"].startswith("Format-Treue"))["ampel"] == "nicht gemessen"
+    assert "Legende: alt · nachher-Format: sauber" in capsys.readouterr().out
+
+
+def test_bereich_bis_zur_letzten_excel_zeile_waechst_nicht():
+    abb = {r: r + 3 for r in range(1, 11)}
+    assert messen._zeile_abb(abb, 1048576, 10) == 1048576
+    assert messen._zeile_abb(abb, 15, 10) == 18
+    assert messen._bereich_abb("R8:R1048576", abb, 10) == (18, 11, 18, 1048576)
