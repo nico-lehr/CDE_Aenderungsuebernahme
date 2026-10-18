@@ -87,7 +87,7 @@ def test_gestrichener_platzhalter_direkt_vor_neuem_wert_ist_ein_wort(tmp_path):
 
 def test_einzelne_satzzeichen_werden_nicht_geglaettet(tmp_path):
     d = WordDok()
-    d.absatz([voll([("Pumpe", "k"), (".", "n"), (" Ventil", "d"), (",", "k"), (" Zebrafink", "k"), (",", "d")])])
+    d.absatz([voll([("Pumpe", "k"), (".", "n"), (" ", "k"), ("Ventil", "d"), (",", "k"), (" Zebrafink", "k"), (",", "d")])])
     a = _lies(tmp_path, d)
     p = _tok(a, "Pumpe")
     assert (p.old, p.new) == ("Pumpe", "Pumpe.")
@@ -179,6 +179,82 @@ def test_markiertes_leerzeichen_aendert_die_ansichten_richtig(tmp_path, stuecke,
     assert not _sperrend(_alle_codes(a))
 
 
+def _fassungen(block, trenner_art: bool = True) -> tuple[str, str]:
+    """(alter, neuer Absatz) EXAKT aus Zeichen-Laeufen und Trennern (geschuetztes Leerzeichen als " "). Mit trenner_art
+    so, wie der Planer die Information des Lesers nutzen soll: markierter Trenner nur in seiner Fassung (d/a statt s)."""
+    alt = neu = ""
+    for i, t in enumerate(block.tokens):
+        for st, tx in (t.teile or [(t.status, t.new if t.status == ADD else t.old)]):
+            alt += tx if st in (KEEP, DEL) else ""
+            neu += tx if st in (KEEP, ADD) else ""
+        if i + 1 < len(block.tokens) and t.trenner:
+            art = getattr(t, "trenner_art", "") if trenner_art else ""
+            alt += t.trenner if art != "a" else ""
+            neu += t.trenner if art != "d" else ""
+    return alt.replace("\xa0", " "), neu.replace("\xa0", " ")
+
+
+def _anfang(text: str, n: int) -> str:
+    return " ".join(text.replace("\xa0", " ").split(" ")[:n])
+
+
+@pytest.mark.parametrize("stuecke,alt,neu", [
+    # Nachbau der echten Folge: "IEC" U+202F "60364" U+2011 gestrichen, "UNE-HD" + Leerzeichen + "60364-" neu, "6" normal
+    ([("Norm ", "k"), ("IEC 60364‑", "d"), ("UNE-HD", "n"), (" ", "n"), ("60364-", "n"), ("6", "k")],
+     "Norm IEC 60364‑6", "Norm UNE-HD 60364-6"),
+    ([("Norm ", "k"), ("ABC 123‑", "d"), ("XY-Z 123-", "n"), ("4", "k")], "Norm ABC 123‑4", "Norm XY-Z 123-4"),
+    ([("Pumpe", "k"), (" neu", "n"), ("x", "k")], "Pumpex", "Pumpe neux"),                 # Leerzeichen am Anfang
+    ([("Pumpe ", "k"), ("neue ", "n"), ("Becken", "k")], "Pumpe Becken", "Pumpe neue Becken"),   # ... am Ende
+    ([("Pumpe", "k"), (" neue", "n"), (" Becken", "k")], "Pumpe Becken", "Pumpe neue Becken"),
+    ([("Pumpe ", "k"), ("alte Ventile ", "d"), ("Becken", "k")], "Pumpe alte Ventile Becken", "Pumpe Becken"),
+], ids=["echte_folge", "norm", "einfuegung_vorn_geklebt", "einfuegung_ende", "einfuegung_vorn", "geloeschte_gruppe"])
+def test_markierter_leerraum_steht_nur_in_seiner_fassung(tmp_path, stuecke, alt, neu):
+    d = WordDok()
+    d.absatz([voll(stuecke + [(" ", "k")])])
+    a = _lies(tmp_path, d)
+    b = a.blocks[0]
+    n_alt, n_neu = len(alt.split(" ")), len(neu.split(" "))
+    # 1. Absatztext des Lesers (PdfBlock.alt_text / neu_text)
+    assert _anfang(b.alt_text, n_alt) == alt and _anfang(b.neu_text, n_neu) == neu
+    # 2. exakt aus Laeufen und Trennern, mit der Trenner-Art des Lesers
+    va, vn = _fassungen(b)
+    assert _anfang(va, n_alt) == alt and _anfang(vn, n_neu) == neu
+    # 3. die Laeufe des Abgleichs (heute "s" fuer jeden Trenner) ergeben nach der Normalform dasselbe
+    la, ln = _ansichten(b)
+    assert la.startswith(" ".join(alt.split())) and ln.startswith(" ".join(neu.split()))
+    assert not _sperrend(_alle_codes(a))
+
+
+def test_geloeschtes_leerzeichen_zwischen_gestrichenen_woertern_traegt_trenner_art(tmp_path):
+    d = WordDok()
+    d.absatz([voll([("Pumpe ", "k"), ("alte Ventile", "d"), (" Becken", "k")])])
+    a = _lies(tmp_path, d)
+    t = _tok(a, "alte")
+    assert t.status == DEL and getattr(t, "trenner_art", "") == "d"          # nur in der alten Fassung
+    assert getattr(_tok(a, "Pumpe"), "trenner_art", "") == ""
+    assert _fassungen(a.blocks[0])[1].startswith("Pumpe  Becken")        # beide normalen Leerzeichen bleiben stehen
+
+
+def test_luecke_ohne_leerzeichen_unter_derselben_unterstreichung(tmp_path):
+    """Wie die echte Folge, aber Word setzt KEIN Leerzeichen-Zeichen: die Luecke liegt unter der durchgehenden
+    Unterstreichung und gehoert damit nur zur neuen Fassung."""
+    d = WordDok()
+    x, top = EBENEN[1], d.top
+    x += d.text(x, top, "Norm ")
+    w_del = d.text(x, top, "ABC-", farbe=WORT_ROT)
+    d.durchstreichung(x, x + w_del, top, WORT_ROT)
+    x += w_del
+    x_n = x
+    x += d.text(x, top, "XY-Z", farbe=WORT_ROT) + breite(" ")             # Luecke ohne Zeichen
+    x += d.text(x, top, "123-", farbe=WORT_ROT)
+    d.unterstreichung(x_n, x, top, WORT_ROT)
+    d.zeile(x, top, [("4 und weiter.", "k")])
+    d.top += ZEILE
+    a = _lies(tmp_path, d)
+    b = a.blocks[0]
+    assert _anfang(b.alt_text, 2) == "Norm ABC-4" and _anfang(b.neu_text, 3) == "Norm XY-Z 123-4"
+
+
 def test_linie_nur_ueber_einer_wortluecke_ohne_leerzeichen_sperrt(tmp_path):
     d = WordDok()
     x, top = EBENEN[1], d.top
@@ -207,6 +283,38 @@ def test_unterstreichung_je_wort_mit_luecken_segment_ist_kein_befund(tmp_path):
     d.top += ZEILE
     a = _lies(tmp_path, d)
     assert _tok(a, "Pumpe").status == ADD and _tok(a, "Ventil").status == ADD
+    assert not _sperrend(_alle_codes(a))
+
+
+# =================================================================================================
+# Hochgestellte Ziffer hinter einer Einheit ("mm²") gegen Fussnoten-Marke ("Pumpe¹")
+# =================================================================================================
+HOCH = {"groesse": 5.28, "hoch": 0.6}         # wie gemessen: 8,35 pt Text, Ziffer 5,28 pt und 0,6 pt hoeher
+
+
+def test_hochgestellte_ziffer_hinter_einheit_bleibt_im_wort(tmp_path):
+    d = WordDok()
+    d.absatz([voll([("Kabel 2.5 mm", "k"), ("2", "k", None, HOCH), (", Rohr 3 m", "k"), ("3", "k", None, HOCH),
+                    (", Pumpe", "k"), ("1", "k", None, HOCH), (" Programm", "k"), ("2", "k", None, HOCH),
+                    (" Becken 4 mm", "k"), ("1", "k", None, HOCH), (" Wind 9 m/s", "k"), ("2", "k", None, HOCH)])])
+    a = _lies(tmp_path, d)
+    woerter = [t.old for t in _toks(a)]
+    assert "mm2," in woerter and "m3," in woerter and "m/s2" in woerter          # Einheit + Hochzahl = Wort
+    assert "Pumpe" in woerter and "Programm" in woerter                          # Fussnoten-Marken bleiben draussen
+    assert "mm" in woerter                                                       # "mm¹": 1 ist keine Potenz
+    assert not any(w in woerter for w in ("Pumpe1", "Programm2", "mm1"))
+
+
+def test_hochgestellte_einheit_mit_markierung(tmp_path):
+    d = WordDok()
+    d.absatz([voll([("Querschnitt ", "k"), ("[", "d"), ("2.5 mm", "k"), ("2", "k", None, HOCH), ("]", "d"),
+                    (" Kupfer", "k")])])
+    a = _lies(tmp_path, d)
+    k = _tok(a, "[2.5")
+    assert (k.old, k.new) == ("[2.5", "2.5")
+    e = _tok(a, "mm2]")
+    assert (e.old, e.new, e.status) == ("mm2]", "mm2", MOD)
+    assert _anfang(a.blocks[0].neu_text, 3) == "Querschnitt 2.5 mm2"
     assert not _sperrend(_alle_codes(a))
 
 
