@@ -39,22 +39,50 @@ BLASE_X0, BLASE_X1 = 433.0, 610.0
 TEXT_OBEN = 165.0                      # erste Textzeile unter der Kopfzeile
 TEXT_UNTEN = 615.0                     # letzte Textzeile ueber der Fusszeile
 
-_SCHRIFT = {"F1": "Times-Roman", "F2": "Times-Bold", "F3": "Helvetica", "F4": "Helvetica-Bold"}
+_SCHRIFT = {"F1": "Times-Roman", "F2": "Times-Bold", "F3": "Helvetica", "F4": "Helvetica-Bold",
+            "F5": "Times-Roman"}       # F5: Times-Metrik mit eigener Kodierung fuer Zeichen ausserhalb von WinAnsi
+# Zeichen, die Word setzt, die WinAnsi aber nicht kennt: Code in F5, Glyphenname, Breite (1/1000 em)
+_SONDER = {"‑": (127, "uni2011", 333),          # geschuetzter Bindestrich
+           " ": (129, "uni202F", 200)}          # schmales geschuetztes Leerzeichen
 
 
 def breite(text: str, groesse: float = GROESSE, schrift: str = "F1") -> float:
     """Breite wie pdfminer sie aus den Standard-Schriftmetriken rechnet (damit die Stuecke genau aneinander passen)."""
     w = FONT_METRICS[_SCHRIFT[schrift]][1]
-    return sum(w.get(c, 500) for c in text) * groesse / 1000.0
+    return sum(w.get(c, _SONDER[c][2] if c in _SONDER else 500) for c in text) * groesse / 1000.0
 
 
 def _unterlaenge(schrift: str) -> float:
     return -FONT_METRICS[_SCHRIFT[schrift]][0]["Descent"] / 1000.0
 
 
-def _esc(text: str) -> str:
-    roh = text.encode("cp1252").replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+def _esc(text: str, schrift: str = "F1") -> str:
+    if schrift == "F5":
+        roh = b"".join(bytes([_SONDER[c][0]]) if c in _SONDER else c.encode("cp1252") for c in text)
+    else:
+        roh = text.encode("cp1252")
+    roh = roh.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
     return roh.decode("latin-1")
+
+
+def _f5_schrift(deskriptor: int) -> bytes:
+    """Font-Dictionary fuer F5: Times-Breiten fuer WinAnsi + Sonderzeichen ueber /Differences (pdfminer liest dann
+    /Widths und die Unterlaenge aus dem /FontDescriptor -- gleiche Kaesten wie bei Times-Roman)."""
+    w = FONT_METRICS["Times-Roman"][1]
+    breiten = []
+    for code in range(32, 256):
+        sonder = next((b for c, (k, _, b) in _SONDER.items() if k == code), None)
+        if sonder is not None:
+            breiten.append(sonder)
+            continue
+        try:
+            breiten.append(int(w.get(bytes([code]).decode("cp1252"), 0)))
+        except UnicodeDecodeError:
+            breiten.append(0)
+    diff = " ".join(f"{k} /{n}" for k, n, _ in _SONDER.values())
+    return (b"<< /Type /Font /Subtype /Type1 /BaseFont /TimesWord /FirstChar 32 /LastChar 255 /Widths [%s] "
+            b"/Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [%s] >> /FontDescriptor %d 0 R >>"
+            % (" ".join(map(str, breiten)).encode(), diff.encode(), deskriptor))
 
 
 def _rgb(farbe: tuple[float, float, float]) -> str:
@@ -95,11 +123,14 @@ class WordDok:
 
     # ------------------------------------------------------------------ Grundformen
     def text(self, x: float, top: float, text: str, groesse: float = GROESSE, farbe: tuple[float, float, float] | None = None,
-             schrift: str = "F1") -> float:
-        """Text an (x, Oberkante des Zeichenkastens); gibt die Breite zurueck."""
-        basis = SEITE_H - (top + groesse * (1 - _unterlaenge(schrift)))
+             schrift: str = "F1", hoch: float = 0.0, basis_groesse: float | None = None) -> float:
+        """Text an (x, Oberkante des Zeichenkastens); gibt die Breite zurueck. hoch: so viele pt ueber der Grundlinie der
+        Zeile (Schriftgroesse `basis_groesse`), z. B. fuer eine hochgestellte Ziffer."""
+        if schrift == "F1" and any(c in _SONDER for c in text):
+            schrift = "F5"
+        basis = SEITE_H - (top + (basis_groesse or groesse) * (1 - _unterlaenge(schrift))) + hoch
         fb = f"{_rgb(farbe)} rg" if farbe else "0 g"
-        self._vorn(f"BT /{schrift} {groesse} Tf {fb} {x:.3f} {basis:.3f} Td ({_esc(text)}) Tj ET\n")
+        self._vorn(f"BT /{schrift} {groesse} Tf {fb} {x:.3f} {basis:.3f} Td ({_esc(text, schrift)}) Tj ET\n")
         return breite(text, groesse, schrift)
 
     def rechteck(self, x0: float, top: float, x1: float, bot: float, farbe: tuple[float, float, float] | float,
@@ -133,14 +164,17 @@ class WordDok:
     # ------------------------------------------------------------------ Zeilen und Absaetze
     def zeile(self, x: float, top: float, stuecke: list[tuple], groesse: float = GROESSE,
               fett: bool = False) -> list[tuple[float, float]]:
-        """Schreibt die Stuecke hintereinander; gibt je Stueck (x0, x1) zurueck."""
+        """Schreibt die Stuecke hintereinander; gibt je Stueck (x0, x1) zurueck. Ein Stueck darf als viertes Element
+        Optionen haben: {"groesse": 5.28, "hoch": 0.6} = kleinere Schrift, so viele pt ueber der Grundlinie (hochgestellt)."""
         out = []
         for st in stuecke:
             text, art = st[0], st[1]
-            farbe = st[2] if len(st) > 2 else WORT_ROT
+            farbe = (st[2] if len(st) > 2 and st[2] is not None else WORT_ROT)
+            opt = st[3] if len(st) > 3 else {}
             schrift = "F2" if fett else "F1"
             textfarbe = None if art in ("k", "u") else farbe
-            w = self.text(x, top, text, groesse, textfarbe, schrift)
+            w = self.text(x, top, text, float(opt.get("groesse", groesse)), textfarbe, schrift,
+                          hoch=float(opt.get("hoch", 0.0)), basis_groesse=groesse)
             if art in ("n", "nd"):
                 self.unterstreichung(x, x + w, top, farbe, groesse)
             if art in ("u", "nu"):
@@ -254,7 +288,12 @@ class WordDok:
             return len(objekte)
 
         fonts = {k: neu(b"<< /Type /Font /Subtype /Type1 /BaseFont /%s /Encoding /WinAnsiEncoding >>" % v.encode())
-                 for k, v in _SCHRIFT.items()}
+                 for k, v in _SCHRIFT.items() if k != "F5"}
+        d = FONT_METRICS["Times-Roman"][0]
+        deskriptor = neu(b"<< /Type /FontDescriptor /FontName /TimesWord /Flags 34 /FontBBox [-168 -218 1000 898] "
+                         b"/ItalicAngle 0 /Ascent %d /Descent %d /CapHeight 662 /StemV 84 >>"
+                         % (int(d["Ascent"]), int(d["Descent"])))
+        fonts["F5"] = neu(_f5_schrift(deskriptor))
         font_res = " ".join(f"/{k} {n} 0 R" for k, n in fonts.items()).encode()
         ids = []
         for s in self.seiten:

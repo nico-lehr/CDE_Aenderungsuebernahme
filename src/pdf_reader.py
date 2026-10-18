@@ -1454,6 +1454,8 @@ def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "",
 
     gruppen: list[list[_Z]] = []
     trenner: list[str] = []          # Trenner HINTER der Gruppe gleichen Index
+    trenner_st: list[str] = []       # ADR 0006: Status des Leerraums dort (KEEP | DEL | ADD; markiert = nur in einer Fassung)
+    trenner_breite: list[float] = []
     for z in zeichen:
         if gruppen:
             a = gruppen[-1][-1]
@@ -1472,8 +1474,13 @@ def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "",
                 trenner.append("\t")
             else:
                 trenner.append(" ")
+            sts = {x.status for x in zw}
+            trenner_st.append(sts.pop() if len(sts) == 1 else KEEP)
+            trenner_breite.append(luecke)
         gruppen.append([z])
     trenner.append(" ")              # am Zeilenende: Leerzeichen (zusammengefuegte Trennungen setzen das selbst)
+    trenner_st.append(KEEP)
+    trenner_breite.append(0.0)
     tokens = []
     infos = []
     for gi, g in enumerate(gruppen):
@@ -1522,7 +1529,51 @@ def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "",
         tokens.append(PdfToken(old=old, new=new, status=status, page=seite, bbox=bbox, hinweis=";".join(sorted(hin)),
                                trenner=trenner[gi], teile=teile))
         infos.append(info)
+    if _modus(cfg) != "alt" and any(s != KEEP for s in trenner_st):
+        groesse = statistics.median(z.size for z in zeichen)
+        _leerraum_kleben(tokens, infos, trenner_st, trenner_breite, lay.get("liste_min_einzug_em", 1.2) * groesse)
     return tokens, infos
+
+
+def _leerraum_kleben(tokens: list[PdfToken], infos: list[_Info], st: list[str], breite: list[float],
+                     max_breite: float) -> None:
+    """ADR 0006: markierter Leerraum (gestrichen bzw. unterstrichen, als Zeichen oder als von der Linie ueberdeckte
+    Luecke) gehoert NUR zur alten bzw. neuen Fassung. Stuende er in der anderen Fassung zwischen zwei Textstuecken
+    (eingefuegtes Leerzeichen, links und rechts davon alter Text; gestrichenes Leerzeichen, links und rechts neuer Text),
+    werden die beiden Woerter zu EINEM Wort mit dem Leerraum als Zeichen-Lauf zusammengelegt:
+    "60364-|UNE-HD" + eingefuegtes Leerzeichen + "60364-|6" -> old "60364-6", new "UNE-HD 60364-6". Sonst (z. B. ganze
+    gestrichene Wortgruppe) bleiben die Woerter getrennt (Wortzahl der Bilanz); der Leerraum steht dann in der anderen
+    Fassung neben anderem Leerraum (die Normalform legt ihn zusammen), und das linke Wort traegt `trenner_art` "d"/"a"
+    (intern, fuer d/a-Laeufe statt "s"). Nie ueber eine Luecke so breit wie ein haengender Einzug (Tabulator)."""
+    i = 0
+    while i < len(tokens) - 1:
+        s = st[i]
+        l, r = tokens[i], tokens[i + 1]
+        if s not in (ADD, DEL):
+            i += 1
+            continue
+        if breite[i] < max_breite and ((s == ADD and l.old and r.old) or (s == DEL and l.new and r.new)):
+            text = "\xa0" if l.trenner == "\xa0" else " "
+            teile: list[tuple[str, str]] = []
+            for s_, tx in _laeufe(l) + [(s, text)] + _laeufe(r):
+                if teile and teile[-1][0] == s_:
+                    teile[-1] = (s_, teile[-1][1] + tx)
+                elif tx:
+                    teile.append((s_, tx))
+            hin = ";".join(sorted((set(l.hinweis.split(";")) | set(r.hinweis.split(";"))) - {""}))
+            neu = PdfToken(old="".join(tx for s_, tx in teile if s_ in (KEEP, DEL)),
+                           new="".join(tx for s_, tx in teile if s_ in (KEEP, ADD)), status=MOD, page=l.page,
+                           bbox=(l.bbox[0], min(l.bbox[1], r.bbox[1]), r.bbox[2], max(l.bbox[3], r.bbox[3])),
+                           hinweis=hin, trenner=r.trenner, teile=teile)
+            if getattr(r, "trenner_art", ""):
+                neu.trenner_art = r.trenner_art          # type: ignore[attr-defined]
+            a, b = infos[i], infos[i + 1]
+            tokens[i:i + 2] = [neu]
+            infos[i:i + 2] = [_Info(unb=a.unb or b.unb, farbe=a.farbe or b.farbe, unlesbar=a.unlesbar or b.unlesbar)]
+            del st[i], breite[i]
+            continue
+        l.trenner_art = "a" if s == ADD else "d"              # type: ignore[attr-defined]
+        i += 1
 
 
 def _hochzahlen(cluster: list[list[_Z]], lay: dict) -> tuple[list[list[_Z]], list[list[_Z]]]:
@@ -1558,27 +1609,60 @@ def _hochzahlen(cluster: list[list[_Z]], lay: dict) -> tuple[list[list[_Z]], lis
                 hoch[j].extend(cl)
                 rest[i] = []
                 break
+    # ADR 0006 / Auftrag 003: hochgestellte 2/3 direkt hinter einer Einheit ("mm²", "m/s²") sind Teil des Wortes, keine
+    # Fussnoten-Marke -> bleiben als normale Ziffer im Text ("mm2", wie in der Excel)
+    for j, h in enumerate(hoch):
+        behalten = [c for c in h if rest[j] and _einheit_hochzahl(c, rest[j], lay)]
+        if behalten:
+            hoch[j] = [c for c in h if not any(c is b for b in behalten)]
+            rest[j] = rest[j] + behalten
     return rest, hoch
 
 
-def _markierte_leerzeichen(zeichen: list[_Z], leere: list[_Z]) -> list[_Z]:
-    """ADR 0006: ein Leerzeichen, das ANDERS markiert ist als beide Nachbarzeichen (nur das Leerzeichen gestrichen:
-    "Pumpe Ventil" -> "PumpeVentil"; nur das Leerzeichen neu; gestrichenes Leerzeichen + neuer Bindestrich), ist eine
-    Aenderung IM Wort: es wird Teil des Wortes (Zeichen-Lauf), statt die Woerter zu trennen. Sonst ginge die Aenderung
-    still verloren (beide Woerter blieben 'unveraendert'). Leerzeichen, die zu einem markierten Nachbarwort gehoeren
-    ("Ventil " gestrichen), trennen weiter wie bisher."""
-    out = []
-    for s in leere:
-        if s.status == KEEP or not s.text:
+def _einheit_hochzahl(c: _Z, zeile: list[_Z], lay: dict) -> bool:
+    """Steht die hochgestellte Ziffer `c` (layout.hochzahl_einheit_ziffern) ohne Luecke hinter einer Einheit
+    (layout.hochzahl_einheiten), die ein eigenes Wort ist oder direkt auf eine Zahl folgt ("mm²", "2.5mm²", "m/s²")?
+    Hinter einem gewoehnlichen Wort ("Programm¹", "Becken²") bleibt sie eine Fussnoten-Marke."""
+    if c.text not in [str(z) for z in lay.get("hochzahl_einheit_ziffern", [])]:
+        return False
+    einheiten = [str(e) for e in lay.get("hochzahl_einheiten", [])]
+    if not einheiten:
+        return False
+    links = sorted((z for z in zeile if not z.leer and z.x1 <= c.x0 + 0.5), key=lambda z: z.x1)
+    wort = ""
+    rechts = c.x0
+    for z in reversed(links):                       # das Wort direkt links der Ziffer (ohne Luecke)
+        if rechts - z.x1 > lay["wort_luecke"] * z.size:
+            break
+        wort = z.text + wort
+        rechts = z.x0
+    for e in einheiten:
+        if wort.endswith(e) and e:
+            davor = wort[:-len(e)]
+            if not davor or not davor[-1].isalpha():
+                return True
+    return False
+
+
+def _luecken_leerzeichen(zeichen: list[_Z], leere: list[_Z], markierer: Any, lay: dict) -> list[_Z]:
+    """ADR 0006: Wortluecke OHNE Leerzeichen-Zeichen, die von einer Linie (bzw. Flaeche) ueberdeckt ist: ein unsichtbares
+    Leerzeichen mit dem Status dieser Markierung (gestrichen/neu), damit der Leerraum nur in seiner Fassung steht
+    (siehe _leerraum_kleben). Luecken so breit wie ein haengender Einzug (Tabulator) bleiben aussen vor."""
+    if markierer is None:
+        return []
+    out: list[_Z] = []
+    zs = sorted(zeichen, key=lambda z: z.x0)
+    for a, b in zip(zs, zs[1:]):
+        groesse = max(a.size, b.size)
+        luecke = b.x0 - a.x1
+        if luecke <= lay["wort_luecke"] * groesse or luecke >= lay.get("liste_min_einzug_em", 1.2) * groesse:
             continue
-        mitte = (s.x0 + s.x1) / 2
-        links = [z for z in zeichen if (z.x0 + z.x1) / 2 < mitte and s.x0 - z.x1 <= 0.3 * z.size]
-        rechts = [z for z in zeichen if (z.x0 + z.x1) / 2 > mitte and z.x0 - s.x1 <= 0.3 * z.size]
-        if not links or not rechts:
-            continue
-        l, r = max(links, key=lambda z: z.x1), min(rechts, key=lambda z: z.x0)
-        if s.status not in (l.status, r.status):
-            out.append(s)
+        if any(a.x1 - 0.5 <= (z.x0 + z.x1) / 2 <= b.x0 + 0.5 for z in leere):
+            continue                    # echtes Leerzeichen-Zeichen: dessen Status hat der Markierer schon bestimmt
+        v = _Z(text=" ", x0=a.x1, x1=b.x0, top=min(a.top, b.top), bottom=max(a.bottom, b.bottom), size=groesse,
+               font="", leer=True)
+        if markierer.status(v) != KEEP:
+            out.append(v)
     return out
 
 
@@ -1601,11 +1685,13 @@ def _label_verbinden(toks: list[PdfToken], infos: list[_Info], lay: dict, groess
     toks[0:2] = [PdfToken(old=alt.old, new=neu.new, status=MOD, page=a.page,
                           bbox=(a.bbox[0], min(a.bbox[1], b.bbox[1]), b.bbox[2], max(a.bbox[3], b.bbox[3])),
                           hinweis=hin, trenner=b.trenner, teile=[(a.status, form_a), (b.status, form_b)])]
+    if getattr(b, "trenner_art", ""):
+        toks[0].trenner_art = b.trenner_art              # type: ignore[attr-defined]
     i0, i1 = infos[0], infos[1]
     infos[0:2] = [_Info(unb=i0.unb or i1.unb, farbe=i0.farbe or i1.farbe, unlesbar=i0.unlesbar or i1.unlesbar)]
 
 
-def _zeilen(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> list[_Zeile]:
+def _zeilen(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "", markierer: Any = None) -> list[_Zeile]:
     lay = cfg["layout"]
     tol = lay["zeilen_toleranz"]
     weiche = [z for z in zeichen if z.weich]
@@ -1630,10 +1716,9 @@ def _zeilen(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> li
         c_top, c_bot = min(z.top for z in cl), max(z.bottom for z in cl)
         c_x0, c_x1 = min(z.x0 for z in cl), max(z.x1 for z in cl)
         leer_cl = [z for z in leere if c_top <= (z.top + z.bottom) / 2 <= c_bot and c_x0 <= (z.x0 + z.x1) / 2 <= c_x1]
-        geklebt = _markierte_leerzeichen(cl, leer_cl) if _modus(cfg) != "alt" else []
-        if geklebt:
-            leer_cl = [z for z in leer_cl if not any(z is g for g in geklebt)]
-        toks, infos = _woerter(cl + geklebt, seite, cfg, grund_hex, leer_cl, hoch)
+        if _modus(cfg) != "alt":
+            leer_cl += _luecken_leerzeichen(cl, leer_cl, markierer, lay)
+        toks, infos = _woerter(cl, seite, cfg, grund_hex, leer_cl, hoch)
         if not toks:
             continue
         _label_verbinden(toks, infos, lay, statistics.median(z.size for z in cl))
@@ -2264,8 +2349,11 @@ def _verbinden(v: PdfToken, t: PdfToken, weich: bool, ausnahmen: set[str], min_b
             teile[-1] = (s_, teile[-1][1] + tx)
         else:
             teile.append((s_, tx))
-    return PdfToken(old=alt, new=neu, status=v.status, page=v.page, bbox=bbox, hinweis=hin, trenner=t.trenner,
-                    teile=teile if len(teile) > 1 else [], trennstelle=fuge - 1 if mit_strich and text_v.endswith("-") else fuge)
+    m = PdfToken(old=alt, new=neu, status=v.status, page=v.page, bbox=bbox, hinweis=hin, trenner=t.trenner,
+                 teile=teile if len(teile) > 1 else [], trennstelle=fuge - 1 if mit_strich and text_v.endswith("-") else fuge)
+    if getattr(t, "trenner_art", ""):
+        m.trenner_art = t.trenner_art                     # type: ignore[attr-defined]
+    return m
 
 
 def _silben(tokens: list[PdfToken], zeilen: list[_Zeile], cfg: dict, weich_ids: set[int],
@@ -2614,7 +2702,7 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
                 if z.unb == "bunt" and z.hex != grund_hex and z.farbklasse is None:
                     unbekannt[z.hex] += 1
         ergebnis.warnungen += m.meldungen(nr)
-        alle_zeilen.append(_zeilen(sd.zeichen, nr, cfg, grund_hex))
+        alle_zeilen.append(_zeilen(sd.zeichen, nr, cfg, grund_hex, m))
     inhalt_rechts = {sd.nr: sd.leiste[0] for sd in seiten_daten if sd.leiste}
     nutz_pro_seite = _zu_bloecken(alle_zeilen, seiten_h, cfg, ergebnis, inhalt_rechts)
     for sd, zl, nutz in zip(seiten_daten, alle_zeilen, nutz_pro_seite):

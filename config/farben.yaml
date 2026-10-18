@@ -84,6 +84,9 @@ layout:
   hochzahl_faktor: 0.75      # R3: Zeichen kleiner als Faktor * Median der Zeile ...
   hochzahl_anhebung: 0.15    # R3: ... und mindestens so viele Schriftgroessen angehoben = Hochzahl (Fussnoten-Marke), nicht im Wort-Text
   hochzahl_max_zeichen: 6    # R3: hoechstens so viele Zeichen hat eine allein stehende Hochzahl-Gruppe
+  # Hochgestellte Ziffer direkt hinter einer Einheit ("mm²") ist keine Fussnoten-Marke: sie bleibt als Ziffer im Wort ("mm2")
+  hochzahl_einheit_ziffern: ["2", "3"]
+  hochzahl_einheiten: [m, mm, cm, dm, km, µm, μm, nm, ft, in, yd, m/s, km/h]
   absatz_faktor: 1.3         # Zeilenabstand > Faktor * typischer Zeilenabstand => neuer Absatz
   ueberschrift_faktor: 1.08  # Schrift groesser als Fliesstext => Ueberschrift
   kopf_fuss_anteil: 0.07     # oberer/unterer Seitenrand fuer Kopf-/Fusszeilen
