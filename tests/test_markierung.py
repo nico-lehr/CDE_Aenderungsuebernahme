@@ -155,3 +155,180 @@ def test_libreoffice_zeigt_rot_blau_und_strich(tmp_path):
         assert tuple(round(v, 2) for v in farben["a"]) == (0.0, 0.69, 0.94)   # alt = Hellblau 00B0F0
         assert tuple(farben["n"]) == (1.0, 0.0, 0.0)      # neu = rot
         assert len(seite.lines) + len(seite.rects) >= 1   # Durchstreichung
+
+
+# ================================================================ Auftrag 003: markiere_ops (End-Stuecke aus Zellinhalt + Operationen)
+from src.gegenprobe import pruefe_absatz_markiert, zustand_markiert_zeichen    # noqa: E402
+from src.markierung import (SICHT_NEU, klassen_stuecke, markiere_ops, sicht_text, trenner_aus_laeufen,  # noqa: E402
+                            zusammenfassen)
+from src.models import Absatz, Operation                                       # noqa: E402
+
+
+def _ops(*spec):
+    """("e", start, ende, text, id) = ersetzen; ("i", pos, text, id) = einfuegen; ("l", id) = zelle_leeren."""
+    out = []
+    for k, s in enumerate(spec):
+        if s[0] == "e":
+            out.append(Operation("ersetzen", "CDE", 2, 3, s[1], s[2], s[3], seq=k, aenderung=s[4]))
+        elif s[0] == "i":
+            out.append(Operation("einfuegen", "CDE", 2, 3, s[1], s[1], s[2], seq=k, aenderung=s[3]))
+        else:
+            out.append(Operation("zelle_leeren", "CDE", 2, 3, seq=k, aenderung=s[1]))
+    return out
+
+
+def _fs(stuecke):
+    return [(s.format, s.text) for s in stuecke]
+
+
+def test_markiere_ersetzung_einfuegung_loeschung():
+    t = "Die Pumpe läuft leise."
+    m = markiere_ops([Stueck(NORMAL, t)], _ops(("e", 4, 9, "Kessel", "A1"), ("i", 15, " heute", "A2"),
+                                                ("e", 15, 21, "", "A3")))
+    assert _fs(m.stuecke) == [(NORMAL, "Die "), (ALT, "Pumpe"), (NEU, "Kessel"), (NORMAL, " läuft"), (NEU, " heute"),
+                              (ALT, " leise"), (NORMAL, ".")]
+    assert ansicht(m.stuecke, ALT) == t and ansicht(m.stuecke, NEU) == "Die Kessel läuft heute."
+    assert all(s.behalten for s in m.stuecke if s.format == NORMAL) and not any(s.behalten for s in m.stuecke if s.format != NORMAL)
+    assert [z[2] for z in m.zeichen if z[2] >= 0] == list(range(len(t)))       # jedes Original-Zeichen steht noch da
+
+
+def test_markiere_mit_pdf_leerraum_zwischen_alt_und_neu():
+    zw = trenner_aus_laeufen(L("darf {-12-} {+7+} ms"))
+    assert zw == {"D": " "} or zw == {}                     # L() gibt d und a verschiedene IDs (D/N): kein Paar
+    laeufe = [Lauf("k", "darf"), Lauf("s", " "), Lauf("d", "12", "A1"), Lauf("s", " "), Lauf("a", "7", "A1"),
+              Lauf("s", " "), Lauf("k", "ms")]
+    assert trenner_aus_laeufen(laeufe) == {"A1": " "}
+    assert trenner_aus_laeufen([Lauf("d", "alt", "A1"), Lauf("a", "neu", "A1")]) == {"A1": ""}
+    m = markiere_ops([Stueck(NORMAL, "darf 12 ms")], _ops(("e", 5, 7, "7", "A1")), zwischen=trenner_aus_laeufen(laeufe))
+    assert _fs(m.stuecke) == [(NORMAL, "darf "), (ALT, "12"), (NORMAL, " "), (NEU, "7"), (NORMAL, " ms")]
+
+
+def test_markiere_behaelt_alte_markierungen_und_schrift_der_umgebung():
+    fett, rot_alt, strich_alt = object(), object(), object()
+    vorher = [Stueck(NORMAL, "Die Pumpe ", fett), Stueck(NEU, "läuft ", rot_alt), Stueck(ALT, "lief ", strich_alt),
+              Stueck(NORMAL, "leise.", fett)]
+    t = sicht_text(vorher)
+    s = t.index("leise")
+    m = markiere_ops(vorher, _ops(("e", s, s + 5, "laut", "A1")))
+    assert [(x.format, x.text, x.basis, x.behalten) for x in m.stuecke] == [
+        (NORMAL, "Die Pumpe ", fett, True), (NEU, "läuft ", rot_alt, True), (ALT, "lief ", strich_alt, True),
+        (ALT, "leise", fett, False), (NEU, "laut", fett, False), (NORMAL, ".", fett, True)]
+
+
+def test_markiere_in_der_neu_sicht_ueberspringt_durchgestrichenes():
+    vorher = [Stueck(NORMAL, "Die "), Stueck(ALT, "alte "), Stueck(NORMAL, "Pumpe läuft.")]
+    t = sicht_text(vorher, SICHT_NEU)
+    assert t == "Die Pumpe läuft."
+    s = t.index("läuft")
+    m = markiere_ops(vorher, _ops(("e", s, s + 5, "steht", "A1")), sicht=SICHT_NEU)
+    assert _fs(m.stuecke) == [(NORMAL, "Die "), (ALT, "alte "), (NORMAL, "Pumpe "), (ALT, "läuft"), (NEU, "steht"),
+                              (NORMAL, ".")]
+    assert [z[2] for z in m.zeichen if z[2] >= 0] == list(range(len(t)))
+
+
+def test_markiere_zelle_leeren_und_reihenfolge_an_derselben_stelle():
+    m = markiere_ops([Stueck(NORMAL, "Ganz weg.")], _ops(("l", "A1")))
+    assert _fs(m.stuecke) == [(ALT, "Ganz weg.")]
+    # an derselben Stelle wie im Applier: Ersatztext der dort endenden Ersetzung, dann Einfuegungen
+    m = markiere_ops([Stueck(NORMAL, "a b c")], _ops(("i", 3, " y", "A2"), ("e", 2, 3, "B", "A1"), ("i", 2, "x ", "A3")))
+    assert ansicht(m.stuecke, NEU) == "a x B y c"
+    with pytest.raises(ValueError):
+        markiere_ops([Stueck(NORMAL, "kurz")], _ops(("e", 2, 9, "x", "A1")))
+
+
+def test_klassen_stuecke_fuer_die_anzeige():
+    m = markiere_ops([Stueck(NORMAL, "x alt y")], _ops(("e", 2, 5, "neu", "A1")))
+    assert klassen_stuecke(m.zeichen) == [["normal", "x "], ["alt", "alt"], ["neu", "neu"], ["normal", " y"]]
+
+
+def test_zusammenfassen_trennt_behaltene_und_markierte_stuecke():
+    st = zusammenfassen([Stueck(NORMAL, "a", None, True), Stueck(NORMAL, "b", None, False), Stueck(NORMAL, "c", None, False)])
+    assert [(s.text, s.behalten) for s in st] == [("a", True), ("bc", False)]
+
+
+# ---------------------------------------------------------------- A3 mit Markierung (src/gegenprobe.py)
+def _a3(text, laeufe, ops, start=0, ende=None, angewendet=("A1",), zwischen=None):
+    m = markiere_ops([Stueck(NORMAL, text)], ops, zwischen=zwischen or trenner_aus_laeufen(laeufe))
+    ab = Absatz("P1", "CDE", [(2, 3, start, len(text) if ende is None else ende)], laeufe)
+    return pruefe_absatz_markiert(ab, {(2, 3): (text, m.zeichen)}, set(angewendet))
+
+
+def _lauf(spec: str, aid: str = "A1") -> list[Lauf]:
+    out = L(spec)
+    return [Lauf(x.art, x.text, aid if x.aenderung else "", x.optional) for x in out]
+
+
+def test_a3_markiert_richtig_besteht():
+    assert _a3("Das System muss laufen.", _lauf("Das {-System-} {+Gerät+} muss laufen."), _ops(("e", 4, 10, "Gerät", "A1"))) is None
+    assert _a3("Die Anlage arbeitet.", _lauf("Die Anlage arbeitet {+leise+}|."), _ops(("i", 19, " leise", "A1"))) is None
+    t = "Eins bleibt. Zwei weg. Vier."
+    s, e = t.index("Zwei"), t.index("Zwei") + len("Zwei weg.")
+    assert _a3(t, _lauf("{-Zwei-} {-weg.-}"), _ops(("e", s - 1, e, "", "A1")), s, e) is None
+
+
+def test_a3_markiert_erkennt_fehler():
+    assert _a3("Der Wert und der Wert.", _lauf("Der Wert und der {-Wert-} {+Pegel+}|."),
+               _ops(("e", 4, 8, "Pegel", "A1"))) == "gegenprobe_text"
+    assert _a3("Die Anlage arbeitet.", _lauf("Die Anlage arbeitet {+leise+}|."),
+               _ops(("i", 20, " leise", "A1"))) == "gegenprobe_text"                  # hinter dem Punkt
+    assert _a3("Erster Teil zweiter Teil.", _lauf("Erster Teil {+neu+} zweiter Teil."),
+               _ops(("i", 11, "\nneu", "A1"))) == "gegenprobe_umbruch"
+    # richtiger Text, aber falsche Formatklasse: das Wort steht als neu da, ist im PDF aber unveraendert
+    assert _a3("x y", _lauf("x {+y+}"), _ops(("e", 2, 3, "y", "A1"))) in ("gegenprobe_alt", "gegenprobe_format")
+
+
+def test_a3_markiert_meldet_verlust_und_eigenes_ausserhalb():
+    laeufe = _lauf("Die Pumpe {-läuft-}|.")
+    m = markiere_ops([Stueck(NORMAL, "Die Pumpe läuft.")], _ops(("e", 10, 15, "", "A1")))
+    zeichen = [z for z in m.zeichen if z[0] != "P"]                          # ein Original-Zeichen fehlt
+    ab = Absatz("P1", "CDE", [(2, 3, 0, 16)], laeufe)
+    assert pruefe_absatz_markiert(ab, {(2, 3): ("Die Pumpe läuft.", zeichen)}, {"A1"}) == "gegenprobe_verlust"
+    t = "Erster Satz.\nZweiter Satz alt."
+    m = markiere_ops([Stueck(NORMAL, t)], _ops(("e", 0, 6, "", "A1")))         # eigene Loeschung im FREMDEN Absatz
+    ab = Absatz("P1", "CDE", [(2, 3, 13, len(t))], _lauf("Zweiter Satz {-alt-}|."))
+    assert pruefe_absatz_markiert(ab, {(2, 3): (t, m.zeichen)}, {"A1"}) == "gegenprobe_aussen"
+
+
+def test_soll_zeichen_je_klasse():
+    z = zustand_markiert_zeichen(_lauf("x {-alt-}|{+neu+} y"), {"A1"})
+    assert "".join(c for c, _, _ in z) == "x altneu y"
+    assert [k for c, k, _ in z if c != " "] == ["normal", "alt", "alt", "alt", "neu", "neu", "neu", "normal"]
+
+
+def test_zufall_markierte_ops_bestehen_die_gegenprobe_und_verlieren_nichts():
+    """Wie der Planer: ein Wort ersetzen, ein Wort samt Leerzeichen loeschen, ein Wort einfuegen -- je Absatz eine
+    Aenderung. Ergebnis: A3 besteht, alt = Original, neu = PDF-neu, kein Zeichen geht verloren."""
+    rnd = random.Random(7)
+    woerter = ["Ventil", "Pumpe", "Druck", "Wert", "Anlage", "Prüfung", "Leitung", "Zebrafink"]
+    for _ in range(300):
+        w = [rnd.choice(woerter) for _ in range(rnd.randint(2, 7))]
+        t = " ".join(w) + "."
+        k = rnd.randrange(len(w))
+        pos = sum(len(x) + 1 for x in w[:k])
+        art = rnd.choice("eli")
+        laeufe: list[Lauf] = []
+        for i, x in enumerate(w):
+            if i:
+                laeufe.append(Lauf("s", " "))
+            if i == k and art == "e":
+                laeufe += [Lauf("d", x, "A1"), Lauf("s", " "), Lauf("a", "Neu", "A1")]
+            elif i == k and art == "l":
+                laeufe.append(Lauf("d", x, "A1"))
+            else:
+                laeufe.append(Lauf("k", x))
+            if i == k and art == "i":
+                laeufe += [Lauf("s", " "), Lauf("a", "Neu", "A1")]
+        laeufe.append(Lauf("k", "."))
+        if art == "e":
+            ops = _ops(("e", pos, pos + len(w[k]), "Neu", "A1"))
+        elif art == "l":
+            s, e = (pos - 1, pos + len(w[k])) if k else (pos, pos + len(w[k]) + (1 if len(w) > 1 else 0))
+            ops = _ops(("e", s, e, "", "A1"))
+        else:
+            ops = _ops(("i", pos + len(w[k]), " Neu", "A1"))
+        m = markiere_ops([Stueck(NORMAL, t)], ops, zwischen=trenner_aus_laeufen(laeufe))
+        ab = Absatz("P1", "CDE", [(2, 3, 0, len(t))], laeufe)
+        assert pruefe_absatz_markiert(ab, {(2, 3): (t, m.zeichen)}, {"A1"}) is None, (t, art, k)
+        assert "".join(z[0] for z in m.zeichen if z[2] >= 0) == t                  # Original vollstaendig, in Reihenfolge
+        assert normalform(ansicht(m.stuecke, ALT))[0] == normalform(t)[0]        # (Leerraum aus dem PDF zwischen Alt und Neu)
+        assert normalform(ansicht(m.stuecke, NEU))[0] == normalform(zustand(laeufe, {"A1"}))[0]

@@ -145,6 +145,7 @@ def test_hindernisse_verbundene_zellen_unterhalb_sind_unbedenklich(tmp_path):
     assert any("Unterhalb sind verbundene" in r for r in xl.einfuege_risiken("Merge", 1))
 
 
+@pytest.mark.schreiber_openpyxl          # ADR 0007: prueft das fruehere Speichern mit openpyxl
 def test_hindernisse_verbundene_zellen_durch_die_einfuegestelle_bleiben_ein_hindernis(tmp_path):
     xl = _eigenschaften(tmp_path)
     for z in (4, 5, 9):                                           # mitten durch A3:B5 bzw. A8:A9
@@ -168,6 +169,7 @@ def test_hindernisse_ausgeblendete_zeilen_nur_wenn_mitten_in_der_folge(tmp_path)
     assert any("gruppierte Zeilen" in r for r in xl.einfuege_risiken("Gruppe", 3))      # streng: wie frueher
 
 
+@pytest.mark.schreiber_openpyxl          # ADR 0007: prueft das fruehere Speichern mit openpyxl
 def test_hindernisse_alles_andere_bleibt_wie_in_einfuege_risiken(tmp_path):
     xl = _eigenschaften(tmp_path)
     for blatt, z in [("Formel", 1), ("Formel", 5), ("Formel", 30), ("Bedingt", 5), ("Bedingt", 21), ("Pruefung", 5),
@@ -183,6 +185,22 @@ def test_hindernisse_alles_andere_bleibt_wie_in_einfuege_risiken(tmp_path):
     assert any("Hyperlinks" in r for r in xl.einfuege_hindernisse("Links", 5))
     assert any("Bilder oder Diagramme" in r for r in xl.einfuege_hindernisse("Bild", 5))
     assert "gibt es in der Excel nicht" in xl.einfuege_hindernisse("Gibt es nicht", 1)[0]
+
+
+def test_hindernisse_patch_schreiber_zieht_das_meiste_selbst_mit(tmp_path):
+    """ADR 0007 (Standard-Schreiber patch): Formeln, bedingte Formatierung, Datenpruefung, Filter, Namen, Hyperlinks,
+    verbundene Zellen und Bilder darunter wandern mit. Hindernis bleibt, was xlsx_patch nicht sicher kann."""
+    xl = _eigenschaften(tmp_path)
+    for blatt in ("Formel", "Bedingt", "Pruefung", "Filter", "Namen", "Links", "Bild", "Sauber"):
+        assert xl.einfuege_hindernisse(blatt, 5) == [], (blatt, xl.einfuege_hindernisse(blatt, 5))
+    assert xl.einfuege_hindernisse("Merge", 6) == [] and xl.einfuege_hindernisse("Gruppe", 8) == []
+    assert any("durch die Zeile" in r for r in xl.einfuege_hindernisse("Merge", 4))
+    assert any("mitten in eine Folge" in r for r in xl.einfuege_hindernisse("Gruppe", 9))
+    assert any("Excel-Tabelle" in r for r in xl.einfuege_hindernisse("Tab", 5))
+    assert any("Diagramm" in r for r in xl.einfuege_hindernisse("Bild", 2))      # Diagramm zeigt auf A1:A2
+    assert "gibt es in der Excel nicht" in xl.einfuege_hindernisse("Gibt es nicht", 1)[0]
+    # die Weiche ueberschreibt die Einstellung: so sieht der openpyxl-Schreiber dieselbe Stelle
+    assert any("Formeln" in r for r in xl.einfuege_hindernisse("Formel", 5, schreiber="openpyxl"))
 
 
 # --- Ende zu Ende: Planer + Applier --------------------------------------------------------------------------

@@ -19,4 +19,5 @@ markers = [
     "redteam: Red-Team-Test mit absichtlich erwartetem Fehler (xfail strict, Grund mit RT-Nummer und Besitzer)",
     "markierung_an: Test laeuft mit farbiger Excel-Markierung (markierung.aenderungen = farbe, ADR 0005); sonst ist sie aus",
     "legende_neu: Test laeuft mit der Standard-Legende (legende.modus aus config/farben.yaml, ADR 0006); sonst Modus alt",
+    "schreiber_openpyxl: Test laeuft mit dem frueheren Schreiber openpyxl (anwenden.schreiber, ADR 0007); sonst patch",
 ]

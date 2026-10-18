@@ -461,6 +461,7 @@ def test_bilanz_zaehlt_wirkung_als_abweichung():
     assert bilanz([a], 2, [])["nachkontrolle_abweichungen"] == 1
 
 
+@pytest.mark.schreiber_openpyxl          # ADR 0007: prueft das fruehere Speichern mit openpyxl
 def test_markierung_gelb_liest_farbe_aus_der_konfiguration(tmp_path):
     p = _basis_excel(tmp_path)
     rep = Operation("ersetzen", "CDE", 2, 3, 4, 10, "Gerät", 1, aenderung="A1", erwartet="System")
@@ -471,6 +472,7 @@ def test_markierung_gelb_liest_farbe_aus_der_konfiguration(tmp_path):
     assert blatt(tmp_path / "out.xlsx").cell(2, 3).fill.fgColor.rgb.endswith("AABBCC")
 
 
+@pytest.mark.schreiber_openpyxl          # ADR 0007: prueft das fruehere Speichern mit openpyxl
 def test_kommentar_markierung_liest_autor_und_ueberschreibt_keinen_kommentar(tmp_path):
     from openpyxl.comments import Comment
     p = _basis_excel(tmp_path)
@@ -495,6 +497,7 @@ def test_einstellung_neue_section_gibt_es_nicht_mehr():
     assert config.lade("zuordnung")["planer"]["doppelt_min_woerter"] >= 1
 
 
+@pytest.mark.schreiber_openpyxl          # ADR 0007: prueft das fruehere Speichern mit openpyxl
 def test_kommentar_markierung_ueberlebt_steuerzeichen_im_alten_text(tmp_path):
     p = _basis_excel(tmp_path)
     rep = Operation("ersetzen", "CDE", 2, 3, 4, 10, "Gerät", 1, aenderung="A1", erwartet="System")
@@ -553,6 +556,7 @@ def test_zeile_einfuegen_ohne_risiko_bleibt_automatisch(tmp_path):
     assert zeile_mit(l.out, "Neue Section") is not None
 
 
+@pytest.mark.schreiber_openpyxl          # ADR 0007: prueft das fruehere Speichern mit openpyxl
 def test_zeile_einfuegen_mit_formel_wird_pruefen_mit_saetzen(tmp_path):
     l = lauf(tmp_path, _EL_SECTION, "L1", nachher=lambda p: _bearbeite(p, _mit_formel))
     kopf = next(a for a in l.aen if a.typ == "section_neu")
@@ -565,6 +569,7 @@ def test_zeile_einfuegen_mit_formel_wird_pruefen_mit_saetzen(tmp_path):
     assert l.bil["stimmt"]
 
 
+@pytest.mark.schreiber_openpyxl          # ADR 0007: prueft das fruehere Speichern mit openpyxl
 def test_zeile_einfuegen_mit_formel_nach_freigabe_mit_warnung(tmp_path):
     alt = baue_alt(tmp_path, _EL_SECTION, "L1", nachher=lambda p: _bearbeite(p, _mit_formel))
     l0 = analysiere(tmp_path, _EL_SECTION, alt)
@@ -576,6 +581,7 @@ def test_zeile_einfuegen_mit_formel_nach_freigabe_mit_warnung(tmp_path):
     assert blatt(l.out)["F2"].value == "=C7"            # Formeln werden nie veraendert
 
 
+@pytest.mark.schreiber_openpyxl          # ADR 0007: prueft das fruehere Speichern mit openpyxl
 def test_applier_stuft_uebernommene_zeile_mit_risiko_zurueck(tmp_path):
     """Auch ein von Hand gebauter Plan ('uebernommen') darf bei Risiko nicht automatisch Zeilen einfuegen."""
     alt = baue_alt(tmp_path, _EL_SECTION, "L1", nachher=lambda p: _bearbeite(p, _mit_formel))
@@ -609,6 +615,7 @@ def test_versteckte_zeile_und_hyperlink_wandern_mit_der_zeile(tmp_path):
     assert ws.cell(alt_r, 3).hyperlink is None
 
 
+@pytest.mark.schreiber_openpyxl          # ADR 0007: prueft das fruehere Speichern mit openpyxl
 def test_leere_zeile_wird_bei_risiko_nicht_entfernt(tmp_path):
     cfg = copy.deepcopy(config.lade("zuordnung"))
     cfg["geloeschtes"]["inhalt"] = "zeile_entfernen"
@@ -731,6 +738,7 @@ def test_uebernehmen_mit_fertigem_modell_liest_die_excel_nicht_noch_einmal(tmp_p
     assert zelle(tmp_path / "out.xlsx", 2, 3) == "Das Gerät muss laufen und stabil bleiben."
 
 
+@pytest.mark.schreiber_openpyxl          # ADR 0007: prueft das fruehere Speichern mit openpyxl
 def test_zeile_einfuegen_mit_verbundenen_zellen_und_link_stuerzt_nicht_ab(tmp_path):
     """Verbundene Zellen (MergedCell) haben keinen Hyperlink-Eintrag: das Nachziehen der Links darf nicht abstuerzen."""
     def eig(wb):

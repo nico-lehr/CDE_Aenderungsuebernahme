@@ -469,3 +469,280 @@ def test_zufall_richtig_angewendet_besteht_falsch_angewendet_nie_still_ok(tmp_pa
         ist = _zelle(tmp_path / f"f{n}.xlsx", 2, 3)
         if ist != soll:
             assert not (falsch.status == UEBERNOMMEN and falsch.wirkung == WIRKUNG_OK), (t, ist, soll)
+
+
+# ================================================================ Auftrag 003: Markierung + Patch-Schreiber (ADR 0005/0007)
+import pytest                                                      # noqa: E402
+from openpyxl.styles import Font                                   # noqa: E402
+
+from src.markierung import ALT, NEU, NORMAL, ansichten            # noqa: E402
+from src.xlsx_patch import pruefe_treue                           # noqa: E402
+
+
+def _register(tmp_path, texte: list[str], name: str = "r.xlsx", extra=None):
+    """Kleines Register: Nr | Sub | Text (Arial 11 fett) | Spezifikation (gleich) | Lfd (verschieden) | Status (gleich)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CDE"
+    ws.append(["Nr.", "Sub", "Inhalt", "Spezifikation", "Lfd", "Status"])
+    for i, t in enumerate(texte, start=2):
+        ws.append([str(i - 1), "AB"[i % 2], t, "SPEC-7", i * 10, "offen"])
+        ws.cell(i, 3).font = Font(name="Arial", sz=11, b=True)
+        ws.row_dimensions[i].height = 28
+    if extra:
+        extra(ws)
+    p = tmp_path / name
+    wb.save(str(p))
+    return p
+
+
+def _laeufe_der_zelle(p, r, c):
+    z = load_workbook(str(p), rich_text=True)["CDE"].cell(r, c)
+    return z, ansichten(z)
+
+
+@pytest.mark.markierung_an
+def test_markiert_ersetzung_alt_vor_neu_mit_pdf_leerraum(tmp_path):
+    t = "Das System muss laufen."
+    p = _register(tmp_path, [t, "Zweiter Absatz mit genug Text darin."])
+    ab = _absatz(L("Das {-System-} {+Gerät+} muss laufen."), 0, len(t))
+    ae = _ae("A1", [_ers(4, 10, "Gerät", "A1", t)])
+    res = uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[ab])
+    _bestanden(ae)
+    z, (alt, neu, st) = _laeufe_der_zelle(tmp_path / "out.xlsx", 2, 3)
+    assert alt.replace("  ", " ") == t and neu == "Das  Gerät muss laufen."
+    assert [(s.format, s.text) for s in st] == [(NORMAL, "Das "), (ALT, "System"), (NORMAL, " "), (NEU, "Gerät"),
+                                                 (NORMAL, " muss laufen.")]
+    assert all(b.font.b and b.font.rFont == "Arial" for b in z.value)            # Grundschrift in jedem Lauf
+    assert ae.stuecke == [["normal", "Das "], ["alt", "System"], ["normal", " "], ["neu", "Gerät"], ["normal", " muss laufen."]]
+    assert pruefe_treue(p, tmp_path / "out.xlsx", ["xl/worksheets/sheet1.xml", "xl/sharedStrings.xml",
+                                                   "xl/_rels/workbook.xml.rels", "[Content_Types].xml"]) == []
+    assert not res.warnungen
+
+
+@pytest.mark.markierung_an
+def test_markiert_verschmolzene_ersetzung_ohne_trenner(tmp_path):
+    t = "Erster Satz alt."
+    p = _register(tmp_path, [t])
+    ab = _absatz(L("Erster Satz {-alt-}|{+neu+}|."), 0, len(t))
+    a = t.index("alt")
+    ae = _ae("A1", [_ers(a, a + 3, "neu", "A1", t)])
+    uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[ab])
+    _bestanden(ae)
+    _, (_, _, st) = _laeufe_der_zelle(tmp_path / "out.xlsx", 2, 3)
+    assert [(s.format, s.text) for s in st] == [(NORMAL, "Erster Satz "), (ALT, "alt"), (NEU, "neu"), (NORMAL, ".")]
+
+
+@pytest.mark.markierung_an
+def test_markiert_falscher_plan_kommt_nicht_in_die_datei(tmp_path):
+    t = "Der Wert und der Wert."
+    p = _register(tmp_path, [t])
+    ab = _absatz(L("Der Wert und der {-Wert-} {+Pegel+}|."), 0, len(t))
+    ae = _ae("A1", [_ers(4, 8, "Pegel", "A1", t)])                               # erstes statt zweites Vorkommen
+    res = uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[ab])
+    _durchgefallen(ae, "gegenprobe_text")
+    assert any("nicht in die Ergebnis-Excel geschrieben" in h for h in ae.hinweise)
+    z = load_workbook(str(tmp_path / "out.xlsx"), rich_text=True)["CDE"]["C2"]
+    assert z.value == t                                                         # keine ungepruefte Automatik in der Datei
+    assert any("Gegenprobe" in w for w in res.warnungen)
+
+
+@pytest.mark.markierung_an
+def test_markiert_gruppe_wird_gemeinsam_zurueckgehalten(tmp_path):
+    t, zweit = "Der Wert und der Wert.", "Zweiter Absatz mit genug Text darin."
+    p = _register(tmp_path, [t, zweit])
+    ab = _absatz(L("Der Wert und der {-Wert-} {+Pegel+}|."), 0, len(t))
+    ab2 = _absatz(L("{-Zweiter-} {+Dritter+} Absatz mit genug Text darin.", "A2"), 0, len(zweit), zeile=3, pid="P2")
+    a1 = _ae("A1", [_ers(4, 8, "Pegel", "A1", t)], gruppe="G1")
+    a2 = _ae("A2", [_ers(0, 7, "Dritter", "A2", zweit, zeile=3)], gruppe="G1")
+    uebernehmen([a1, a2], p, tmp_path / "out.xlsx", absaetze=[ab, ab2])
+    _durchgefallen(a1, "gegenprobe_text")
+    assert a2.status == PRUEFEN and "gegenprobe_gruppe" in a2.pruefcodes and a2.wirkung == WIRKUNG_ABWEICHUNG
+    assert _zelle(tmp_path / "out.xlsx", 3, 3) == zweit                          # auch die richtige bleibt draussen
+
+
+@pytest.mark.markierung_an
+def test_markiert_ganz_gestrichener_absatz_bleibt_durchgestrichen_stehen(tmp_path):
+    t = "Ganz weg."
+    p = _register(tmp_path, [t, "Bleibt stehen mit genug Text darin."])
+    ab = _absatz(L("{-Ganz-} {-weg.-}"), 0, len(t))
+    ae = _ae("A1", [Operation("zelle_leeren", "CDE", 2, 3, aenderung="A1", erwartet=t)], typ="absatz_geloescht")
+    ae.alt = t
+    uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[ab])
+    _bestanden(ae)
+    z, (alt, neu, st) = _laeufe_der_zelle(tmp_path / "out.xlsx", 2, 3)
+    assert alt == t and neu == "" and [s.format for s in st] == [ALT]
+    assert all(b.font.b and b.font.strike for b in z.value)
+    assert load_workbook(str(tmp_path / "out.xlsx"))["CDE"].max_row == 3          # die Zeile bleibt
+
+
+@pytest.mark.markierung_an
+def test_markiert_einfuegung_und_loeschung_mit_alten_markierungen(tmp_path):
+    from openpyxl.cell.rich_text import CellRichText, TextBlock
+    from openpyxl.cell.text import InlineFont
+
+    def alt_markiert(ws):
+        f = dict(rFont="Arial", sz=11, b=True)
+        ws["C2"] = CellRichText(TextBlock(InlineFont(**f), "Die Pumpe "), TextBlock(InlineFont(color="FFC00000", **f),
+                                "läuft "), TextBlock(InlineFont(**f), "leise im Keller."))
+    t = "Die Pumpe läuft leise im Keller."
+    p = _register(tmp_path, [t], extra=alt_markiert)
+    ab = _absatz(L("Die Pumpe läuft {-leise-} im Keller {+heute+}|."), 0, len(t))
+    s = t.index("leise")
+    ae = _ae("A1", [_ers(s - 1, s + 5, "", "A1", t), _ein(len(t) - 1, " heute", "A1")])
+    uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[ab])
+    _bestanden(ae)
+    z = load_workbook(str(tmp_path / "out.xlsx"), rich_text=True)["CDE"]["C2"]
+    laeufe = [(b.text, b.font.color.rgb if b.font.color is not None else None, bool(b.font.strike)) for b in z.value]
+    # Ansichten nach Nicos Regel (ADR 0005 Nachtrag): neu = hellrot FFFF0000, alt = durchgestrichen, fruehere Farben normal
+    assert "".join(x for x, f, s in laeufe if f != "FFFF0000" or s) == t
+    assert "".join(x for x, f, s in laeufe if not s) == "Die Pumpe läuft im Keller heute."
+    assert ("läuft", "FFC00000", False) in laeufe                               # alte Markierung bleibt, wie sie war
+    assert "".join(x for x, f, s in laeufe if s and f == "FF00B0F0") == " leise" and (" heute", "FFFF0000", False) in laeufe
+
+
+@pytest.mark.markierung_an
+def test_markiert_neue_zeile_rot_mit_konstanten_und_leeren_spalten(tmp_path):
+    p = _register(tmp_path, ["Erster Absatz mit genug Text.", "Zweiter Absatz mit genug Text.",
+                             "Dritter Absatz mit genug Text.", "Vierter Absatz mit genug Text."])
+    op = Operation("zeile_einfuegen", "CDE", 3, zellen={1: "2.1", 3: "Neuer Absatz dazwischen."}, stil_von=3, aenderung="A1")
+    ae = _ae("A1", [op], typ="absatz_neu")
+    res = uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[])
+    assert (ae.status, ae.wirkung) == (UEBERNOMMEN, WIRKUNG_OK), (ae.grund, ae.hinweise)
+    ws = load_workbook(str(tmp_path / "out.xlsx"), rich_text=True)["CDE"]
+    z = ws["C4"]
+    assert ansichten(z)[1] == "Neuer Absatz dazwischen." and [s.format for s in ansichten(z)[2]] == [NEU]
+    assert all(b.font.b and b.font.rFont == "Arial" for b in z.value)            # Grundschrift der Vorlagezeile
+    assert ws["D4"].value == "SPEC-7" and ws["F4"].value == "offen"               # Konstanten kopiert
+    assert ws["E4"].value is None and ws["B4"].value is None and op.leer_spalten == [2, 5]
+    assert any("Spalten B, E leer" in h for h in ae.hinweise)
+    assert ws.row_dimensions[4].height == 28 and ws["C5"].value == "Dritter Absatz mit genug Text."
+    assert not [w for w in res.warnungen if "Gegenprobe" in w]
+
+
+@pytest.mark.markierung_an
+def test_markiert_neue_section_nummer_als_zahl_rot(tmp_path):
+    p = _zahl_excel(tmp_path, [(2.1, "0.0"), (2.2, "0.0"), (3, "0")])
+    ae = _neue_section("2.3", 3)
+    uebernehmen([ae], p, tmp_path / "out.xlsx")
+    c = load_workbook(str(tmp_path / "out.xlsx"))["CDE"].cell(4, 1)
+    assert isinstance(c.value, float) and abs(c.value - 2.3) < 1e-9 and c.number_format == "0.0"
+    assert c.font.color is not None and c.font.color.rgb == "FFFF0000"
+    assert (ae.status, ae.wirkung) == (UEBERNOMMEN, WIRKUNG_OK)
+
+
+@pytest.mark.markierung_an
+def test_markiert_zahl_ersetzt_nur_schriftfarbe(tmp_path):
+    p = _zahl_excel(tmp_path, [(2, "0"), (3, "0")])
+    ab = Absatz("P1", "CDE", [(2, 1, 0, 1)], L("{-2-} {+5+}"))
+    ae = _ae("A1", [Operation("ersetzen", "CDE", 2, 1, 0, 1, "5", aenderung="A1", erwartet="2")])
+    uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[ab])
+    _bestanden(ae)
+    c = load_workbook(str(tmp_path / "out.xlsx"))["CDE"].cell(2, 1)
+    assert c.value == 5 and c.data_type == "n" and c.font.color.rgb == "FFFF0000"
+
+
+@pytest.mark.markierung_an
+def test_markiert_neuer_absatz_in_bestehender_zelle(tmp_path):
+    t = "Erster Satz.\nZweiter Satz."
+    p = _register(tmp_path, [t])
+    ae = _neuer_absatz(len("Erster Satz."), "\nNeuer Satz dazwischen.", "Neuer Satz dazwischen.")
+    uebernehmen([ae], p, tmp_path / "out.xlsx", cfg=_cfg(True), absaetze=[])
+    _bestanden(ae)
+    _, (alt, neu, st) = _laeufe_der_zelle(tmp_path / "out.xlsx", 2, 3)
+    assert alt == t and neu == "Erster Satz.\nNeuer Satz dazwischen.\nZweiter Satz."
+    falsch = _neuer_absatz(len("Erster Satz."), " Neuer Satz dazwischen.", "Neuer Satz dazwischen.")
+    uebernehmen([falsch], p, tmp_path / "out2.xlsx", absaetze=[])
+    _durchgefallen(falsch, "gegenprobe_neuer_absatz")
+    assert _zelle(tmp_path / "out2.xlsx", 2, 3) == t
+
+
+def test_patch_schreiber_kennt_keine_gelb_markierung(tmp_path):
+    t = "Das System muss laufen."
+    p = _excel(tmp_path, t)
+    cfg = copy.deepcopy(config.lade("zuordnung"))
+    cfg["markierung"]["geaenderte_zellen"] = "gelb"
+    ae = _ae("A1", [_ers(4, 10, "Gerät", "A1", t)])
+    res = uebernehmen([ae], p, tmp_path / "out.xlsx", cfg=cfg)
+    assert ae.status == PRUEFEN and "nur mit dem Schreiber" in ae.grund
+    assert any("geaenderte_zellen" in w for w in res.warnungen)
+    assert _zelle(tmp_path / "out.xlsx", 2, 3) == t
+
+
+def test_patch_schreiber_entfernt_keine_zeilen(tmp_path):
+    p = _excel(tmp_path, "Ganz weg.")
+    cfg = copy.deepcopy(config.lade("zuordnung"))
+    cfg["geloeschtes"]["inhalt"] = "zeile_entfernen"
+    ops = [Operation("zelle_leeren", "CDE", 2, c, aenderung="A1", erwartet=v) for c, v in ((1, "1"), (2, "Eins"), (3, "Ganz weg."))]
+    ae = _ae("A1", ops, typ="section_geloescht")
+    ae.alt = "1 Eins Ganz weg."
+    uebernehmen([ae], p, tmp_path / "out.xlsx", cfg=cfg)
+    assert ae.status == PRUEFEN and "openpyxl" in ae.grund
+    assert _zelle(tmp_path / "out.xlsx", 2, 3) == "Ganz weg."
+
+
+@pytest.mark.schreiber_openpyxl
+@pytest.mark.filterwarnings("ignore:Data Validation extension is not supported")
+def test_openpyxl_schreiber_warnt_vor_verlust(tmp_path):
+    from tests.test_xlsx_patch import BLATT, baue_register
+    p = baue_register(tmp_path / "reg.xlsx", n=40)
+    t = load_workbook(str(p))[BLATT]["C20"].value
+    s = t.index("Wasser")
+    ae = _ae("A1", [Operation("ersetzen", BLATT, 20, 3, s, s + 6, "Öl", aenderung="A1", erwartet="Wasser")])
+    res = uebernehmen([ae], p, tmp_path / "out.xlsx")
+    assert ae.status == UEBERNOMMEN
+    assert any("Bilder und Formen" in w and "Kennzeichnung" in w for w in res.warnungen)
+
+
+def test_patch_schreiber_neue_zeile_zieht_formeln_und_bereiche_mit(tmp_path):
+    """Was beim openpyxl-Schreiber ein Hindernis war (Formeln, bedingte Formatierung, Filter, Link darunter), zieht der
+    Patch-Schreiber selbst mit: automatisch und richtig."""
+    from openpyxl.formatting.rule import CellIsRule
+    from openpyxl.styles import PatternFill
+
+    def eig(ws):
+        for r in range(2, 6):
+            ws.cell(r, 7).value = f"=LEN(C{r})"
+        ws["G8"] = "=SUM(G2:G5)"
+        ws.auto_filter.ref = "A1:G5"
+        ws.conditional_formatting.add("C2:C5", CellIsRule(operator="equal", formula=['"x"'],
+                                                          fill=PatternFill("solid", bgColor="FFFF00")))
+        ws["C5"].hyperlink = "https://example.org/x"
+    p = _register(tmp_path, [f"Absatz {i} mit genug Text darin." for i in range(1, 5)], extra=eig)
+    op = Operation("zeile_einfuegen", "CDE", 3, zellen={1: "2.1", 3: "Neuer Absatz."}, stil_von=3, aenderung="A1")
+    ae = _ae("A1", [op], typ="absatz_neu")
+    uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[])
+    assert (ae.status, ae.wirkung) == (UEBERNOMMEN, WIRKUNG_OK), (ae.grund, ae.hinweise)
+    ws = load_workbook(str(tmp_path / "out.xlsx"))["CDE"]
+    assert [ws.cell(r, 7).value for r in range(2, 7)] == [f"=LEN(C{r})" for r in range(2, 7)]   # Vorlage-Formel uebertragen
+    assert ws["G9"].value == "=SUM(G2:G6)" and ws.auto_filter.ref == "A1:G6"
+    assert any("C2:C6" in str(r.sqref) for r in ws.conditional_formatting)
+    assert ws["C6"].hyperlink is not None and ws["C5"].hyperlink is None
+    assert op.formeln == {7: "=LEN(C3)"}
+
+
+@pytest.mark.markierung_an
+@pytest.mark.parametrize("layout", ["L1", "L3"])
+def test_markiert_ende_zu_ende_und_zweiter_lauf_aendert_nichts(tmp_path, layout):
+    """Planer + Applier mit Markierung auf einem erfundenen Szenario: alles besteht die Gegenprobe vor dem Schreiben;
+    ein zweiter Lauf auf dem Ergebnis traegt nichts mehr ein (Idempotenz) -- die Datei bleibt bytegleich."""
+    from src.excel_model import ExcelModell
+    from src.pdf_reader import analysiere_pdf
+    from src.planner import plane
+    from tests.fixtures.pdf_writer import baue_pdf
+    from tests.fixtures.szenario import ELEMENTE, baue_excel, zustaende
+
+    baue_pdf(tmp_path / "a.pdf", ELEMENTE, "farbe")
+    baue_excel(tmp_path / "alt.xlsx", zustaende(ELEMENTE, False), layout)
+    pdf = analysiere_pdf(tmp_path / "a.pdf")
+    plan = plane(pdf, ExcelModell(tmp_path / "alt.xlsx"))
+    auto = [a for a in plan.aenderungen if a.status == UEBERNOMMEN]
+    assert auto
+    uebernehmen(plan.aenderungen, tmp_path / "alt.xlsx", tmp_path / "out.xlsx", absaetze=plan.absaetze)
+    assert all(a.status == UEBERNOMMEN and a.wirkung == WIRKUNG_OK for a in auto), \
+        [(a.id, a.status, a.pruefcodes) for a in auto if a.status != UEBERNOMMEN]
+    plan2 = plane(pdf, ExcelModell(tmp_path / "out.xlsx"))
+    uebernehmen(plan2.aenderungen, tmp_path / "out.xlsx", tmp_path / "out2.xlsx", absaetze=plan2.absaetze)
+    assert not [a for a in plan2.aenderungen if a.status == UEBERNOMMEN]
+    assert pruefe_treue(tmp_path / "out.xlsx", tmp_path / "out2.xlsx") == []
+    assert any("schon_eingetragen" in a.pruefcodes or "schon" in a.grund for a in plan2.aenderungen)
