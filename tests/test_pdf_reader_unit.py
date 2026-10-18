@@ -735,3 +735,99 @@ def test_umnummerierte_ueberschrift_liest_alte_und_neue_nummer(tmp_path):
     assert (kopf.section_alt, kopf.section_neu) == ("2.3", "2.2")
     folge = _blocks(a)[0]
     assert (folge.section_alt, folge.section_neu) == ("2.3", "2.2")
+
+
+# =================================================================================================
+# ADR 0006: Legenden-Tabelle, Markup-Leiste, wiederkehrende Randzeilen, Label "c.a."
+# =================================================================================================
+@pytest.mark.parametrize("modus,blau,rot,strich", [("alt", "neu", "entfaellt", "entfaellt"),
+                                                   ("farbe", "neu", "neu", "entfaellt"),
+                                                   ("auto", "neu", "neu", "entfaellt"),
+                                                   ("linie", None, None, "entfaellt")])
+def test_bedeutung_je_legende(modus, blau, rot, strich):
+    from src.pdf_reader import _bedeutung, _mit_modus
+    cfg = _mit_modus(config.lade("farben"), modus)
+    assert (_bedeutung("blau", cfg), _bedeutung("rot", cfg), _bedeutung("durchgestrichen", cfg)) == (blau, rot, strich)
+
+
+def test_mit_modus_aendert_die_geladene_konfiguration_nicht():
+    from src.pdf_reader import _mit_modus, _modus
+    cfg = config.lade("farben")
+    vorher = _modus(cfg)
+    neu = _mit_modus(cfg, "linie" if vorher != "linie" else "farbe")
+    assert _modus(cfg) == vorher and _modus(neu) != vorher
+
+
+def test_unbekannter_modus_gilt_als_auto():
+    from src.pdf_reader import _modus
+    assert _modus({"legende": {"modus": "irgendwas"}}) == "auto"
+    assert _modus({}) == "auto"
+
+
+def _leisten_dok(teile: list[tuple[float, float, float, float]], grau: float = 0.949):
+    from tests._word_pdf import WordDok, fuellzeilen
+    d = WordDok(mit_leiste=False)
+    for x0, t, x1, b in teile:
+        d.rechteck(x0, t, x1, b, grau, hinten=True)
+    tops = d.absatz(fuellzeilen(3))
+    d.randtext(tops[0], "Notiz am Rand")
+    return d
+
+
+@pytest.mark.parametrize("teile,grau,erkannt", [
+    ([(415, 95, 612, 696)], 0.949, True),
+    ([(415, 95, 612, 380), (415, 380, 612, 696)], 0.949, True),          # aus zwei Stuecken
+    ([(415, 95, 612, 300)], 0.949, False),                               # zu niedrig (< 40 % der Seite)
+    ([(415, 95, 612, 696)], 1.0, False),                                 # weiss ist keine Leiste
+    ([(300, 95, 612, 696)], 0.949, False),                               # beginnt zu weit links (Kasten im Text)
+    ([(415, 95, 590, 696)], 0.949, False),                               # reicht nicht bis zum Seitenrand
+], ids=["ganz", "zwei_stuecke", "zu_niedrig", "weiss", "zu_weit_links", "nicht_am_rand"])
+def test_markup_leiste_erkennen(tmp_path, teile, grau, erkannt):
+    a = analysiere_pdf(_leisten_dok(teile, grau).speichern(tmp_path / "l.pdf"))
+    assert a.markup_leiste is erkannt
+    woerter = {t.old for b in a.blocks for t in b.tokens}
+    assert ("Notiz" in woerter) is not erkannt                           # ohne Leiste bleibt Text Text
+    assert bool(a.randnotizen) is erkannt
+
+
+def test_markup_leiste_abschaltbar(tmp_path):
+    import copy
+    cfg = copy.deepcopy(config.lade("farben"))
+    cfg["markup_leiste"]["aktiv"] = False
+    a = analysiere_pdf(_leisten_dok([(415, 95, 612, 696)]).speichern(tmp_path / "l.pdf"), cfg)
+    assert not a.markup_leiste and not a.randnotizen
+
+
+@pytest.mark.parametrize("versatz,erkannt", [(0.0, True), (1.5, True), (6.0, False)])
+def test_wiederkehrende_randzeile_braucht_gleiche_hoehe(tmp_path, versatz, erkannt):
+    from tests._word_pdf import EBENEN, WordDok, fuellzeilen
+    d = WordDok(mit_leiste=False)
+    for i in range(3):
+        if i:
+            d.neue_seite()
+        d.zeile(EBENEN[0], 124.0 + (versatz if i == 1 else 0.0), [(f"Leitfaden Pumpenhaus Blatt {i + 1}", "k")])
+        d.absatz(fuellzeilen(2, i))
+    a = analysiere_pdf(d.speichern(tmp_path / "k.pdf"))
+    woerter = [t.old for b in a.blocks for t in b.tokens]
+    assert (woerter.count("Blatt") == 0) is erkannt
+
+
+def test_label_verbinden_nur_am_zeilenanfang_und_nur_listennummern():
+    from src.models import PdfToken
+    from src.pdf_reader import _Info, _label_verbinden
+
+    def tok(text, status, x0):
+        return PdfToken(old=text if status != ADD else "", new=text if status != DEL else "", status=status, page=1,
+                        bbox=(x0, 0, x0 + 5, 8))
+
+    lay = config.lade("farben")["layout"]
+    toks = [tok("c.", DEL, 82), tok("a.", ADD, 87.5), tok("Text", KEEP, 109)]
+    infos = [_Info(), _Info(), _Info()]
+    _label_verbinden(toks, infos, lay, 8.4)
+    assert [(t.old, t.new, t.status) for t in toks] == [("c.", "a.", MOD), ("Text", "Text", KEEP)] and len(infos) == 2
+    assert toks[0].teile == [(DEL, "c."), (ADD, "a.")]
+    # kein Label (Wort) oder Luecke so gross wie ein haengender Einzug: nichts verbinden
+    for zweites, x in (("Pumpe", 87.5), ("a.", 109.0)):
+        toks = [tok("c.", DEL, 82), tok(zweites, ADD, x)]
+        _label_verbinden(toks, [_Info(), _Info()], lay, 8.4)
+        assert len(toks) == 2

@@ -1,10 +1,17 @@
 """Liest ein Aenderungs-PDF und erkennt, was neu ist und was entfaellt.
 
 Signale (alle in config/farben.yaml einstellbar):
-  * Textfarbe            (blau = neu, rot = entfaellt)
+  * Textfarbe            (je nach Legende, siehe unten)
   * farbige Hinterlegung (gefuellte Rechtecke hinter dem Text)
   * Durchstreichung      (duenne waagerechte Linie in Zeichenmitte)
+  * Unterstreichung      (duenne Linie knapp unter der Grundlinie)
   * PDF-Kommentare       (Highlight / StrikeOut)
+
+Legende (`legende.modus`, ADR 0006): "linie" = Linie entscheidet (Word-Aenderungsverfolgung: durchgestrichen = entfaellt,
+farbig unterstrichen = neu), "farbe" = Strich entfaellt, rot/blau ohne Strich neu (ADR 0005), "alt" = blau neu / rot
+entfaellt (fruehere Korpora), "auto" = je Dokument "linie" (Markup-Leiste oder farbige Unter- und Durchstreichung derselben
+Farbe) oder "farbe". Die graue Markup-Leiste rechts (Sprechblasen, Verbindungslinien) wird vor dem Zeilenbau abgetrennt;
+Sprechblasen stehen nur als Info in `PdfAnalyse.randnotizen`.
 
 Ergebnis: Woerter (PdfToken) mit Status keep/del/add/mod, zu Bloecken
 (Absatz / Ueberschrift) zusammengefasst. Reine Python-Logik, kein LLM, keine UI.
@@ -15,6 +22,7 @@ Massstab (Bilanz-Prinzip): Der Leser liest entweder richtig ODER meldet die Unsi
 from __future__ import annotations
 
 import colorsys
+import math
 import re
 import statistics
 from collections import Counter
@@ -38,7 +46,8 @@ _HINWEIS_TEXT = {
     "ligatur": "Das PDF enthält Ligaturen (z. B. ﬁ). Der Text kann in der Excel anders geschrieben sein.",
     "nicht_lesbar": "Einzelne Zeichen konnten nicht gelesen werden.",
     "unbekannte_farbe": "Einzelne Wörter haben eine Farbe, die nicht in der Legende steht; sie gelten als unverändert.",
-    "linie_unklar": "Eine Linie läuft quer durch den Text (Zierlinie?). Sie wurde nicht als Durchstreichung gewertet.",
+    "linie_unklar": "Eine Linie läuft quer durch den Text (Zierlinie?) oder liegt nur in einer Wortlücke (Leerzeichen "
+                    "geändert?). Sie wurde nicht als Markierung gewertet. Bitte prüfen.",
     "link": "Hyperlink: die blaue Farbe wurde nicht als „neu“ gewertet.",
     "teilweise_markiert": "Ein Wort ist nur zum Teil markiert (Linie oder Fläche deckt nicht das ganze Wort). Bitte prüfen.",
     "gemischt_blau_strich": "Ein Wort ist blau UND durchgestrichen (widersprüchlich). Es wurde als „entfällt“ gelesen.",
@@ -69,6 +78,11 @@ _HINWEIS_TEXT = {
                      "Bitte im PDF prüfen.",
     "tinte_unerklaert": "Im Seitenbild ist hier Farbe zu sehen, die keiner erkannten Markierung entspricht "
                         "(z. B. eine Fläche in ungewöhnlicher Form). Bitte im PDF prüfen.",
+    # ADR 0006 (Legende "linie": die Linie entscheidet)
+    "farbe_ohne_linie": "Ein Wort ist farbig, aber weder unter- noch durchgestrichen. In diesem PDF zählt nur die Linie; "
+                        "es gilt als unverändert.",
+    "hinterlegt": "Ein Wort ist farbig hinterlegt (z. B. gelb). In diesem PDF zählt nur die Linie; die Hinterlegung "
+                  "bedeutet nichts.",
 }
 
 
@@ -90,6 +104,15 @@ class PdfAnalyse:
     # Bereiche, in denen die Woerter einer Luecke gezaehlt werden: (Luecke, Seite, [Rechtecke]); nur intern
     regionen: list[tuple[dict[str, Any], int, list[tuple[float, float, float, float]]]] = field(
         default_factory=list, repr=False)
+    # ADR 0006
+    legende_modus: str = ""            # gewaehlte Legende: "linie" | "farbe" | "alt" (bei modus auto je Dokument entschieden)
+    legende_grund: str = ""            # warum (einfaches Deutsch); leer, wenn die Legende fest eingestellt ist
+    markup_leiste: bool = False        # graue Markup-Leiste der Word-Aenderungsverfolgung auf mindestens einer Seite
+    # Sprechblasen der Markup-Leiste (nur Info, nicht in der Wort-Bilanz):
+    #   {"seite": int, "art": "formatiert" | "kommentar" | "sonstig", "text": kurzer Text, "y": Oberkante}
+    randnotizen: list[dict[str, Any]] = field(default_factory=list)
+    # Kopf-/Fussbereiche je Seite [(top, bottom)] in Leserichtung (auch fuer die Farb-Inventur); nur intern
+    kopf_fuss_baender: dict[int, list[tuple[float, float]]] = field(default_factory=dict, repr=False)
 
     @property
     def markierte_woerter(self) -> int:
@@ -139,11 +162,39 @@ def klasse(rgb: tuple[float, float, float] | None, cfg: dict, hintergrund: bool 
     return None
 
 
+_MODI = ("auto", "linie", "farbe", "alt")
+
+
+def _modus(cfg: dict) -> str:
+    """Eingestellte Legende (config farben.yaml legende.modus): 'auto' | 'linie' | 'farbe' | 'alt' (ADR 0006)."""
+    m = str((cfg.get("legende") or {}).get("modus") or "auto")
+    return m if m in _MODI else "auto"
+
+
+def _mit_modus(cfg: dict, modus: str) -> dict:
+    """Kopie der Konfiguration mit fest gewaehlter Legende (das Original bleibt unveraendert)."""
+    if _modus(cfg) == modus:
+        return cfg
+    neu = dict(cfg)
+    neu["legende"] = {**(cfg.get("legende") or {}), "modus": modus}
+    return neu
+
+
 def _bedeutung(farbklasse: str | None, cfg: dict) -> str | None:
+    """Bedeutung einer Farbklasse ('blau' | 'rot') oder von 'durchgestrichen' in der eingestellten Legende:
+    'neu' | 'entfaellt' | None. alt: wie in legende.blau/rot/durchgestrichen; farbe (auch auto, solange noch nicht
+    entschieden): Strich = entfaellt, rot/blau = neu; linie: nur der Strich hat eine Bedeutung (die Farbe allein nicht)."""
     if farbklasse is None:
         return None
-    wert = cfg["legende"].get(farbklasse)
-    return wert if wert in ("neu", "entfaellt") else None
+    modus = _modus(cfg)
+    if modus == "alt":
+        wert = cfg["legende"].get(farbklasse)
+        return wert if wert in ("neu", "entfaellt") else None
+    if farbklasse == "durchgestrichen":
+        return "entfaellt"
+    if modus == "linie":
+        return None
+    return "neu" if farbklasse in ("blau", "rot") else None
 
 
 def _unbekannt_art(rgb: tuple[float, float, float], cfg: dict) -> str:
@@ -189,6 +240,8 @@ class _Z:
     unscharf: bool = False             # Status stammt nur aus Geometrie (Linie, Flaeche, Kommentar)
     hinweis: set = field(default_factory=set)
     nr: int = -1                       # Position in der Zeichenfolge der Seite (Reihenfolge im Inhaltsstrom)
+    farbig: bool = False               # Legende "linie": Text ist farbig (die Farbe allein bedeutet dort nichts)
+    genau: bool = False                # Legende "linie": Status aus einer Linie, die das Zeichen ganz abdeckt (zeichengenau)
 
 
 @dataclass
@@ -228,6 +281,13 @@ class _SeitenDaten:
     rahmen: Any = None                 # _Rahmen (Leserichtung der Seite)
     fremd_woerter: int = 0             # Woerter in einer anderen Schreibrichtung als der Text der Seite
     fremd_farbig: bool = False         # ... davon mindestens eines in Legendenfarbe
+    # ADR 0006: Markup-Leiste der Word-Aenderungsverfolgung (None = keine auf dieser Seite)
+    leiste: tuple[float, float, float, float] | None = None
+    rand_zeichen: list[_Z] = field(default_factory=list)      # Zeichen in der Leiste (Sprechblasen; nie Absatztext)
+    sprechblasen: list[tuple[float, float, float, float]] = field(default_factory=list)   # Umrisse in der Leiste
+    leiste_weg: set[int] = field(default_factory=set)         # id() der Grafik-Objekte, die zur Leiste gehoeren
+    verbindungen: list[tuple[float, float, float, float]] = field(default_factory=list)   # Verbindungslinien (Segmente)
+    anker: list[tuple[float, float, float, float]] = field(default_factory=list)          # Ankerpunkte im Text
 
 
 # ---------------------------------------------------------------- Seite lesen
@@ -428,6 +488,9 @@ def _lese_seite(page: Any, nr: int, cfg: dict) -> _SeitenDaten:
     rahmen = _Rahmen(haupt if haupt in ("ab", "auf", "um") else "h", sd.breite, sd.hoehe)
     sd.rahmen = rahmen
     sd.breite, sd.hoehe = rahmen.masse
+    # ADR 0006: Markup-Leiste (Word-Aenderungsverfolgung) -- Zeichen darin sind Sprechblasen, nie Absatztext
+    sd.leiste = _markup_leiste(page, rahmen, cfg)
+    leiste_x0 = sd.leiste[0] if sd.leiste else None
     fremd_wort_ende = True
     for i, c in enumerate(roh):
         text = c.get("text") or ""
@@ -465,6 +528,9 @@ def _lese_seite(page: Any, nr: int, cfg: dict) -> _SeitenDaten:
             z.farbe_bed = _bedeutung(z.farbklasse, cfg)
             if z.farbklasse is None:
                 z.unb = _unbekannt_art(rgb, cfg) if rgb is not None else ("sonder" if unklar else "")
+        if leiste_x0 is not None and (x0 + x1) / 2 >= leiste_x0:
+            sd.rand_zeichen.append(z)
+            continue
         sd.zeichen.append(z)
     # Bilder
     w, h = sd.breite, sd.hoehe
@@ -476,8 +542,179 @@ def _lese_seite(page: Any, nr: int, cfg: dict) -> _SeitenDaten:
             sd.bilder.append((x0, top, x1, bot))
     sd.bild_anteil = _bild_anteil(sd.bilder, w, h)
     sd.grafik_objekte = len(page.curves) + len(page.rects) + len(page.lines)
+    if sd.leiste:
+        _leiste_objekte(page, sd, cfg)
     _tabellen_suchen(page, sd, cfg)
     return sd
+
+
+# ---------------------------------------------------------------- Markup-Leiste (ADR 0006)
+def _markup_leiste(page: Any, rahmen: _Rahmen, cfg: dict) -> tuple[float, float, float, float] | None:
+    """Graue Markup-Leiste der Word-Aenderungsverfolgung: gefuellte helle graue Flaeche, die rechts (ab
+    markup_leiste.min_x0_anteil der Seitenbreite) bis zum Seitenrand reicht und hoch genug ist (auch aus Stuecken).
+    Gibt den Kasten in Leserichtung zurueck (rechts bis zum Seitenrand) oder None."""
+    ml = cfg.get("markup_leiste") or {}
+    if not ml.get("aktiv", False):
+        return None
+    w, h = rahmen.masse
+    teile: list[tuple[float, float, float, float]] = []
+    for r in page.rects:
+        if not r.get("fill"):
+            continue
+        rgb, _ = _objektfarbe(r, False)
+        if rgb is None:
+            continue
+        _, s, v = colorsys.rgb_to_hsv(*(max(0.0, min(1.0, x)) for x in rgb))
+        if s > ml.get("max_saettigung", 0.08) or not ml.get("min_helligkeit", 0.75) <= v <= ml.get("max_helligkeit", 0.99):
+            continue
+        x0, top, x1, bot = _kasten(r, rahmen)
+        if x0 >= ml.get("min_x0_anteil", 0.6) * w and x1 >= w - ml.get("rand_toleranz_pt", 3.0):
+            teile.append((x0, top, x1, bot))
+    if not teile:
+        return None
+    x0 = min(t[0] for t in teile)
+    teile = [t for t in teile if t[0] <= x0 + 1.0]
+    if sum(b - t for _, t, _, b in teile) < ml.get("min_hoehe_anteil", 0.4) * h:
+        return None
+    return (x0, min(t for _, t, _, _ in teile), w, max(b for _, _, _, b in teile))
+
+
+def _gestrichelt(o: dict) -> bool:
+    muster = (o.get("dash") or (None,))[0]
+    try:
+        return bool(muster) and any(float(x) > 0 for x in muster)
+    except (TypeError, ValueError):
+        return False
+
+
+def _segmente(o: dict, rahmen: _Rahmen) -> list[tuple[float, float, float, float]]:
+    """Kaesten der einzelnen Strecken eines Pfades (eine Polylinie 'waagrecht, dann schraeg' hat zwei)."""
+    pts = o.get("pts") or []
+    if len(pts) < 2:
+        return [_kasten(o, rahmen)]
+    out = []
+    for (xa, ya), (xb, yb) in zip(pts, pts[1:]):
+        out.append(rahmen.box(min(xa, xb), min(ya, yb), max(xa, xb), max(ya, yb)))
+    return out
+
+
+def _leiste_objekte(page: Any, sd: _SeitenDaten, cfg: dict) -> None:
+    """Ordnet die Grafik einer Seite mit Markup-Leiste zu (alles nur gemerkt, nichts davon ist je eine Markierung):
+    Objekte in der Leiste (Sprechblasen-Umrisse), Verbindungslinien (duenne Linien, die in die Leiste laufen, oder
+    gestrichelte Linien) und Ankerpunkte (kleine gefuellte Formen am Anfang einer Verbindungslinie im Text)."""
+    ml = cfg.get("markup_leiste") or {}
+    lx0 = sd.leiste[0]                                  # type: ignore[index]
+    tol = ml.get("linie_toleranz_pt", 3.0)
+    rahmen = sd.rahmen
+    for o in list(page.lines) + list(page.rects) + list(page.curves):
+        x0, top, x1, bot = _kasten(o, rahmen)
+        bw, bh = x1 - x0, bot - top
+        if x0 >= lx0 - tol:
+            sd.leiste_weg.add(id(o))
+            if (bw >= ml.get("sprechblase_min_breite_pt", 20) and bh >= ml.get("sprechblase_min_hoehe_pt", 4)
+                    and bh <= 0.5 * sd.hoehe):
+                sd.sprechblasen.append((x0, top, x1, bot))
+            continue
+        duenn = o.get("object_type") == "line" or min(bw, bh) <= 1.6 or not o.get("fill")
+        if (x1 >= lx0 - tol and duenn) or (_gestrichelt(o) and o.get("stroke") and not o.get("fill")):
+            sd.leiste_weg.add(id(o))
+            sd.verbindungen += _segmente(o, rahmen)
+    a_min, a_max = ml.get("anker_min_pt", 1.2), ml.get("anker_max_pt", 4.0)
+    # Anfaenge der Verbindungslinien (linkes Ende der waagrechten Strecke): dort sitzt der Ankerpunkt, auch wenn sein
+    # Kasten flach gemeldet wird (Kurve nur mit Endpunkten auf der Grundlinie)
+    anfaenge = [(v[0], (v[1] + v[3]) / 2) for v in sd.verbindungen if v[3] - v[1] <= 1.0]
+    for o in list(page.rects) + list(page.curves):
+        if id(o) in sd.leiste_weg or not o.get("fill"):
+            continue
+        x0, top, x1, bot = _kasten(o, rahmen)
+        if max(x1 - x0, bot - top) > a_max:
+            continue
+        am_anfang = any(x0 - 2.0 <= ax <= x1 + 2.0 and top - 2.0 <= ay <= bot + 2.0 for ax, ay in anfaenge)
+        if am_anfang or a_min <= min(x1 - x0, bot - top):
+            sd.leiste_weg.add(id(o))
+            sd.anker.append((x0, top, x1, bot))
+
+
+def _notiz_text(zeichen: list[_Z]) -> str:
+    """Text einer Sprechblase: Zeilen von oben nach unten, Woerter mit Leerzeichen getrennt."""
+    zeilen: list[list[_Z]] = []
+    for z in sorted(zeichen, key=lambda z: ((z.top + z.bottom) / 2, z.x0)):
+        if zeilen and abs((z.top + z.bottom) / 2 - (zeilen[-1][0].top + zeilen[-1][0].bottom) / 2) <= 0.5 * z.size:
+            zeilen[-1].append(z)
+        else:
+            zeilen.append([z])
+    teile = []
+    for zl in zeilen:
+        s = ""
+        vor: _Z | None = None
+        for z in sorted(zl, key=lambda z: z.x0):
+            if vor is not None and not z.leer and z.x0 - vor.x1 > 0.18 * z.size and not s.endswith(" "):
+                s += " "
+            s += " " if z.leer else z.text
+            vor = z
+        teile.append(s)
+    return re.sub(r"\s+", " ", " ".join(teile)).strip()
+
+
+def _randnotizen(sd: _SeitenDaten, cfg: dict) -> list[dict[str, Any]]:
+    """Sprechblasen der Markup-Leiste als kleine Info-Eintraege {seite, art, text, y} (nicht in der Wort-Bilanz).
+    Zeichen werden ihrem Sprechblasen-Umriss zugeordnet; Text ohne Umriss wird nach Zeilenabstand gruppiert."""
+    ml = cfg.get("markup_leiste") or {}
+    zeichen = [z for z in sd.rand_zeichen if not z.unsichtbar]
+    if not any(not z.leer for z in zeichen):
+        return []
+    blasen = sorted(sd.sprechblasen, key=lambda b: (b[3] - b[1]) * (b[2] - b[0]))     # kleinste zuerst
+    gruppen: list[list[_Z]] = [[] for _ in blasen]
+    rest: list[_Z] = []
+    for z in zeichen:
+        cx, cy = (z.x0 + z.x1) / 2, (z.top + z.bottom) / 2
+        for i, (x0, top, x1, bot) in enumerate(blasen):
+            if x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bot + 1:
+                gruppen[i].append(z)
+                break
+        else:
+            rest.append(z)
+    frei: list[list[_Z]] = []
+    for z in sorted(rest, key=lambda z: (z.top, z.x0)):
+        if frei and z.top - max(x.bottom for x in frei[-1]) <= ml.get("notiz_luecke_em", 1.5) * z.size:
+            frei[-1].append(z)
+        else:
+            frei.append([z])
+    gruppen += frei
+    out = []
+    n = int(ml.get("notiz_max_zeichen", 160))
+    for g in gruppen:
+        text = _notiz_text(g)
+        if not text:
+            continue
+        klein = text.casefold()
+        art = "sonstig"
+        for name, schluessel in (("formatiert", "notiz_formatiert"), ("kommentar", "notiz_kommentar")):
+            if any(klein.startswith(str(p).casefold()) for p in ml.get(schluessel, [])):
+                art = name
+                break
+        out.append({"seite": sd.nr, "art": art, "text": text if len(text) <= n else text[:n - 1] + "…",
+                    "y": round(min(z.top for z in g), 1)})
+    out.sort(key=lambda r: r["y"])
+    return out
+
+
+def _inhalt_in_sprechblasen(ergebnis: PdfAnalyse, cfg: dict) -> None:
+    """Bilanz: eine Sprechblase mit geloeschtem/eingefuegtem TEXT (markup_leiste.notiz_inhalt) zeigt eine Aenderung, die im
+    Fliesstext nicht zu sehen ist -> Luecke je Seite (Woerter = Woerter der Sprechblasen ohne den Kopf); kein Dokumentinhalt."""
+    praefixe = sorted((str(p).casefold() for p in (cfg.get("markup_leiste") or {}).get("notiz_inhalt", [])),
+                      key=len, reverse=True)
+    je_seite: dict[int, list[int]] = {}
+    for r in ergebnis.randnotizen:
+        klein = r["text"].casefold()
+        p = next((p for p in praefixe if klein.startswith(p)), None)
+        if p is not None:
+            je_seite.setdefault(r["seite"], []).append(len(r["text"][len(p):].lstrip(" :").split()))
+    for seite, woerter in sorted(je_seite.items()):
+        ergebnis.luecken.append(luecke(
+            "sonstiges", seite, f"Seite {seite}: In der Markup-Leiste stehen {len(woerter)} Sprechblase(n) mit gelöschtem oder "
+                                f"eingefügtem Text. Diese Änderung ist im Text nicht zu sehen und wurde nicht gelesen. "
+                                f"Bitte im PDF prüfen.", sum(woerter)))
 
 
 # ---------------------------------------------------------------- Tabellen mit Rahmenlinien
@@ -486,7 +723,10 @@ def _tabellen_suchen(page: Any, sd: _SeitenDaten, cfg: dict) -> None:
     lang, hoch = tc["linie_min_laenge"], tc["linie_min_hoehe"]
     wag: list[tuple[float, float, float]] = []      # (y, x0, x1)
     senk: list[tuple[float, float, float]] = []     # (x, top, bottom)
+    weg = sd.leiste_weg                             # ADR 0006: Leiste, Verbindungslinien, Ankerpunkte sind keine Tabelle
     for l in page.lines:
+        if id(l) in weg:
+            continue
         x0, top, x1, bot = _kasten(l, sd.rahmen)
         dx, dy = x1 - x0, bot - top
         if dy <= 1.0 and dx >= lang:
@@ -494,6 +734,8 @@ def _tabellen_suchen(page: Any, sd: _SeitenDaten, cfg: dict) -> None:
         elif dx <= 1.0 and dy >= hoch:
             senk.append(((x0 + x1) / 2, top, bot))
     for r in page.rects:
+        if id(r) in weg:
+            continue
         x0, top, x1, bot = _kasten(r, sd.rahmen)
         bw, bh = x1 - x0, bot - top
         if bh <= 1.6 and bw >= lang:
@@ -558,35 +800,90 @@ def _drehe_punkt(px: float, py: float, rot: int, w: float, h: float) -> tuple[fl
     return px, h - py
 
 
+class _ZeichenNetz:
+    """Zeichen einer Seite nach Hoehe einsortiert: welche Zeichen koennen auf Hoehe y eine Linie haben (Durchstreich- oder
+    Unterstreich-Band)? Nur ein Vorfilter (schneller); die genaue Pruefung macht der Aufrufer wie bisher."""
+
+    def __init__(self, zeichen: list[_Z], baender: list[list[float]], schritt: float = 4.0) -> None:
+        self.s = schritt
+        self.netz: dict[int, list[_Z]] = {}
+        oben = min(0.0, min(b[0] for b in baender))
+        unten = max(1.0, max(b[1] for b in baender))
+        for c in zeichen:
+            h = c.bottom - c.top
+            for k in range(int((c.top + oben * h) // schritt), int((c.top + unten * h) // schritt) + 1):
+                self.netz.setdefault(k, []).append(c)
+
+    def bei(self, y: float) -> list[_Z]:
+        return self.netz.get(int(y // self.s), [])
+
+
+class _LinienNetz:
+    """Waagerechte Linien (x0, x1, y, ...) nach Hoehe einsortiert."""
+
+    def __init__(self, linien: list[tuple], schritt: float = 4.0) -> None:
+        self.s = schritt
+        self.netz: dict[int, list[int]] = {}
+        for i, l in enumerate(linien):
+            self.netz.setdefault(int(l[2] // schritt), []).append(i)
+
+    def kandidaten(self, lo: float, hi: float) -> list[int]:
+        out: list[int] = []
+        for k in range(int(lo // self.s), int(hi // self.s) + 1):
+            out += self.netz.get(k, ())
+        return out
+
+
+def _hex_rgb(hx: str) -> tuple[float, float, float] | None:
+    if not hx or not hx.startswith("#") or len(hx) != 7:
+        return None
+    return tuple(int(hx[i:i + 2], 16) / 255 for i in (1, 3, 5))  # type: ignore[return-value]
+
+
 class _Markierer:
     """Sammelt pro Seite alle Markierungs-Signale und beantwortet: Status je Zeichen.
 
-    Ablauf: __init__ sammelt die rohen Signale, pruefe() entscheidet mit Hilfe der Zeichen, welche davon wirklich
-    Markierungen sind (und welche Gestaltung: Zierlinie, Tabellenkopf, Hyperlink), status() bewertet ein Zeichen."""
+    Ablauf: __init__ sammelt die rohen Signale, deute() legt die Legende fest (ADR 0006; bei modus auto erst, wenn alle
+    Seiten gelesen sind), pruefe() entscheidet mit Hilfe der Zeichen, welche Signale wirklich Markierungen sind (und welche
+    Gestaltung: Zierlinie, Tabellenkopf, Hyperlink), status() bewertet ein Zeichen.
+    Seiten mit Markup-Leiste: Objekte der Leiste, Verbindungslinien und Ankerpunkte (`seite.leiste_weg`) sind nie Markierungen."""
 
-    def __init__(self, page: Any, cfg: dict, rahmen: _Rahmen) -> None:
+    def __init__(self, page: Any, cfg: dict, rahmen: _Rahmen, seite: _SeitenDaten | None = None) -> None:
         self.cfg = cfg
         self.rahmen = rahmen
         self.flaechen: list[tuple[float, float, float, float, str]] = []       # Hinterlegungen = Markierung
         self.unb_flaechen: list[tuple[float, float, float, float, str]] = []   # nicht zugeordnete Hinterlegungen
         self.design: list[tuple[float, float, float, float]] = []              # Hinterlegungen = Gestaltung
+        self.hervor_flaechen: list[tuple[float, float, float, float]] = []     # Legende linie: Hinterlegung ohne Bedeutung
+        self._hervor_annot: list[tuple[float, float, float, float]] = []
         self.striche: list[tuple[float, float, float]] = []
         self.unterstriche: list[tuple[float, float, float]] = []
+        self.unter_farben: list[tuple[tuple[float, float, float] | None, bool]] = []   # je Unterstreichung: (Farbe, unklar)
         self.annot: list[tuple[float, float, float, float, str]] = []
         self.unb_annot: list[tuple[float, float, float, float, str]] = []
         self.links: list[tuple[float, float, float, float]] = []
         self.andere: list[dict[str, Any]] = []          # Kommentare anderer Art: {"typ", "boxen", "treffer"}
         self.rect_farben: Counter = Counter()
-        self._flaechen_roh: list[tuple[float, float, float, float, str | None, str]] = []   # (Box, Bedeutung, Farbe)
-        # (x0, x1, y, hell, lang, farbe_unklar); lang = breiter als durchstreichung.max_breite_anteil der Seite
-        self._linien_roh: list[tuple[float, float, float, bool, bool, bool]] = []
+        # (Box, Farbklasse, Farbe als hex oder "sonderfarbe", kraeftige unbekannte Farbe?); gedeutet wird in pruefe()
+        self._flaechen_roh: list[tuple[float, float, float, float, str | None, str, bool]] = []
+        # (x0, x1, y, hell, lang, farbe_unklar, rgb); lang = breiter als durchstreichung.max_breite_anteil der Seite
+        self._linien_roh: list[tuple[float, float, float, bool, bool, bool, Any]] = []
+        self._annot_roh: list[tuple[list[tuple[float, float, float, float]], str, Any]] = []   # (Bereiche, Typ, Farbe)
+        # ADR 0006: Markup-Leiste
+        self.leiste = seite.leiste if seite is not None else None
+        self.verbindungen = list(seite.verbindungen) if seite is not None else []
+        self.anker = list(seite.anker) if seite is not None else []
+        weg = seite.leiste_weg if seite is not None else set()
+        self.grund_hex = ""                              # Grundfarbe des Dokuments (wird von analysiere_pdf gesetzt)
+        self._netz_strich: _LinienNetz | None = None
+        self._netz_unter: _LinienNetz | None = None
         self.sonder = _Sonderfarben(page)
         w, h = float(page.width), float(page.height)
         bw, bh = rahmen.masse
         if cfg["hintergrund"]["aktiv"]:
             hg = cfg["hintergrund"]
             for r in page.rects:
-                if not r.get("fill"):
+                if not r.get("fill") or id(r) in weg:
                     continue
                 rgb, unklar = _objektfarbe(r, False, self.sonder)     # R6: Farbraum beachten (Sonderfarbe Ton 1,0 != weiss)
                 if rgb is None and not unklar:
@@ -599,36 +896,63 @@ class _Markierer:
                 if rgb is None:
                     # Farbe nicht berechenbar: nicht still uebergehen, sondern wie eine unbekannte Hinterlegung melden
                     self.rect_farben[("sonderfarbe", None)] += 1
-                    self._flaechen_roh.append(box + (None, "sonderfarbe"))
+                    self._flaechen_roh.append(box + (None, "sonderfarbe", True))
                     continue
                 k = klasse(rgb, cfg, hintergrund=True)
                 self.rect_farben[(_hex(rgb), k)] += 1
-                bed = _bedeutung(k, cfg)
-                if bed or (k is None and self._kraeftig_hg(rgb)):
-                    self._flaechen_roh.append(box + (bed, _hex(rgb)))
+                kraeftig = k is None and self._kraeftig_hg(rgb)
+                if k is not None or kraeftig:
+                    self._flaechen_roh.append(box + (k, _hex(rgb), kraeftig))
         d = cfg["durchstreichung"]
         if d["aktiv"]:
             # R5: keine Breitenkappe mehr fuer Durchstreichungen (die Kappe gilt nur noch fuer Unterstreichungen, siehe pruefe)
             kappe = d["max_breite_anteil"] * bw
+            # ADR 0006: auch kurze Linien (gestrichenes Leerzeichen, einzelnes Satzzeichen bei kleiner Schrift) sammeln;
+            # Legende "alt" wertet weiter erst ab 2 pt (siehe pruefe)
+            min_l = min(2.0, float(d.get("min_laenge_pt", 2.0)))
             for l in page.lines:
+                if id(l) in weg:
+                    continue
                 x0, top, x1, bot = _kasten(l, rahmen)
-                if (l.get("linewidth", 1) or 0) <= d["max_linienstaerke_pt"] and abs(bot - top) <= 1.2 and x1 - x0 >= 2:
-                    hell, unklar = self._hell(*_objektfarbe(l, True, self.sonder))
-                    self._linien_roh.append((x0, x1, (top + bot) / 2, hell, x1 - x0 >= kappe, unklar))
+                if (l.get("linewidth", 1) or 0) <= d["max_linienstaerke_pt"] and abs(bot - top) <= 1.2 and x1 - x0 >= min_l:
+                    self._linie_roh(x0, x1, (top + bot) / 2, kappe, *_objektfarbe(l, True, self.sonder))
             for r in page.rects:
+                if id(r) in weg:
+                    continue
                 x0, top, x1, bot = _kasten(r, rahmen)
-                if bot - top <= 1.6 and 2 <= x1 - x0:
-                    hell, unklar = self._hell(*_objektfarbe(r, not r.get("fill"), self.sonder))
-                    self._linien_roh.append((x0, x1, (top + bot) / 2, hell, x1 - x0 >= kappe, unklar))
+                if bot - top <= 1.6 and min_l <= x1 - x0:
+                    self._linie_roh(x0, x1, (top + bot) / 2, kappe, *_objektfarbe(r, not r.get("fill"), self.sonder))
             # flache Kurven/Pfade (z. B. als Polylinie gezeichnete Striche) sind Linienkandidaten
             for c in page.curves:
+                if id(c) in weg:
+                    continue
                 x0, top, x1, bot = _kasten(c, rahmen)
-                if bot - top <= d.get("kurve_max_hoehe_pt", 1.2) and x1 - x0 >= 2 \
+                if bot - top <= d.get("kurve_max_hoehe_pt", 1.2) and x1 - x0 >= min_l \
                         and (c.get("linewidth", 1) or 0) <= d["max_linienstaerke_pt"]:
-                    hell, unklar = self._hell(*_objektfarbe(c, bool(c.get("stroke")), self.sonder))
-                    self._linien_roh.append((x0, x1, (top + bot) / 2, hell, x1 - x0 >= kappe, unklar))
+                    self._linie_roh(x0, x1, (top + bot) / 2, kappe, *_objektfarbe(c, bool(c.get("stroke")), self.sonder))
         if cfg["annotationen"]["aktiv"]:
             self._annotationen(page)
+
+    def _linie_roh(self, x0: float, x1: float, y: float, kappe: float, rgb: Any, unklar: bool) -> None:
+        hell, unklar = self._hell(rgb, unklar)
+        self._linien_roh.append((x0, x1, y, hell, x1 - x0 >= kappe, unklar, rgb))
+
+    @property
+    def modus(self) -> str:
+        """Legende dieser Seite: 'linie' | 'farbe' | 'alt' (auto gilt bis zur Entscheidung wie farbe)."""
+        m = _modus(self.cfg)
+        return "farbe" if m == "auto" else m
+
+    @property
+    def hervor(self) -> list[tuple[float, float, float, float]]:
+        """Legende linie: farbige Hinterlegungen/Hervorhebungen ohne Bedeutung (z. B. gelb hinter Platzhaltern)."""
+        return self.hervor_flaechen + self._hervor_annot
+
+    def deute(self, cfg: dict) -> None:
+        """ADR 0006: Legende fuer diese Seite festlegen (vor pruefe); Kommentare werden danach neu gedeutet."""
+        self.cfg = cfg
+        if cfg["annotationen"]["aktiv"]:
+            self._deute_annotationen()
 
     def _kraeftig_hg(self, rgb: tuple[float, float, float]) -> bool:
         hg = self.cfg["hintergrund"]
@@ -643,6 +967,33 @@ class _Markierer:
         d = self.cfg["durchstreichung"]
         _, s, v = colorsys.rgb_to_hsv(*(max(0.0, min(1.0, x)) for x in rgb))
         return s <= d["hell_max_saettigung"] and v >= d["hell_min_helligkeit"], False
+
+    def _bunt(self, rgb: tuple[float, float, float] | None) -> bool:
+        """Bunte Linie (ADR 0006: eine farbige Unterstreichung bedeutet in der Legende linie 'neu')."""
+        if rgb is None:
+            return False
+        lg = self.cfg["legende"]
+        _, s, v = colorsys.rgb_to_hsv(*(max(0.0, min(1.0, x)) for x in rgb))
+        return s >= lg.get("linie_min_saettigung", 0.35) and v >= lg.get("linie_min_helligkeit", 0.1)
+
+    def _textfarbe(self, c: _Z, min_s: float) -> tuple[float, float, float] | None:
+        """Farbe des Zeichens, wenn sie farbig ist (Saettigung >= min_s, nicht schwarz); sonst None."""
+        rgb = _hex_rgb(c.hex)
+        if rgb is None:
+            return None
+        _, s, v = colorsys.rgb_to_hsv(*rgb)
+        return rgb if s >= min_s and v >= self.cfg["unbekannt"]["min_helligkeit"] else None
+
+    def _farbige_linie(self, rgb: tuple[float, float, float] | None, unklar: bool, c: _Z) -> bool:
+        """Farbige Unterstreichung: Linie bunt ODER Linienfarbe ~ farbige Textfarbe (schwarz unter schwarz: nein).
+        Linienfarbe nicht berechenbar: farbig, wenn der Text farbig ist."""
+        text = self._textfarbe(c, self.cfg["unbekannt"]["pastell_min_saettigung"])
+        if rgb is None:
+            return unklar and text is not None
+        if self._bunt(rgb):
+            return True
+        tol = self.cfg["legende"].get("linie_farbe_toleranz", 0.15)
+        return text is not None and max(abs(a - b) for a, b in zip(rgb, text)) <= tol
 
     def _boxen(self, a: dict, data: dict, page: Any) -> list[tuple[float, float, float, float]]:
         """Bereiche eines Kommentars in Leserichtung (aus QuadPoints, sonst aus dem Rechteck)."""
@@ -664,7 +1015,6 @@ class _Markierer:
         return boxen
 
     def _annotationen(self, page: Any) -> None:
-        cfg = self.cfg
         for a in page.annots:
             data = a.get("data") or {}
             sub = data.get("Subtype")
@@ -675,48 +1025,90 @@ class _Markierer:
             if name in _ANDERE_KOMMENTARE:
                 self.andere.append({"typ": name, "boxen": self._boxen(a, data, page), "treffer": 0})
                 continue
+            if name in ("StrikeOut", "Highlight"):
+                self._annot_roh.append((self._boxen(a, data, page), name,
+                                        _rgb(data.get("C")) if name == "Highlight" else None))
+        self._deute_annotationen()
+
+    def _deute_annotationen(self) -> None:
+        """Kommentare nach der Legende deuten (Durchstreichen = entfaellt; Hervorheben je nach Farbe bzw. ohne Bedeutung)."""
+        cfg = self.cfg
+        self.annot, self.unb_annot, self._hervor_annot = [], [], []
+        for boxen, name, rgb in self._annot_roh:
             if name == "StrikeOut":
                 bed = _bedeutung("durchgestrichen", cfg)
                 unb = None
-            elif name == "Highlight":
-                rgb = _rgb(data.get("C"))
+            elif self.modus == "linie":
+                self._hervor_annot += boxen          # Hervorhebung: in der Legende linie ohne Bedeutung
+                continue
+            else:
                 k = klasse(rgb, cfg, hintergrund=True)
                 bed = _bedeutung(k, cfg)
                 unb = None if (bed or k is not None) else (_hex(rgb) if rgb is not None else "-")
-            else:
-                continue
             if not bed and not unb:
                 continue
-            for x0, top, x1, bot in self._boxen(a, data, page):
+            for x0, top, x1, bot in boxen:
                 if bed:
                     self.annot.append((x0, top, x1, bot, bed))
                 else:
                     self.unb_annot.append((x0, top, x1, bot, unb or "-"))
+
+    # ---- ADR 0006: Indizien fuer die Legende "auto" ---------------------------------------------
+    def indizien(self, zeichen: list[_Z]) -> tuple[list[Any], list[Any], int, int]:
+        """(Farben farbiger Unterstreichungen, Farben farbiger Durchstreichungen, farbige Zeichen, davon ohne jede Linie).
+        Nur bunte Linien zaehlen, die wirklich Zeichen im jeweiligen Band treffen."""
+        d = self.cfg["durchstreichung"]
+        min_s = self.cfg["text"]["min_saettigung"]
+        netz = _ZeichenNetz(zeichen, [d["band"], d["unterstreichung_band"]])
+        unter: list[Any] = []
+        strich: list[Any] = []
+        beruehrt: set[int] = set()
+        for x0, x1, y, hell, _lang, _unklar, rgb in self._linien_roh:
+            if hell or not self._bunt(rgb):
+                continue
+            for band, ziel in ((d["band"], strich), (d["unterstreichung_band"], unter)):
+                treffer = [c for c in netz.bei(y) if not c.leer
+                           and c.top + band[0] * (c.bottom - c.top) <= y <= c.top + band[1] * (c.bottom - c.top)
+                           and (min(x1, c.x1) - max(x0, c.x0)) >= d["min_abdeckung"] * max(c.x1 - c.x0, 0.1)]
+                if treffer:
+                    ziel.append(rgb)
+                    beruehrt.update(id(c) for c in treffer)
+        farbig = [c for c in zeichen if not c.leer and not c.unsichtbar and c.hex != self.grund_hex
+                  and self._textfarbe(c, min_s) is not None]
+        return unter, strich, len(farbig), sum(1 for c in farbig if id(c) not in beruehrt)
 
     # ---- Entscheidung: Markierung oder Gestaltung? ----------------------------------------------
     def pruefe(self, zeichen: list[_Z]) -> None:
         """Entscheidet mit Hilfe der Zeichen der Seite, welche Linien und Flaechen echte Markierungen sind."""
         cfg = self.cfg
         d = cfg["durchstreichung"]
+        modus = self.modus
         streichen = _bedeutung("durchgestrichen", cfg) is not None
         def gedeckt(c: _Z, x0: float, x1: float) -> bool:
             return (min(x1, c.x1) - max(x0, c.x0)) >= d["min_abdeckung"] * max(c.x1 - c.x0, 0.1)
 
-        for x0, x1, y, hell, lang, farbe_unklar in self._linien_roh:
+        netz = _ZeichenNetz(zeichen, [d["band"], d["unterstreichung_band"]]) if self._linien_roh else None
+        for x0, x1, y, hell, lang, farbe_unklar, rgb in self._linien_roh:
+            if modus == "alt" and x1 - x0 < 2:
+                continue                        # wie vor ADR 0006: Linien unter 2 pt zaehlen nicht
+            kand = netz.bei(y) if netz is not None else []
+            getroffen = False
             for art, band in (("strich", d["band"]), ("unter", d["unterstreichung_band"])):
                 if art == "strich" and not streichen:
                     continue
-                if art == "unter" and lang:
+                if art == "unter" and lang and (modus == "alt" or not self._bunt(rgb)):
                     continue                    # lange Linien unter dem Text: Trennlinie/Rahmen, keine Unterstreichung
-                treffer = [c for c in zeichen
+                                                # (ADR 0006: eine bunte Unterstreichung darf eine ganze Zeile lang sein)
+                treffer = [c for c in kand
                            if c.top + band[0] * (c.bottom - c.top) <= y <= c.top + band[1] * (c.bottom - c.top)
                            and min(x1, c.x1) - max(x0, c.x0) > 0]
                 if not treffer:
                     continue
+                getroffen = True
                 if art == "strich":
                     # R5: die Linie zaehlt nur, wenn sie die Zeichen unter ihr wirklich im Durchstreich-Band kreuzt
                     # (Anteil min_kreuz_anteil), unabhaengig von ihrer Laenge
-                    unter = [c for c in zeichen if not c.leer and c.top <= y <= c.bottom
+                    unter = [c for c in kand if not c.leer and c.top <= y <= c.bottom
                              and min(x1, c.x1) - max(x0, c.x0) > 0]
                     gekreuzt = [c for c in treffer if not c.leer]
                     if unter and len(gekreuzt) < d.get("min_kreuz_anteil", 0.6) * len(unter):
@@ -738,12 +1130,26 @@ class _Markierer:
                     for c in treffer:
                         if not c.leer and gedeckt(c, x0, x1):
                             c.hinweis.add("linienfarbe_unklar")
-                (self.striche if art == "strich" else self.unterstriche).append((x0, x1, y))
+                if art == "strich":
+                    self.striche.append((x0, x1, y))
+                else:
+                    self.unterstriche.append((x0, x1, y))
+                    self.unter_farben.append((rgb, farbe_unklar))
+            if not getroffen and modus != "alt" and not hell and self._bunt(rgb):
+                self._luecken_linie(kand, x0, x1, y)
+        self._netz_strich = _LinienNetz(self.striche)
+        self._netz_unter = _LinienNetz(self.unterstriche)
         f = cfg["flaechen"]
-        for x0, top, x1, bot, bed, hx in self._flaechen_roh:
+        for x0, top, x1, bot, k, hx, kraeftig in self._flaechen_roh:
+            bed = _bedeutung(k, cfg) if k else None
+            if modus != "linie" and not (bed or (k is None and kraeftig)):
+                continue
             innen = [c for c in zeichen if x0 - 0.5 <= (c.x0 + c.x1) / 2 <= x1 + 0.5
                      and top - 0.5 <= (c.top + c.bottom) / 2 <= bot + 0.5]
             if not any(not c.leer for c in innen):
+                continue
+            if modus == "linie":
+                self.hervor_flaechen.append((x0, top, x1, bot))     # ADR 0006: Hinterlegung bedeutet nichts (nur die Linie)
                 continue
             size = statistics.median(c.size for c in innen if not c.leer)
             ueber = max(0.0, min(c.x0 for c in innen) - x0) + max(0.0, x1 - max(c.x1 for c in innen))
@@ -757,6 +1163,30 @@ class _Markierer:
             else:
                 self.unb_flaechen.append((x0, top, x1, bot, hx))
 
+    def _luecken_linie(self, kand: list[_Z], x0: float, x1: float, y: float) -> None:
+        """ADR 0006: eine kurze farbige Linie, die kein Zeichen trifft, aber genau in einer Wortluecke derselben Textzeile
+        liegt (gestrichenes/neues Leerzeichen ohne eigenes Zeichen im PDF): nicht still uebergehen -> linie_unklar an den
+        beiden Nachbarzeichen (der Absatz wird gesperrt)."""
+        nah = [c for c in kand if not c.leer and c.top <= y <= c.bottom + 0.3 * (c.bottom - c.top)]
+        if not nah:
+            return
+        groesse = statistics.median(c.size for c in nah)
+        if x1 - x0 > 2.0 * groesse:
+            return
+        links = [c for c in nah if c.x1 <= x0 + 0.5 and x0 - c.x1 <= 0.5 * groesse]
+        rechts = [c for c in nah if c.x0 >= x1 - 0.5 and c.x0 - x1 <= 0.5 * groesse]
+        if not links or not rechts:
+            return
+        l, r = max(links, key=lambda c: c.x1), min(rechts, key=lambda c: c.x0)
+
+        def fortgesetzt(c: _Z) -> bool:       # Stueck einer durchgehenden Linie (je Wort ein Segment): kein Befund
+            return any(abs(yy - y) <= 0.5 and (min(xx1, c.x1) - max(xx0, c.x0)) >= 0.5 * max(c.x1 - c.x0, 0.1)
+                       for xx0, xx1, yy, *_ in self._linien_roh)
+
+        if not (fortgesetzt(l) or fortgesetzt(r)):
+            l.hinweis.add("linie_unklar")
+            r.hinweis.add("linie_unklar")
+
     def _linie_trifft(self, linien: list[tuple[float, float, float]], c: _Z, band: list[float]) -> bool:
         d = self.cfg["durchstreichung"]
         h = c.bottom - c.top
@@ -765,7 +1195,28 @@ class _Markierer:
         return any(lo <= y <= hi and (min(x1, c.x1) - max(x0, c.x0)) / breite >= d["min_abdeckung"]
                    for x0, x1, y in linien)
 
+    def _abdeckung(self, linien: list[tuple[float, float, float]], netz: _LinienNetz | None, c: _Z,
+                   band: list[float]) -> list[tuple[float, int]]:
+        """[(Abdeckung, Index)] aller Linien im Hoehenband des Zeichens (Abdeckung = Anteil der Zeichenbreite)."""
+        if not linien or netz is None:
+            return []
+        h = c.bottom - c.top
+        lo, hi = c.top + band[0] * h, c.top + band[1] * h
+        breite = max(c.x1 - c.x0, 0.1)
+        out = []
+        for i in netz.kandidaten(lo, hi):
+            x0, x1, y = linien[i]
+            if lo <= y <= hi:
+                out.append(((min(x1, c.x1) - max(x0, c.x0)) / breite, i))
+        return out
+
     def status(self, c: _Z) -> str:
+        if self.modus == "alt":
+            return self._status_alt(c)
+        return self._status_neu(c)
+
+    def _status_alt(self, c: _Z) -> str:
+        """Legende alt (Korpora von Auftrag 001/002): unveraendert wie vor ADR 0006."""
         cfg = self.cfg
         quelle: dict[str, set[str]] = {}          # Bedeutung -> woher
         farbe_bed = c.farbe_bed
@@ -825,6 +1276,107 @@ class _Markierer:
         c.status = erg
         return erg
 
+    def _status_neu(self, c: _Z) -> str:
+        """Legenden linie und farbe (ADR 0006 / ADR 0005).
+
+        Beide: durchgestrichen = entfaellt (jede Farbe); Farbe + Strich ist kein Widerspruch. Widerspruch (sperrt) =
+        Strich UND farbige Unterstreichung am selben Zeichen. farbe: rot/blau ohne Strich = neu, Unterstreichung nur
+        Hinweis. linie: farbige Unterstreichung = neu, schwarze = Hinweis, Farbe/Hinterlegung ohne Linie = unveraendert
+        (Hinweis, sperrt nicht); die Linie muss das Zeichen ganz abdecken, sonst rand_unklar (zeichengenaue Aenderungen)."""
+        cfg = self.cfg
+        d = cfg["durchstreichung"]
+        lg = cfg["legende"]
+        linie = self.modus == "linie"
+        min_a = d["min_abdeckung"]
+        quelle: dict[str, set[str]] = {}          # Bedeutung -> woher
+        farbe_bed = c.farbe_bed                    # linie: immer None (die Farbe allein bedeutet nichts)
+        cx, cy = (c.x0 + c.x1) / 2, (c.top + c.bottom) / 2
+        in_link = not c.leer and any(x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bot + 1
+                                     for x0, top, x1, bot in self.links)
+        if in_link and farbe_bed == "neu" and c.farbklasse == "blau":
+            farbe_bed = None                        # Hyperlink: das Blau ist Gestaltung, keine Neu-Markierung
+            c.hinweis.add("link")
+        if farbe_bed:
+            quelle.setdefault(farbe_bed, set()).add("farbe")
+        for x0, top, x1, bot, b in self.flaechen:
+            if x0 - 0.5 <= cx <= x1 + 0.5 and top - 0.5 <= cy <= bot + 0.5:
+                quelle.setdefault(b, set()).add("flaeche")
+        for x0, top, x1, bot, b in self.annot:
+            if x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bot + 1:
+                quelle.setdefault(b, set()).add("annot")
+        a_strich = max((a for a, _ in self._abdeckung(self.striche, self._netz_strich, c, d["band"])), default=0.0)
+        if a_strich >= min_a:
+            quelle.setdefault("entfaellt", set()).add("strich")
+        a_farbig = a_schwarz = 0.0
+        farbe_unklar = False
+        for a, i in self._abdeckung(self.unterstriche, self._netz_unter, c, d["unterstreichung_band"]):
+            rgb, unklar = self.unter_farben[i]
+            if self._farbige_linie(rgb, unklar, c):
+                if a > a_farbig:
+                    a_farbig, farbe_unklar = a, rgb is None
+            else:
+                a_schwarz = max(a_schwarz, a)
+        unter_farbig, unter_schwarz = a_farbig >= min_a, a_schwarz >= min_a
+        if linie and unter_farbig and not in_link:
+            quelle.setdefault("neu", set()).add("unter")
+        if "entfaellt" in quelle:
+            erg = DEL
+        elif "neu" in quelle:
+            erg = ADD
+        else:
+            erg = KEEP
+        gewinner = quelle.get("entfaellt" if erg == DEL else "neu", set())
+        if linie:
+            # Word zeichnet die Linie genau ueber die geaenderten Zeichen: deckt sie ein Zeichen ganz ab, ist der Status
+            # zeichengenau (keine Glaettung, kein teilweise_markiert); endet sie mitten im Zeichen -> rand_unklar
+            sauber, rand = lg.get("linie_sauber_ab", 0.85), lg.get("linie_rand_ab", 0.15)
+            c.genau = False
+            if erg == KEEP:
+                c.unscharf = False
+            elif gewinner & {"strich", "unter"}:
+                c.unscharf = (a_strich if erg == DEL else a_farbig) < sauber
+                c.genau = not c.unscharf
+            else:
+                c.unscharf = True
+            if not c.leer and any(rand < a < sauber for a in (a_strich, a_farbig)):
+                c.hinweis.add("rand_unklar")
+        else:
+            c.unscharf = erg != KEEP and "farbe" not in gewinner
+        if not c.leer:
+            if a_strich >= min_a and unter_farbig:
+                c.hinweis.add("gemischt_widerspruch")      # Strich UND farbige Unterstreichung: widerspruechlich (sperrt)
+            if farbe_unklar and erg == ADD:
+                c.hinweis.add("linienfarbe_unklar")
+            for k in self.andere:
+                if any(x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bot + 1 for x0, top, x1, bot in k["boxen"]):
+                    k["treffer"] += 1
+                    c.hinweis.add("kommentar_" + k["typ"].lower())
+            if erg == KEEP:
+                if not in_link and (unter_schwarz or (unter_farbig and not linie)):
+                    c.hinweis.add("unterstrichen")
+                if in_link and unter_farbig and linie:
+                    c.hinweis.add("link")
+                for x0, top, x1, bot in self.design:
+                    if x0 - 0.5 <= cx <= x1 + 0.5 and top - 0.5 <= cy <= bot + 0.5:
+                        c.hinweis.add("design_flaeche")
+                        break
+                for x0, top, x1, bot, hx in self.unb_flaechen:
+                    if x0 - 0.5 <= cx <= x1 + 0.5 and top - 0.5 <= cy <= bot + 0.5:
+                        c.unb_flaeche = hx
+                        break
+                else:
+                    for x0, top, x1, bot, hx in self.unb_annot:
+                        if x0 - 1 <= cx <= x1 + 1 and top - 1 <= cy <= bot + 1:
+                            c.unb_flaeche = hx
+                            break
+                if linie:
+                    if any(x0 - 0.5 <= cx <= x1 + 0.5 and top - 0.5 <= cy <= bot + 0.5 for x0, top, x1, bot in self.hervor):
+                        c.hinweis.add("hinterlegt")
+                    if c.farbig and not in_link and c.hex != self.grund_hex:
+                        c.hinweis.add("farbe_ohne_linie")
+        c.status = erg
+        return erg
+
     def meldungen(self, seite: int) -> list[str]:
         """Kommentare, die auf keinem erkannten Text liegen."""
         return [f"Seite {seite}: Ein PDF-Kommentar vom Typ {k['typ']} liegt nicht auf erkanntem Text und wurde nicht ausgewertet."
@@ -846,6 +1398,8 @@ def _zeichenstatus(g: list[_Z], anteil: float) -> tuple[list[str], bool]:
     if n_del and n_add:
         return st, False               # Ersetzung ohne Leerzeichen: Zeichen einzeln behalten
     marke = DEL if n_del else ADD if n_add else None
+    if marke is not None and all(z.genau for z in g if z.status == marke):
+        return st, False               # ADR 0006: Linie deckt genau die geaenderten Zeichen (Word) -> nichts glaetten
     geometrie = marke is not None and all(z.unscharf for z in g if z.status == marke)
     if marke is None or (n_del + n_add) / n < anteil:
         return st, geometrie
@@ -959,6 +1513,8 @@ def _woerter(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "",
             hin.add("teilweise_markiert")
         if geometrie and st != roh:
             hin.add("rand_unklar")
+        if status != KEEP and any(z.farbig and s == KEEP for z, s in zip(g, st)):
+            hin.add("rand_unklar")        # ADR 0006: farbiges Zeichen ohne Linie im markierten Wort (Linie zu kurz?)
         # R3: markierte Hochzahl (Fussnoten-Marke), die zu diesem Wort gehoert: nicht im Text, aber gemeldet
         naechstes_x0 = gruppen[gi + 1][0].x0 if gi + 1 < len(gruppen) else float("inf")
         if any(h.status != KEEP and (gi == 0 or h.x0 >= g[0].x0) and h.x0 < naechstes_x0 for h in hoch or ()):
@@ -1005,6 +1561,50 @@ def _hochzahlen(cluster: list[list[_Z]], lay: dict) -> tuple[list[list[_Z]], lis
     return rest, hoch
 
 
+def _markierte_leerzeichen(zeichen: list[_Z], leere: list[_Z]) -> list[_Z]:
+    """ADR 0006: ein Leerzeichen, das ANDERS markiert ist als beide Nachbarzeichen (nur das Leerzeichen gestrichen:
+    "Pumpe Ventil" -> "PumpeVentil"; nur das Leerzeichen neu; gestrichenes Leerzeichen + neuer Bindestrich), ist eine
+    Aenderung IM Wort: es wird Teil des Wortes (Zeichen-Lauf), statt die Woerter zu trennen. Sonst ginge die Aenderung
+    still verloren (beide Woerter blieben 'unveraendert'). Leerzeichen, die zu einem markierten Nachbarwort gehoeren
+    ("Ventil " gestrichen), trennen weiter wie bisher."""
+    out = []
+    for s in leere:
+        if s.status == KEEP or not s.text:
+            continue
+        mitte = (s.x0 + s.x1) / 2
+        links = [z for z in zeichen if (z.x0 + z.x1) / 2 < mitte and s.x0 - z.x1 <= 0.3 * z.size]
+        rechts = [z for z in zeichen if (z.x0 + z.x1) / 2 > mitte and z.x0 - s.x1 <= 0.3 * z.size]
+        if not links or not rechts:
+            continue
+        l, r = max(links, key=lambda z: z.x1), min(rechts, key=lambda z: z.x0)
+        if s.status not in (l.status, r.status):
+            out.append(s)
+    return out
+
+
+def _label_verbinden(toks: list[PdfToken], infos: list[_Info], lay: dict, groesse: float) -> None:
+    """ADR 0006: geaenderte Listennummer am Zeilenanfang ("c." gestrichen, direkt danach "a." neu) ist EIN Label-Wort
+    (old "c.", new "a.", Zeichen-Laeufe), auch wenn die beiden Teile mit kleiner Luecke gesetzt sind (kleiner als ein
+    haengender Einzug, layout.liste_min_einzug_em). Aendert die Listen in place."""
+    if len(toks) < 2:
+        return
+    a, b = toks[0], toks[1]
+    if (a.status, b.status) not in ((DEL, ADD), (ADD, DEL)):
+        return
+    form_a, form_b = (a.old if a.status == DEL else a.new), (b.old if b.status == DEL else b.new)
+    if any((_marke(f) or ("", 0))[0] not in _LABEL_ARTEN for f in (form_a, form_b)):
+        return
+    if b.bbox[0] - a.bbox[2] >= lay.get("liste_min_einzug_em", 1.2) * groesse:
+        return
+    alt, neu = (a, b) if a.status == DEL else (b, a)
+    hin = ";".join(sorted((set(a.hinweis.split(";")) | set(b.hinweis.split(";"))) - {""}))
+    toks[0:2] = [PdfToken(old=alt.old, new=neu.new, status=MOD, page=a.page,
+                          bbox=(a.bbox[0], min(a.bbox[1], b.bbox[1]), b.bbox[2], max(a.bbox[3], b.bbox[3])),
+                          hinweis=hin, trenner=b.trenner, teile=[(a.status, form_a), (b.status, form_b)])]
+    i0, i1 = infos[0], infos[1]
+    infos[0:2] = [_Info(unb=i0.unb or i1.unb, farbe=i0.farbe or i1.farbe, unlesbar=i0.unlesbar or i1.unlesbar)]
+
+
 def _zeilen(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> list[_Zeile]:
     lay = cfg["layout"]
     tol = lay["zeilen_toleranz"]
@@ -1030,9 +1630,13 @@ def _zeilen(zeichen: list[_Z], seite: int, cfg: dict, grund_hex: str = "") -> li
         c_top, c_bot = min(z.top for z in cl), max(z.bottom for z in cl)
         c_x0, c_x1 = min(z.x0 for z in cl), max(z.x1 for z in cl)
         leer_cl = [z for z in leere if c_top <= (z.top + z.bottom) / 2 <= c_bot and c_x0 <= (z.x0 + z.x1) / 2 <= c_x1]
-        toks, infos = _woerter(cl, seite, cfg, grund_hex, leer_cl, hoch)
+        geklebt = _markierte_leerzeichen(cl, leer_cl) if _modus(cfg) != "alt" else []
+        if geklebt:
+            leer_cl = [z for z in leer_cl if not any(z is g for g in geklebt)]
+        toks, infos = _woerter(cl + geklebt, seite, cfg, grund_hex, leer_cl, hoch)
         if not toks:
             continue
+        _label_verbinden(toks, infos, lay, statistics.median(z.size for z in cl))
         t0 = toks[0]
         if t0.status == KEEP and _NUR_PRIVAT.fullmatch(t0.old):      # Symbolschrift-Aufzaehlungspunkt am Zeilenanfang = Aufzaehlungszeichen
             t0.old = t0.new = "•"
@@ -1058,10 +1662,13 @@ _RE_STRICH = re.compile(r"^[-–—]$")
 _RE_ZAHL_PUNKT = re.compile(r"^(\d{1,2})\.$")
 _RE_KLAMMER = re.compile(r"^(\(?\d{1,2}\)|\(?[A-Za-z]\)|\(?(?:i{1,3}|iv|vi{0,3}|ix|x)\))$")
 _RE_ROEMISCH = re.compile(r"^(?:i{1,3}|iv|vi{0,3}|ix|x)\.$")
+_RE_BUCHSTABE = re.compile(r"^([A-Za-z])\1?\.$")          # ADR 0006: "a." "A." "AA." (nur mit haengendem Einzug)
+_LABEL_ARTEN = ("zahl", "buchstabe", "klammer", "roemisch")   # Listennummern (keine Punkte/Striche)
 
 
 def _marke(text: str) -> tuple[str, int] | None:
-    """Aufzaehlungszeichen am Zeilenanfang: ('punkt' | 'strich' | 'zahl' | 'klammer' | 'roemisch', Nummer) oder None."""
+    """Aufzaehlungszeichen am Zeilenanfang: ('punkt' | 'strich' | 'zahl' | 'klammer' | 'roemisch' | 'buchstabe', Nummer)
+    oder None. 'buchstabe' ("a.", "A.", "AA.") zaehlt nur mit haengendem Einzug als Listenpunkt (siehe _haengend)."""
     if _RE_PUNKT.match(text):
         return "punkt", 0
     if _RE_STRICH.match(text):
@@ -1073,7 +1680,18 @@ def _marke(text: str) -> tuple[str, int] | None:
         return "klammer", 0
     if _RE_ROEMISCH.match(text):
         return "roemisch", 0
+    if _RE_BUCHSTABE.match(text):
+        return "buchstabe", 0
     return None
+
+
+def _haengend(z: "_Zeile", lay: dict) -> bool:
+    """Haengender Einzug (ADR 0006): zwischen dem ersten Wort (Listennummer) und dem Text steht ein Tab bzw. eine grosse
+    Luecke (layout.liste_min_einzug_em Schriftgroessen)."""
+    if len(z.tokens) < 2:
+        return False
+    t0, t1 = z.tokens[0], z.tokens[1]
+    return t0.trenner == "\t" or t1.bbox[0] - t0.bbox[2] >= lay.get("liste_min_einzug_em", 1.2) * z.size
 
 
 def _erste_form(t: PdfToken) -> str:
@@ -1088,7 +1706,56 @@ def _ist_ueberschrift(z: _Zeile, body: float, cfg: dict) -> bool:
     gross = z.size >= body * cfg["layout"]["ueberschrift_faktor"]
     if (nr_alt or nr_neu) and len(z.tokens) >= 2 and wenige and (z.fett or gross):
         return True
-    return bool(z.fett and z.size >= body * 1.15 and wenige)
+    return bool(z.fett and z.size >= body * 1.15 and wenige) or _muster_ueberschrift(z, cfg)
+
+
+def _re_cfg(lay: dict, schluessel: str) -> re.Pattern | None:
+    muster = lay.get(schluessel)
+    try:
+        return re.compile(str(muster)) if muster else None
+    except re.error:
+        return None
+
+
+def _gross_anteil(tokens: list[PdfToken]) -> float:
+    buchstaben = [ch for t in tokens for ch in _erste_form(t) if ch.isalpha()]
+    return sum(1 for ch in buchstaben if ch.isupper()) / len(buchstaben) if buchstaben else 0.0
+
+
+def _kapitel(text: str, lay: dict) -> str | None:
+    """'PART 1 ...' -> 'Part 1' (Muster layout.section_kapitel, Name layout.section_kapitel_name); sonst None."""
+    rx = _re_cfg(lay, "section_kapitel")
+    m = rx.match(text) if rx else None
+    if not m:
+        return None
+    return str(lay.get("section_kapitel_name", "Part {n}")).replace("{n}", m.group(1))
+
+
+def _muster_ueberschrift(z: _Zeile, cfg: dict) -> bool:
+    """ADR 0006: Ueberschrift ohne Fettdruck -- "1.1 TITEL" (Section-Nummer mit innerem Punkt, danach Tab oder Titel in
+    Grossbuchstaben) oder Kapitelzeile "PART 1 TITEL" (Muster in config farben.yaml layout.section_*)."""
+    lay = cfg["layout"]
+    if len(z.tokens) < 2 or len(z.tokens) > 25:
+        return False
+    t = z.tokens[0]
+    for text in {f"{t.old} {z.tokens[1].old}".strip(), f"{t.new} {z.tokens[1].new}".strip()}:
+        if _kapitel(text, lay):
+            return True
+    rx = _re_cfg(lay, "section_nummer")
+    if rx is None or not any(rx.match(x) for x in (t.old, t.new) if x):
+        return False
+    return _haengend(z, lay) or _gross_anteil(z.tokens[1:]) >= lay.get("section_min_gross_anteil", 0.6)
+
+
+def _section_von(toks: list[PdfToken], lay: dict) -> tuple[str | None, str | None]:
+    """Section-Nummer (alt, neu) einer Ueberschrift: Kapitelzeile ('PART 1' -> 'Part 1') oder Nummer am Anfang."""
+    alt = " ".join(t.old for t in toks[:3] if t.old)
+    neu = " ".join(t.new for t in toks[:3] if t.new)
+    k_alt, k_neu = _kapitel(alt, lay), _kapitel(neu, lay)
+    if k_alt or k_neu:
+        return k_alt, k_neu
+    return (next((section_nummer(t.old) for t in toks if t.old), None),       # '{-2.3-} {+2.2+} Titel'
+            next((section_nummer(t.new) for t in toks if t.new), None))
 
 
 def _kopf_fuss_schluessel(z: _Zeile) -> str:
@@ -1096,9 +1763,61 @@ def _kopf_fuss_schluessel(z: _Zeile) -> str:
     return re.sub(r"\d+", "#", text.casefold())
 
 
+def _kopf_fuss_schluessel_fest(z: _Zeile) -> str:
+    """ADR 0006: Schluessel einer wiederkehrenden Randzeile nur aus UNVERAENDERTEN Woertern (Ziffern vereinheitlicht);
+    Kopf-/Fusszeilen einer Word-Aenderungsverfolgung tragen auf jeder Seite eigene Aenderungen. Ohne unveraendertes Wort:
+    alle Woerter (mit '~' davor)."""
+    fest = [t.old for t in z.tokens if t.status == KEEP and t.old]
+    text = " ".join(fest) if fest else "~" + " ".join(_erste_form(t) for t in z.tokens)
+    return re.sub(r"\d+", "#", text.casefold())
+
+
+def _struktur_zeile(z: _Zeile, cfg: dict) -> bool:
+    """Beginnt die Zeile einen Listenpunkt (Nummer mit haengendem Einzug) oder ist sie eine Section-/Kapitelzeile
+    ("1.6 TITEL", "PART 1 ...")? Solche Zeilen gehoeren zur Gliederung, nie zur Kopf-/Fusszeile."""
+    m = _marke(_erste_form(z.tokens[0]))
+    return bool(m and m[0] in _LABEL_ARTEN and _haengend(z, cfg["layout"])) or _muster_ueberschrift(z, cfg)
+
+
+def _wiederkehrende_randzeilen(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cfg: dict) -> set[int]:
+    """ADR 0006: Zeilen in den oberen/unteren Randbaendern (layout.kopf_fuss_band_anteil), die auf mindestens
+    layout.kopf_fuss_min_seiten_anteil der Seiten mit Text (und mindestens kopf_fuss_min_seiten Seiten) an derselben
+    Hoehe (+- kopf_fuss_hoehe_toleranz_pt) mit demselben Schluessel wiederkehren: Kopf-/Fusszeilen. Gliederungszeilen
+    (Listenpunkt, Section, PART) zaehlen nie (z. B. "PART 1 GENERAL" oben auf jeder ersten Seite einer Section)."""
+    lay = cfg["layout"]
+    band = float(lay.get("kopf_fuss_band_anteil", 0.0) or 0.0)
+    seiten = [zl for zl in alle_zeilen if zl]
+    if band <= 0 or not seiten:
+        return set()
+    tol = float(lay.get("kopf_fuss_hoehe_toleranz_pt", 2.0))
+    noetig = max(int(lay.get("kopf_fuss_min_seiten", 2)),
+                 math.ceil(float(lay.get("kopf_fuss_min_seiten_anteil", 0.5)) * len(seiten) - 1e-9))
+    if len(seiten) < noetig:
+        return set()
+    eintraege: dict[str, list[tuple[float, int, int]]] = {}
+    for zl in seiten:
+        h = seiten_h[zl[0].seite]
+        for z in zl:
+            if (z.top < band * h or z.bottom > (1 - band) * h) and not _struktur_zeile(z, cfg):
+                eintraege.setdefault(_kopf_fuss_schluessel_fest(z), []).append((z.top, z.seite, id(z)))
+    ids: set[int] = set()
+    for liste in eintraege.values():
+        liste.sort()
+        gruppe: list[tuple[float, int, int]] = []
+        for e in liste + [(float("inf"), -1, -1)]:
+            if gruppe and e[0] - gruppe[0][0] <= 2 * tol:
+                gruppe.append(e)
+                continue
+            if len({s for _, s, _ in gruppe}) >= noetig:
+                ids.update(i for _, _, i in gruppe)
+            gruppe = [e]
+    return ids
+
+
 def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cfg: dict,
-                 ergebnis: PdfAnalyse) -> list[list[_Zeile]]:
-    """Fasst die Zeilen zu Bloecken zusammen. Gibt je Seite die Zeilen zurueck, die KEINE Kopf-/Fusszeile sind."""
+                 ergebnis: PdfAnalyse, inhalt_rechts: dict[int, float] | None = None) -> list[list[_Zeile]]:
+    """Fasst die Zeilen zu Bloecken zusammen. Gibt je Seite die Zeilen zurueck, die KEINE Kopf-/Fusszeile sind.
+    inhalt_rechts: je Seite mit Markup-Leiste deren linker Rand (rechter Rand des Inhalts, ADR 0006)."""
     lay = cfg["layout"]
     # Kopf-/Fusszeilen finden
     kandidaten: dict[str, set[int]] = {}
@@ -1122,6 +1841,7 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
                 g0[round(z.size * 2) / 2] += sum(len(t.old or t.new) for t in z.tokens)
     body0 = g0.most_common(1)[0][0] if g0 else 11.0
     rand_ids = _abgesetzte_randzeilen(alle_zeilen, seiten_h, body0, lay)
+    rand_ids |= _wiederkehrende_randzeilen(alle_zeilen, seiten_h, cfg)       # ADR 0006
 
     def ist_kopf_fuss(z: _Zeile) -> bool:
         if id(z) in rand_ids:
@@ -1145,6 +1865,8 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
     abstaende: list[float] = []           # Zeilenabstaende im Fliesstext (Zeilen in Fliesstext-Schriftgroesse)
     alle_abstaende: list[float] = []      # Ersatz, falls es keine zwei Fliesstext-Zeilen untereinander gibt
     weich_ids = {id(z.tokens[-1]) for zl in alle_zeilen for z in zl if z.weich_ende}
+    for nr, h in seiten_h.items():             # Kopf-/Fussbereiche je Seite (auch fuer die Farb-Inventur, src/sicht.py)
+        ergebnis.kopf_fuss_baender[nr] = [(-1e4, lay["kopf_fuss_anteil"] * h), ((1 - lay["kopf_fuss_anteil"]) * h, 1e4)]
     for zl in alle_zeilen:
         nutz = []
         for z in zl:
@@ -1153,6 +1875,7 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
                 if gew:
                     ergebnis.ignoriert.append({"seite": z.seite, "grund": "kopf_fuss", "woerter": gew,
                                                "text": " ".join(_erste_form(t) for t in z.tokens)})
+                ergebnis.kopf_fuss_baender.setdefault(z.seite, []).append((z.top - 1.0, z.bottom + 1.0))
                 continue
             nutz.append(z)
         seiten_nutz.append(nutz)
@@ -1161,7 +1884,8 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
                 alle_abstaende.append(b.top - a.top)
                 if abs(a.size - body) <= 0.5 and abs(b.size - body) <= 0.5:
                     abstaende.append(b.top - a.top)
-    _design_ueberschriften(seiten_nutz, body, cfg, ergebnis)
+    if _modus(cfg) != "linie":           # "alle Ueberschriften blau = Gestaltung" gilt nur, wenn die Farbe etwas bedeutet
+        _design_ueberschriften(seiten_nutz, body, cfg, ergebnis)
     median = _zeilenabstand(abstaende or alle_abstaende, body)
     weit = median >= 1.5 * body          # grosser Zeilenabstand: Absatzende erkennt man an der kurzen Zeile
     rechts_x = sorted(z.x1 for zl in seiten_nutz for z in zl if len(z.tokens) >= 5)
@@ -1178,7 +1902,10 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
         return rechts is not None and z.x1 < rechts - 3 * z.size
 
     def kurz(z: _Zeile) -> bool:
-        return kurz_im_text(z) or (schwelle_kurz is not None and z.x1 < schwelle_kurz)
+        schwelle = schwelle_kurz
+        if schwelle is not None and inhalt_rechts and z.seite in inhalt_rechts:
+            schwelle = links + 0.75 * (inhalt_rechts[z.seite] - links)   # ADR 0006: Inhaltsbreite links der Markup-Leiste
+        return kurz_im_text(z) or (schwelle is not None and z.x1 < schwelle)
 
     # R4: "Haette das erste Wort der naechsten Zeile noch in die vorige gepasst?" Rechter Rand je Zeile: 90-%-Wert der
     # Zeilenenden langer Zeilen DERSELBEN Seite, die waagerecht mit ihr ueberlappen (Spalten bleiben getrennt).
@@ -1220,8 +1947,7 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
                 return
             toks = [t for z in aktuell for t in z.tokens]
             if art == "ueberschrift":
-                n_alt = next((section_nummer(t.old) for t in toks if t.old), None)      # '{-2.3-} {+2.2+} Titel'
-                n_neu = next((section_nummer(t.new) for t in toks if t.new), None)
+                n_alt, n_neu = _section_von(toks, lay)        # '{-2.3-} {+2.2+} Titel', 'PART 1 TITEL' -> 'Part 1'
                 if n_alt or n_neu:
                     sec_alt, sec_neu = n_alt, n_neu
                 else:   # unnummerierte Ueberschrift: Zuordnung ueber Text, Nummern bleiben
@@ -1240,17 +1966,25 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
         vorher: _Zeile | None = None
         block_marke: str | None = None        # Art des Aufzaehlungszeichens, mit dem der aktuelle Block beginnt
         letzte_nr = 0                         # letzte Nummer einer Liste "1." "2." ...
+        kopf_muster = False                   # ADR 0006: die laufende Ueberschrift ist nur am Muster erkannt (nicht fett/gross)
         for z in nutz:
             kopf = _ist_ueberschrift(z, body, cfg)
-            # zweite Zeile einer Ueberschrift: gleiche Schrift, enger Abstand, keine eigene Nummer
+            marke = _marke(_erste_form(z.tokens[0]))
+            # zweite Zeile einer Ueberschrift: gleiche Schrift, enger Abstand, keine eigene Nummer (bei einer nur am
+            # Muster erkannten Ueberschrift ausserdem: keine Listennummer, wieder Grossbuchstaben)
             folge_kopf = (art == "ueberschrift" and vorher is not None and abs(z.size - vorher.size) < 0.5
                           and z.fett == vorher.fett and z.top - vorher.top <= 1.6 * vorher.size
-                          and section_nummer(z.tokens[0].old or z.tokens[0].new) is None)
-            marke = _marke(_erste_form(z.tokens[0]))
+                          and section_nummer(z.tokens[0].old or z.tokens[0].new) is None
+                          and (not kopf_muster or (marke is None and _gross_anteil(z.tokens)
+                                                   >= lay.get("section_min_gross_anteil", 0.6))))
             ist_listenpunkt = False
             if marke and vorher is not None:
                 m_art, m_nr = marke
-                if m_art == "zahl":
+                if m_art in ("zahl", "buchstabe", "klammer", "roemisch") and _haengend(z, lay):
+                    ist_listenpunkt = True    # ADR 0006: Listennummer mit haengendem Einzug = eigener Absatz (auch Ebenenwechsel)
+                elif m_art == "buchstabe":
+                    ist_listenpunkt = False   # "a." / "A." ohne Tab danach: kein sicherer Listenpunkt (z. B. "z. B.")
+                elif m_art == "zahl":
                     ist_listenpunkt = m_nr == 1 or m_nr == letzte_nr + 1
                 elif m_art == "strich":
                     # ein Strich am Zeilenanfang ist nur dann ein Listenpunkt, wenn davor ein Satz endet,
@@ -1273,6 +2007,7 @@ def _zu_bloecken(alle_zeilen: list[list[_Zeile]], seiten_h: dict[int, float], cf
             if neu_start:
                 abschliessen()
                 art = "ueberschrift" if kopf else "absatz"
+                kopf_muster = kopf and not z.fett and z.size < body * lay["ueberschrift_faktor"]
                 block_marke = marke[0] if (marke and ist_listenpunkt) else None
                 if kopf:
                     letzte_nr = 0
@@ -1563,9 +2298,11 @@ def _in_box(t: PdfToken, box: tuple[float, float, float, float]) -> bool:
     return box[0] - 2 <= cx <= box[2] + 2 and box[1] - 2 <= cy <= box[3] + 2
 
 
-def _ist_marke(token: PdfToken) -> bool:
-    """Ein Aufzaehlungszeichen / eine Nummer ('1.', 'a)', '•')?"""
-    return bool(re.fullmatch(r"[\W_]{1,3}|\(?[0-9A-Za-z]{1,3}[.)]", _erste_form(token)))
+def _ist_marke(token: PdfToken, section: re.Pattern | None = None) -> bool:
+    """Ein Aufzaehlungszeichen / eine Nummer ('1.', 'a)', '•')? ADR 0006: auch eine Section-Nummer vor dem Titel ('1.6',
+    Muster `section` aus layout.section_nummer)."""
+    text = _erste_form(token)
+    return bool(re.fullmatch(r"[\W_]{1,3}|\(?[0-9A-Za-z]{1,3}[.)]", text)) or bool(section and section.match(text))
 
 
 def _spalten_regionen(zeilen: list[_Zeile], tabellen: list[tuple[float, float, float, float]],
@@ -1578,6 +2315,7 @@ def _spalten_regionen(zeilen: list[_Zeile], tabellen: list[tuple[float, float, f
           `min_anteil`) enden links davon, mit Abstand dazwischen und in derselben Hoehe der Seite
           (das geht auch, wenn die Zeilen der Spalten nicht auf gleicher Hoehe stehen)."""
     sp = cfg["spalten"]
+    sec = _re_cfg(cfg["layout"], "section_nummer")
     segs: list[tuple[float, float, float, float, float]] = []          # (x0, x1, top, bottom, size)
     luecken: list[tuple[int, float, float, float, float]] = []         # (Zeile, links, rechts, top, bottom)
     for n, z in enumerate(zeilen):
@@ -1589,7 +2327,7 @@ def _spalten_regionen(zeilen: list[_Zeile], tabellen: list[tuple[float, float, f
         gruppen = []
         for t in ts[1:]:
             if t.bbox[0] - teil[-1].bbox[2] >= sp["min_luecke_em"] * z.size:
-                if not (len(teil) == 1 and _ist_marke(teil[0]) and not gruppen):
+                if not (len(teil) == 1 and _ist_marke(teil[0], sec) and not gruppen):
                     luecken.append((n, teil[-1].bbox[2], t.bbox[0], z.top, z.bottom))
                 gruppen.append(teil)
                 teil = [t]
@@ -1597,7 +2335,7 @@ def _spalten_regionen(zeilen: list[_Zeile], tabellen: list[tuple[float, float, f
                 teil.append(t)
         gruppen.append(teil)
         for g in gruppen:
-            if len(g) == 1 and _ist_marke(g[0]):
+            if len(g) == 1 and _ist_marke(g[0], sec):
                 continue
             segs.append((g[0].bbox[0], g[-1].bbox[2], z.top, z.bottom, z.size))
     ergebnis: list[tuple[float, float, float, float]] = []
@@ -1731,6 +2469,81 @@ def _seite_luecken(sd: _SeitenDaten, zeilen_alle: list[_Zeile], nutz: list[_Zeil
     return False
 
 
+# ---------------------------------------------------------------- Legende waehlen (ADR 0006)
+def _farbe_nah(a: tuple[float, float, float], b: tuple[float, float, float], tol: float) -> bool:
+    return max(abs(x - y) for x, y in zip(a, b)) <= tol
+
+
+def _waehle_legende(cfg: dict, seiten_daten: list[_SeitenDaten], markierer: dict[int, "_Markierer"],
+                    grund_hex: str) -> tuple[str, str]:
+    """(Legende, Grund in einfachem Deutsch). Fest eingestellte Legende: wie eingestellt (Grund leer). auto: Markup-Leiste
+    auf irgendeiner Seite ODER farbige Unter- und Durchstreichungen derselben Farbe (je mindestens legende.auto_min_linien)
+    bei hoechstens legende.auto_max_farbe_ohne_linie farbigen Zeichen ganz ohne Linie -> "linie", sonst "farbe"."""
+    eingestellt = _modus(cfg)
+    if eingestellt != "auto":
+        return eingestellt, ""
+    lg = cfg["legende"]
+    mit_leiste = [sd.nr for sd in seiten_daten if sd.leiste]
+    if mit_leiste:
+        return "linie", (f"Word-Änderungsverfolgung erkannt: graue Markup-Leiste am rechten Rand "
+                         f"(Seite {mit_leiste[0]}{' und weitere' if len(mit_leiste) > 1 else ''}).")
+    unter: dict[str, tuple[float, float, float]] = {}
+    strich: dict[str, tuple[float, float, float]] = {}
+    n_unter: Counter = Counter()
+    n_strich: Counter = Counter()
+    farbig = ohne = 0
+    for sd in seiten_daten:
+        m = markierer.get(sd.nr)
+        if m is None:
+            continue
+        m.grund_hex = grund_hex
+        u, s, f, o = m.indizien(sd.zeichen)
+        for rgb in u:
+            unter.setdefault(_hex(rgb), rgb)
+            n_unter[_hex(rgb)] += 1
+        for rgb in s:
+            strich.setdefault(_hex(rgb), rgb)
+            n_strich[_hex(rgb)] += 1
+        farbig += f
+        ohne += o
+    tol = float(lg.get("linie_farbe_toleranz", 0.15))
+    mindest = int(lg.get("auto_min_linien", 1))
+    paare = [(hu, hs) for hu, ru in unter.items() for hs, rs in strich.items() if _farbe_nah(ru, rs, tol)]
+    u_n = sum(n_unter[hu] for hu in {hu for hu, _ in paare})
+    s_n = sum(n_strich[hs] for hs in {hs for _, hs in paare})
+    if paare and u_n >= mindest and s_n >= mindest and (
+            not farbig or ohne / farbig <= float(lg.get("auto_max_farbe_ohne_linie", 0.5))):
+        return "linie", (f"Word-Änderungsverfolgung erkannt: farbige Unter- und Durchstreichungen in derselben Farbe "
+                         f"({paare[0][0]}).")
+    return "farbe", "Keine Word-Änderungsverfolgung erkannt: durchgestrichen = entfällt, rot oder blau ohne Strich = neu."
+
+
+def _farben_deuten(seiten_daten: list[_SeitenDaten], cfg: dict, grund_hex: str) -> None:
+    """Bedeutung der Textfarbe je Zeichen nach der gewaehlten Legende neu setzen (beim Lesen galt bei auto noch "farbe").
+    linie: die Farbe allein bedeutet nichts; farbige Zeichen werden gemerkt (Hinweis farbe_ohne_linie, wenn keine Linie
+    darauf liegt) und gelten nie als "unbekannte Farbe"."""
+    linie = _modus(cfg) == "linie"
+    for sd in seiten_daten:
+        for z in sd.zeichen:
+            if z.leer or z.unsichtbar:
+                continue
+            z.farbe_bed = _bedeutung(z.farbklasse, cfg)
+            if linie:
+                z.farbig = z.hex not in ("", grund_hex) and (z.farbklasse is not None
+                                                              or z.unb in ("bunt", "pastell", "sonder"))
+                z.unb = ""
+
+
+def _farb_bedeutung(k: str | None, cfg: dict) -> str:
+    """Spalte "bedeutung" der Farbuebersicht (einfaches Deutsch) je nach Legende."""
+    modus = _modus(cfg)
+    if modus == "alt":
+        return cfg["legende"].get(k, "-") if k else "keine Markierung"
+    if modus == "linie":
+        return "keine eigene Bedeutung (es zählt die Linie: unterstrichen = neu, durchgestrichen = entfällt)"
+    return "neu (wenn nicht durchgestrichen)" if k in ("rot", "blau") else "keine Markierung"
+
+
 # ---------------------------------------------------------------- Einstieg
 def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
     cfg = cfg or config.lade("farben")
@@ -1746,7 +2559,7 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
             sd = _lese_seite(page, nr, cfg)
             seiten_daten.append(sd)
             if any(not z.leer for z in sd.zeichen):
-                markierer[nr] = _Markierer(page, cfg, sd.rahmen)
+                markierer[nr] = _Markierer(page, cfg, sd.rahmen, sd)
                 if zweit:
                     zweit.merke_seite(page, sd)
     if zweit:
@@ -1762,6 +2575,19 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
         hx, n = zaehler.most_common(1)[0]
         if n / sum(zaehler.values()) >= cfg["unbekannt"]["grundfarbe_anteil"]:
             grund_hex = hx
+    # ADR 0006: Legende fuer das ganze Dokument festlegen; ab hier gilt die Konfiguration mit der gewaehlten Legende
+    eingestellt = _modus(cfg)
+    modus, ergebnis.legende_grund = _waehle_legende(cfg, seiten_daten, markierer, grund_hex)
+    cfg = _mit_modus(cfg, modus)
+    ergebnis.legende_modus = modus
+    ergebnis.markup_leiste = any(sd.leiste for sd in seiten_daten)
+    if modus != "alt":
+        _farben_deuten(seiten_daten, cfg, grund_hex)
+    for m in markierer.values():
+        m.grund_hex = grund_hex
+        m.deute(cfg)
+    for sd in seiten_daten:
+        ergebnis.randnotizen += _randnotizen(sd, cfg)
     text_farben: Counter = Counter()
     rect_farben: Counter = Counter()
     unbekannt: Counter = Counter()
@@ -1789,7 +2615,8 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
                     unbekannt[z.hex] += 1
         ergebnis.warnungen += m.meldungen(nr)
         alle_zeilen.append(_zeilen(sd.zeichen, nr, cfg, grund_hex))
-    nutz_pro_seite = _zu_bloecken(alle_zeilen, seiten_h, cfg, ergebnis)
+    inhalt_rechts = {sd.nr: sd.leiste[0] for sd in seiten_daten if sd.leiste}
+    nutz_pro_seite = _zu_bloecken(alle_zeilen, seiten_h, cfg, ergebnis, inhalt_rechts)
     for sd, zl, nutz in zip(seiten_daten, alle_zeilen, nutz_pro_seite):
         _seite_luecken(sd, zl, nutz, cfg, ergebnis, sd.nr in ohne_text)
     for l, seite, boxen in ergebnis.regionen:
@@ -1808,14 +2635,29 @@ def analysiere_pdf(pfad: str | Path, cfg: dict | None = None) -> PdfAnalyse:
                     b.hinweise += [h for h in _block_hinweise(b.tokens) if h not in b.hinweise]
     if zweit:
         zweit.inventur(ergebnis, seiten_daten, markierer)
+    _inhalt_in_sprechblasen(ergebnis, cfg)
     ergebnis.luecken.sort(key=lambda l: (l["seite"], l["art"]))
     # Farbuebersicht fuer das Dashboard (zum Kalibrieren)
     for (hx, k), n in text_farben.most_common():
         ergebnis.farben.append({"farbe": hx, "zeichen": n, "klasse": k or "-", "art": "Text",
-                                "bedeutung": cfg["legende"].get(k, "-") if k else "keine Markierung"})
+                                "bedeutung": _farb_bedeutung(k, cfg)})
     for (hx, k), n in rect_farben.most_common():
         ergebnis.farben.append({"farbe": hx, "zeichen": n, "klasse": k or "-", "art": "Hinterlegung (Rechtecke)",
-                                "bedeutung": cfg["legende"].get(k, "-") if k else "keine Markierung"})
+                                "bedeutung": _farb_bedeutung(k, cfg)})
+    if eingestellt == "auto" and modus == "linie":
+        ergebnis.warnungen.append(f"Legende: {ergebnis.legende_grund} Es zählt nur die Linie: unterstrichen = neu, "
+                                  f"durchgestrichen = entfällt. Die Farbe allein bedeutet nichts.")
+    if modus == "linie":
+        ohne_linie = sum(1 for b in ergebnis.blocks for t in b.tokens if "farbe_ohne_linie" in t.hinweis.split(";"))
+        if ohne_linie:
+            ergebnis.warnungen.append(f"{ohne_linie} Wörter sind farbig, aber weder unter- noch durchgestrichen. "
+                                      f"Sie gelten als unverändert.")
+    if ergebnis.randnotizen:
+        n_komm = sum(1 for r in ergebnis.randnotizen if r["art"] == "kommentar")
+        ergebnis.warnungen.append(
+            f"In der Markup-Leiste stehen {len(ergebnis.randnotizen)} Sprechblasen"
+            f"{f' (davon {n_komm} Kommentare)' if n_komm else ''}. Sie gehören nicht zum Text und wurden nicht als "
+            f"Änderung gelesen; sie stehen als Randnotizen in der Analyse.")
     for nr in sorted(ohne_text):
         ergebnis.warnungen.append(f"Seite {nr} enthält keinen auslesbaren Text (Scan?). Sie wird nicht ausgewertet.")
     for hx, n in unbekannt.most_common(5):

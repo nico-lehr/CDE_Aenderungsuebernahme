@@ -388,9 +388,21 @@ class Sicht:
         for _, seite, boxen in ergebnis.regionen:
             if seite == sd.nr:
                 lesen += list(boxen)
-        anteil = float(self.cfg["layout"]["kopf_fuss_anteil"])
-        lesen.append((-1e4, -1e4, 1e4, anteil * sd.hoehe))
-        lesen.append((-1e4, (1 - anteil) * sd.hoehe, 1e4, 1e4))
+        # ADR 0006: Word-Markup -- Leiste (mit Sprechblasen), Verbindungslinien, Ankerpunkte und Hinterlegungen ohne
+        # Bedeutung (z. B. gelb hinter Platzhaltern) hat der Leser gesehen und bewusst nicht als Markierung gewertet
+        leiste = getattr(sd, "leiste", None)
+        if leiste:
+            lesen.append((leiste[0], -1e4, 1e4, 1e4))
+        for x0, t, x1, b in list(getattr(sd, "verbindungen", ())) + list(getattr(sd, "anker", ())):
+            lesen.append((x0 - 1.0, t - 1.0, x1 + 1.0, b + 1.0))
+        lesen += list(getattr(m, "hervor", ()))
+        # Kopf-/Fussbereiche: dieselben Baender wie beim Lesen (Seitenrand + erkannte wiederkehrende Randzeilen)
+        baender = getattr(ergebnis, "kopf_fuss_baender", {}).get(sd.nr)
+        if baender is None:
+            anteil = float(self.cfg["layout"]["kopf_fuss_anteil"])
+            baender = [(-1e4, anteil * sd.hoehe), ((1 - anteil) * sd.hoehe, 1e4)]
+        for t, b in baender:
+            lesen.append((-1e4, t, 1e4, b))
         anzeige = [_zurueck(r, b) for b in lesen]
         return anzeige + s.erklaert + s.farbtext
 
