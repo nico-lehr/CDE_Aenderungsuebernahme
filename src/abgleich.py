@@ -255,6 +255,66 @@ def spuren(pdf: Any, index: "ExaktIndex | None" = None, cfg: dict | None = None)
     return out
 
 
+# =============================================================================================== 2b. Label (ADR 0006)
+_SEC_FORM = re.compile(r"^\d{1,3}(?:\.\d{1,3}){0,6}\.?$")
+_KAPITEL_WORT = re.compile(r"^(?:PART|TEIL)$", re.I)
+_SUB_FORM = re.compile(r"^[A-Z]{1,2}\.$")
+_LISTE_FORM = re.compile(r"^(?:\d{1,3}|[a-z]{1,3}|[A-Z]{1,3})[.)]$")
+
+
+@dataclass(frozen=True)
+class Label:
+    """Gliederungs-Label am Anfang eines PDF-Absatzes (ADR 0006):
+    art  "" (keins) | liste ("1.", "a)" -- steht im Register IM Text) | sub ("A." -- im Register in der Sub-Section-Spalte)
+         | section ("1.1") | part ("PART 1") -- beide im Register in der Section-Spalte.
+    alt/neu: Label im alten/neuen Stand (section/part: wie PdfBlock.section_alt/neu, z. B. "Part 1"); "" = gab es nicht.
+    n: Zahl der Laeufe des Labels samt Trenner dahinter (der Text beginnt bei laeufe[n])."""
+    art: str = ""
+    alt: str = ""
+    neu: str = ""
+    n: int = 0
+
+
+def label_der_spur(sp: Spur) -> Label:
+    """Label eines PDF-Absatzes: Listennummer bzw. Sub-Section-Buchstabe als erstes Wort eines Absatzes, Section-Nummer oder
+    Kapitelzeile ("PART 1") am Anfang einer Ueberschrift. Ohne Text dahinter gibt es kein Label."""
+    toks = sp.tokens
+    if len(toks) < 2:
+        return Label()
+    if sp.kind == "ueberschrift":
+        if not (sp.erster.section_alt or sp.erster.section_neu):
+            return Label()
+        k = 0
+        while k < min(len(toks) - 1, 3):
+            formen = [x for x in (toks[k].old, toks[k].new) if x]
+            if formen and all(_SEC_FORM.match(x) or _KAPITEL_WORT.match(x) for x in formen):
+                k += 1
+            else:
+                break
+        if k == 0:
+            return Label()
+        art = "part" if any(_KAPITEL_WORT.match(x) for t in toks[:k] for x in (t.old, t.new) if x) else "section"
+        alt = (sp.erster.section_alt or "") if any(t.old for t in toks[:k]) else ""
+        neu = (sp.erster.section_neu or "") if any(t.new for t in toks[:k]) else ""
+    else:
+        t = toks[0]
+        formen = [x for x in (t.old, t.new) if x]
+        if not formen:
+            return Label()
+        if all(_SUB_FORM.match(x) for x in formen):
+            art = "sub"
+        elif all(_LISTE_FORM.match(x) for x in formen):
+            art = "liste"
+        else:
+            return Label()
+        k, alt, neu = 1, t.old, t.new
+    lt = sp.aufbau.lauf_token
+    n = 0
+    while n < len(lt) and lt[n] < k:
+        n += 1
+    return Label(art, alt, neu, n)
+
+
 # =============================================================================================== 3. ExaktIndex
 @dataclass(frozen=True)
 class Fundstelle:
@@ -466,9 +526,11 @@ class ExaktIndex:
         if blatt not in self._vz:
             lay = self.xl.layouts.get(blatt)
             spalten = {c for c in ((lay.section_spalte, lay.titel_spalte, lay.inhalt_spalte) if lay else ()) if c}
+            if lay is not None and lay.register:       # Register: ein Absatz je Zeile in der Textspalte (die Section steht ueberall)
+                spalten = {lay.inhalt_spalte}
             out = []
             for (b, z, s), t in self.xl.zellen.items():
-                if b != blatt or s not in spalten:
+                if b != blatt or s not in spalten or (lay is not None and lay.register and z < lay.daten_ab):
                     continue
                 for m in re.finditer(r"[^\n]+", t):
                     if m.group().strip():
@@ -716,58 +778,176 @@ def ops_fuer_spur(laeufe: list[Lauf], fund: Fundstelle, zelltext: Any, cfg: dict
         if xa is None or xb is None or xb < xa:
             erg.probleme[gid] = ["naht_unklar"]
             continue
-        mitte = laeufe[(iL + 1 if iL is not None else 0):(iR if iR is not None else len(laeufe))]
-        alt_teil = [l for _, l in _sichtbar(mitte, set())]
-        neu_teil = [l for _, l in _sichtbar(mitte, {gid})]
-        lo, kern_alt, to = _naht_teile(alt_teil)
-        ln, kern_neu, tn = _naht_teile(neu_teil)
-        # am Absatzrand gibt es keine Naht; Satzzeichen kleben am Nachbarn
-        if iL is None:
-            lo = ln = ""
-        if iR is None:
-            to = tn = ""
-        if iR is not None and laeufe[iR].text[:1] in kein_vor:
-            tn = ""
-        if iL is not None and laeufe[iL].text[-1:] in kein_nach:
-            ln = ""
-        mx = X[xa:xb]
-        lx = mx[:len(mx) - len(mx.lstrip())]
-        tx = mx[len(mx.rstrip()):] if mx.strip() else ""
-        if kern_alt and kern_neu:                        # ersetzen: nur den Kern, die Naehte der Excel bleiben
-            ra, rb, neu = xa + len(lx), xb - len(tx), kern_neu
-        elif kern_neu:                                   # einfuegen: eine Naht der Excel bleibt
-            w = mx
-            if not w:
-                neu = ln + kern_neu + tn
-            elif ln and tn and len(w) >= 2 and w.isspace():      # zwei Naht-Zeichen der Excel (" " + NBSP): je eins nach aussen
-                neu = w[:1] + kern_neu + w[1:]
-            elif ln and tn:
-                neu = w + kern_neu + tn
-            elif ln:
-                neu = w + kern_neu
-            elif tn:
-                neu = kern_neu + w
-            else:
-                neu = w + kern_neu
-            ra, rb = xa, xb
-        elif kern_alt:                                   # loeschen: hoechstens eine Naht bleibt
-            klebt = (iR is not None and laeufe[iR].text[:1] in kein_vor) or (iL is not None and laeufe[iL].text[-1:] in kein_nach)
-            if not (ln or tn) or iL is None or iR is None or klebt:     # am Absatzrand / vor Satzzeichen bleibt keine Naht
-                neu = ""
-            else:
-                neu = lx or tx or (ln or tn)
-            ra, rb = xa, xb
-        else:
-            erg.probleme[gid] = ["leer"]
-            continue
-        if "\n" in X[ra:rb]:
-            probleme.append("excel_umbruch")
-        ops = _auf_zellen(ra, rb, neu, X, segmente, fund, gid, seq, probleme)
-        if ops:
+        # Fein (Auftrag 003): je zusammenhaengender Aenderung (Teilgruppe zwischen zwei Trennern) eine eigene Operation; die
+        # Zeichen der Excel zwischen zwei Teilgruppen (geschuetztes Leerzeichen, Tab ...) bleiben unangetastet.
+        teile = _teilgruppen(laeufe, i0, i1)
+        stuecke: list[tuple[int, int, str]] = []
+        for j, (s0, s1) in enumerate(teile):
+            st = _teil_op(laeufe, X, abgebildet, j, teile, iL, iR, xa, xb, kein_vor, kein_nach)
+            if st is None:
+                stuecke = []
+                break
+            stuecke.append(st)
+        if not stuecke:
+            st = _gruppen_op(laeufe, X, iL, iR, xa, xb, gid, kein_vor, kein_nach)
+            if st is None:
+                erg.probleme[gid] = ["leer"]
+                continue
+            stuecke = [st]
+        ops: list[Operation] = []
+        for ra, rb, neu in stuecke:
+            if "\n" in X[ra:rb]:
+                probleme.append("excel_umbruch")
+            ops += _auf_zellen(ra, rb, neu, X, segmente, fund, gid, seq, probleme)
+        if ops and not ("mehrere_zellen" in probleme and len(stuecke) > 1):
             erg.ops[gid] = ops
         if probleme:
             erg.probleme[gid] = list(dict.fromkeys(probleme))
     return erg
+
+
+def _teilgruppen(laeufe: list[Lauf], i0: int, i1: int) -> list[tuple[int, int]]:
+    """Teilgruppen einer Aenderung (Lauf-Indizes [von, bis]): zusammenhaengende d/a-Laeufe ohne Trenner dazwischen. Getrennt
+    wird an einem Trenner nur, wenn auf BEIDEN Seiten alter Text steht und eine Seite auch neuen hat ("{-x-}{+y+} {-z-}{+w+}"):
+    dann liegt zwischen zwei Stellen der Excel ein Zeichen der Excel, das bleiben soll. "{-12-} {+7+}" bleibt eine Ersetzung,
+    "{-a-} {-b-}" eine Loeschung, reine Einfuegungen haengen an ihrem Nachbarn."""
+    cluster: list[tuple[int, int, frozenset]] = []
+    k = i0
+    while k <= i1:
+        if laeufe[k].art not in ("d", "a"):
+            k += 1
+            continue
+        a = k
+        while k + 1 <= i1 and laeufe[k + 1].art in ("d", "a"):
+            k += 1
+        cluster.append((a, k, frozenset(laeufe[x].art for x in range(a, k + 1))))
+        k += 1
+    out: list[list[tuple[int, int, frozenset]]] = []
+    for c in cluster:
+        if out:
+            arten = frozenset().union(*(x[2] for x in out[-1]))
+            if not ("d" in arten and "d" in c[2] and ("a" in arten or "a" in c[2])):
+                out[-1].append(c)
+                continue
+        out.append([c])
+    return [(g[0][0], g[-1][1]) for g in out]
+
+
+def _gruppen_op(laeufe: list[Lauf], X: str, iL: int | None, iR: int | None, xa: int, xb: int, gid: str,
+                kein_vor: set, kein_nach: set) -> tuple[int, int, str] | None:
+    """Eine Operation fuer die ganze Aenderung zwischen den Nachbar-k-Stuecken (Bereich [ra, rb) und neuer Text)."""
+    mitte = laeufe[(iL + 1 if iL is not None else 0):(iR if iR is not None else len(laeufe))]
+    return _zone_op(mitte, gid, X, xa, xb, iL is None, iR is None,
+                    iR is not None and laeufe[iR].text[:1] in kein_vor, iL is not None and laeufe[iL].text[-1:] in kein_nach)
+
+
+def _zone_op(mitte: list[Lauf], gid: str, X: str, xa: int, xb: int, rand_l: bool, rand_r: bool, vor_satzzeichen: bool,
+             nach_klammer: bool) -> tuple[int, int, str] | None:
+    """Ersatz fuer den ganzen Excel-Bereich [xa, xb) zwischen zwei Ankern (frueheres Verfahren, Naehte der Excel)."""
+    alt_teil = [l for _, l in _sichtbar(mitte, set())]
+    neu_teil = [l for _, l in _sichtbar(mitte, {gid})]
+    lo, kern_alt, to = _naht_teile(alt_teil)
+    ln, kern_neu, tn = _naht_teile(neu_teil)
+    # am Absatzrand gibt es keine Naht; Satzzeichen kleben am Nachbarn
+    if rand_l:
+        lo = ln = ""
+    if rand_r:
+        to = tn = ""
+    if vor_satzzeichen:
+        tn = ""
+    if nach_klammer:
+        ln = ""
+    mx = X[xa:xb]
+    lx = mx[:len(mx) - len(mx.lstrip())]
+    tx = mx[len(mx.rstrip()):] if mx.strip() else ""
+    if kern_alt and kern_neu:                        # ersetzen: nur den Kern, die Naehte der Excel bleiben
+        return xa + len(lx), xb - len(tx), kern_neu
+    if kern_neu:                                     # einfuegen: eine Naht der Excel bleibt
+        w = mx
+        if not w:
+            neu = ln + kern_neu + tn
+        elif ln and tn and len(w) >= 2 and w.isspace():      # zwei Naht-Zeichen der Excel (" " + NBSP): je eins nach aussen
+            neu = w[:1] + kern_neu + w[1:]
+        elif ln and tn:
+            neu = w + kern_neu + tn
+        elif ln:
+            neu = w + kern_neu
+        elif tn:
+            neu = kern_neu + w
+        else:
+            neu = w + kern_neu
+        return xa, xb, neu
+    if kern_alt:                                     # loeschen: hoechstens eine Naht bleibt
+        if not (ln or tn) or rand_l or rand_r or vor_satzzeichen or nach_klammer:   # Rand / Satzzeichen: keine Naht
+            return xa, xb, ""
+        return xa, xb, lx or tx or (ln or tn)
+    return None
+
+
+def _teil_op(laeufe: list[Lauf], X: str, abgebildet: Any, j: int, teile: list[tuple[int, int]], iL: int | None,
+             iR: int | None, xa0: int, xb0: int, kein_vor: set, kein_nach: set) -> tuple[int, int, str] | None:
+    """Operation einer Teilgruppe: ersetzt bzw. loescht genau ihren alten Text (die Excel-Stelle der d-Laeufe) oder fuegt
+    ohne Bereich ein; Leerraum der Excel neben dem alten Text bleibt (ausser eine Loeschung braucht eine Naht weniger).
+    Anker sind die k-Stuecke um die Aenderung und der alte Text der Nachbar-Teilgruppen. None = nicht fein bestimmbar."""
+    s0, s1 = teile[j]
+    gid = next(l.aenderung for l in laeufe[s0:s1 + 1] if l.aenderung)
+    # Anker: alter Text der vorigen/naechsten Teilgruppe, sonst die k-Stuecke um die ganze Aenderung
+    xa, geteilt_l = xa0, False
+    for k in range(s0 - 1, (iL if iL is not None else -1), -1):
+        if laeufe[k].art == "d":
+            p = abgebildet(k, True)
+            if p is None:
+                return None
+            xa, geteilt_l = p, True
+            break
+    xb, geteilt_r = xb0, False
+    for k in range(s1 + 1, (iR if iR is not None else len(laeufe))):
+        if laeufe[k].art == "d":
+            p = abgebildet(k, False)
+            if p is None:
+                return None
+            xb, geteilt_r = p, True
+            break
+    if xb < xa:
+        return None
+    p0 = teile[j - 1][1] + 1 if j > 0 else (iL + 1 if iL is not None else 0)
+    p1 = teile[j + 1][0] if j + 1 < len(teile) else (iR if iR is not None else len(laeufe))
+    mitte = laeufe[p0:p1]
+    rand_l = iL is None and not geteilt_l
+    rand_r = iR is None and not geteilt_r
+    vor_satz = not geteilt_r and iR is not None and laeufe[iR].text[:1] in kein_vor
+    nach_kl = not geteilt_l and iL is not None and laeufe[iL].text[-1:] in kein_nach
+    zone = _zone_op(mitte, gid, X, xa, xb, rand_l, rand_r, vor_satz, nach_kl)
+    if zone is None:
+        return None
+    za, zb, neu_zone = zone
+    d_laeufe = [k for k in range(s0, s1 + 1) if laeufe[k].art == "d"]
+    if d_laeufe:
+        ka, kb = abgebildet(d_laeufe[0], False), abgebildet(d_laeufe[-1], True)
+        if ka is None or kb is None or not (xa <= ka <= kb <= xb):
+            return None
+        if any(laeufe[k].art == "a" for k in range(s0, s1 + 1)):
+            return ka, kb, neu_zone                    # ersetzen: genau der alte Text
+        lx, tx = X[xa:ka], X[kb:xb]
+        if neu_zone == "":                             # Loeschung ohne Naht (Rand, Satzzeichen): Leerraum nur auf der eigenen Seite
+            return (ka if geteilt_l else xa), (kb if geteilt_r else xb), ""
+        if neu_zone == lx and not geteilt_r:           # linke Naht der Excel bleibt
+            return ka, xb, ""
+        if neu_zone == tx and not geteilt_l:           # rechte Naht der Excel bleibt
+            return xa, kb, ""
+        if lx or tx:                                   # beide Seiten gehoeren Nachbarn: nur den alten Text
+            return ka, kb, ""
+        return za, zb, neu_zone
+    # reine Einfuegung: ohne Bereich, der Leerraum der Excel bleibt. Nie genau am Anfang des alten Texts der naechsten
+    # Teilgruppe (gleiche Stelle wie deren Ersetzung: die Reihenfolge waere nicht sicher) -- dann den Bereich ersetzen.
+    w = X[xa:xb]
+    if not w:
+        return None if geteilt_r else (xa, xa, neu_zone)
+    if not geteilt_r and neu_zone.startswith(w):
+        return xb, xb, neu_zone[len(w):]
+    if neu_zone.endswith(w):
+        return xa, xa, neu_zone[:len(neu_zone) - len(w)]
+    return za, zb, neu_zone
 
 
 def _auf_zellen(ra: int, rb: int, neu: str, X: str, segmente: list[tuple[int, int, int, int, int]], fund: Fundstelle,

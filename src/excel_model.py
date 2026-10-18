@@ -11,8 +11,16 @@ Wie genau, wird je Tabellenblatt aus den Daten erkannt:
   * Sicherheit      : "hoch" | "mittel" | "niedrig" -- wie sicher der Aufbau erkannt wurde
                       (bei "mittel"/"niedrig" gibt es eine Warnung; der Matcher uebernimmt dort nie automatisch)
 
+CDE-Register (ADR 0006 Punkt 5, Konfiguration excel.register): Kopfbereich ueber mehrere Zeilen, Kopfzeile mit vielen kurzen
+Spaltenkoepfen, Beispielzeile(n), dann EINE Zeile je Absatz/Listenpunkt. Rollen: Section-Spalte (Nummer in jeder Zeile,
+"1.1", "Part 1"), Sub-Section-Spalte (A ... Z, AA, BB ...), Textspalte (Listennummer + Polster IM Text), Kennwort-Spalte
+(ein fester kurzer Wert nur in Ueberschriftzeilen). Erkannt wird nur aus der Struktur, nie aus Spaltennamen.
+Modell bleibt "zeile_pro_absatz", dazu `BlattLayout.register` und die Zusatzrollen.
+
 Aus allen Textzellen werden "Kandidaten" gebildet (Absatz, ganze Zelle, Kopf aus
-Nummer+Titel). Gegen diese Kandidaten werden die PDF-Bloecke abgeglichen.
+Nummer+Titel); im Register nur aus der Textspalte der Datenzeilen. Gegen diese Kandidaten werden die PDF-Bloecke abgeglichen.
+Zellen mit Rich Text werden ueber ihre NEU-ANSICHT gelesen (durchgestrichene Laeufe = alter Text frueherer Runden zaehlen
+nicht, ADR 0005/0006); die Positionen aller Operationen beziehen sich auf diese Ansicht (`roh_position` bildet ab).
 Reine Python-Logik; schreibt nie in die Datei.
 """
 from __future__ import annotations
@@ -31,7 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
 from openpyxl import load_workbook
-from openpyxl.cell.rich_text import CellRichText
+from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.utils import coordinate_to_tuple, get_column_letter, range_boundaries
 from openpyxl.worksheet.formula import ArrayFormula
 
@@ -61,6 +69,85 @@ def zahl_als_text(wert: int | float, zahlenformat: str = "General") -> str:
         stellen = len(m.group(1))
         return format(Decimal(repr(float(wert))).quantize(Decimal(1).scaleb(-stellen), rounding=ROUND_HALF_UP), "f")
     return "%.15g" % wert
+
+
+def neu_ansicht(wert: CellRichText, zellschrift: Any = None) -> tuple[str, list[int] | None, bool]:
+    """Neu-Ansicht einer Rich-Text-Zelle (ADR 0005/0006): durchgestrichene Laeufe (alter Text frueherer Runden, jede Farbe)
+    zaehlen nicht, andere (auch farbige) Laeufe sind normaler Text. Wie markierung.stuecke_aus_zelle: ein Teil ohne eigene
+    Schrift hat die Zellschrift. -> (Text, Abbildung Ansicht -> Rohposition oder None wenn gleich, alle sichtbaren Teile fett)."""
+    teile: list[tuple[str, bool, bool]] = []
+    for b in wert:
+        f = b.font if isinstance(b, TextBlock) else zellschrift
+        text = b.text if isinstance(b, TextBlock) else str(b)
+        if isinstance(b, TextBlock) and f is None:
+            f = zellschrift
+        teile.append((text, bool(getattr(f, "strike", None)), bool(getattr(f, "b", None))))
+    fett = all(b for t, s, b in teile if t.strip() and not s) and any(t.strip() and not s for t, s, _ in teile)
+    if not any(s and t for t, s, _ in teile):
+        return "".join(t for t, _, _ in teile), None, fett
+    text: list[str] = []
+    abb: list[int] = []
+    p = 0
+    for t, s, _ in teile:
+        if not s:
+            text.append(t)
+            abb.extend(range(p, p + len(t)))
+        p += len(t)
+    return "".join(text), abb, fett
+
+
+def _register_cfg(cfg: dict) -> dict:
+    """Abschnitt excel.register (ADR 0006 Punkt 5); fehlt er, ist die Register-Erkennung aus."""
+    return cfg.get("register") or {"aktiv": False}
+
+
+def section_kanon(text: str | None, rc: dict) -> str | None:
+    """Section-Wert einer Register-Zeile in einheitlicher Form: "1.1 " -> "1.1", "PART 1" / "Part 1 " -> "Part 1"
+    (Name aus excel.register.kapitel_name, wie der PDF-Leser); kein Gliederungswert -> None."""
+    if text is None:
+        return None
+    s = str(text).strip()
+    m = re.match(rc.get("kapitel_muster", r"^(?:part|teil)\s*(\d{1,2})$"), s, re.I)
+    if m:
+        return str(rc.get("kapitel_name", "Part {n}")).replace("{n}", str(int(m.group(1))))
+    if re.match(rc.get("section_muster", r"^[1-9]\d{0,2}(?:\.\d{1,3}){0,6}$"), s):
+        return s
+    return None
+
+
+def listen_label(text: str, rc: dict) -> tuple[str, str, int]:
+    """Listennummer + Polster am Anfang eines Register-Texts: "a.\\xa0\\xa0 Text" -> ("a.", "\\xa0\\xa0 ", 4).
+    Ohne Listennummer: ("", "", 0)."""
+    m = re.match(rc.get("listen_label", r"^(?P<label>\d{1,3}[.)])(?P<polster>[\t ]+)(?=\S)"), text)
+    if not m:
+        return "", "", 0
+    return m.group("label"), m.group("polster"), m.end()
+
+
+def label_art(label: str) -> str:
+    """Art einer Listennummer fuer das Polster neuer Zeilen: "zahl." "zahl)" "klein." "klein)" "gross." "gross)"."""
+    if not label:
+        return ""
+    kern, ende = label[:-1], label[-1:]
+    art = "zahl" if kern.isdigit() else ("gross" if kern.isupper() else "klein")
+    return art + ende
+
+
+# Register-Zeilentypen (ADR 0006): Ueberschriften (Kennwort in der Kennwort-Spalte) und Text
+REGISTER_UEBERSCHRIFT = ("part", "section", "sub_titel", "liste_titel")
+
+
+@dataclass(frozen=True)
+class RegisterZeile:
+    """Eine Datenzeile eines CDE-Registers (nur Formen, fuer Zuordnung und neue Zeilen)."""
+    zeile: int
+    art: str                 # part | section | sub | sub_titel | liste | liste_titel | absatz
+    section: str | None      # einheitliche Section ("1.1", "Part 1")
+    section_roh: str         # Zelltext der Section-Spalte (z. B. mit Leerzeichen am Ende)
+    sub: str                 # Buchstabe der Sub-Section-Spalte ("" = leer)
+    label: str               # Listennummer im Text ("" = keine)
+    polster: str             # Tab / geschuetzte Leerzeichen nach der Listennummer
+    koerper_start: int       # Position im Text, an der der Text nach Listennummer + Polster beginnt
 
 
 @dataclass(slots=True)
@@ -132,6 +219,13 @@ class BlattLayout:
     unsichere_sections: set[str] = field(default_factory=set)     # Section-Nummern aus mehrdeutigen Zahlen
     profil: str = ""               # Name des Layout-Profils, das diesen Aufbau festlegt ("" = automatisch erkannt)
     ignoriert: bool = False        # Das Profil sagt: dieses Blatt wird nie abgeglichen
+    # ADR 0006 Punkt 5: CDE-Register (Modell zeile_pro_absatz + Zusatzrollen)
+    register: bool = False
+    untergliederung_spalte: int | None = None   # Sub-Section (A ... Z, AA ...); bei Listenpunkten der Buchstabe der Eltern-Sub-Section
+    kennwort_spalte: int | None = None          # festes Kennwort in Ueberschriftzeilen
+    kennwort: str = ""                          # (Zellinhalt: nie in Meldungen oder Vorschauen)
+    kopfzeile: int = 0                          # Zeile der Spaltenkoepfe (0 = keine)
+    daten_ab: int = 0                           # erste Datenzeile (darueber: Kopfbereich, Kopfzeile, Beispielzeilen)
 
     def beschreibung(self) -> dict[str, Any]:
         b = lambda c: get_column_letter(c) if c else None  # noqa: E731
@@ -143,6 +237,9 @@ class BlattLayout:
         if self.profil:                # ohne Profil bleibt die Beschreibung genau wie frueher
             d["profil"] = f"Profil: {self.profil}"
             d["ignoriert"] = self.ignoriert
+        if self.register:              # nur Spaltenbuchstaben und Zeilennummern (das Kennwort ist ein Zellinhalt)
+            d.update(register=True, untergliederung_spalte=b(self.untergliederung_spalte),
+                     kennwort_spalte=b(self.kennwort_spalte), kopfzeile=self.kopfzeile, daten_ab=self.daten_ab)
         return d
 
 
@@ -201,6 +298,11 @@ def profil_kontext(profil: "Profil | None") -> Iterator[None]:
         _STANDARD_PROFIL.reset(token)
 
 
+def _schreiber() -> str:
+    """anwenden.schreiber (ADR 0007): patch (Standard, verlustfrei) | openpyxl. Manche Warnungen gelten nur fuer openpyxl."""
+    return str((config.lade("zuordnung").get("anwenden") or {}).get("schreiber", "patch"))
+
+
 def _datei_hash(pfad: Path) -> str:
     """SHA-1 stueckweise berechnen (grosse Dateien nie komplett in den Speicher laden)."""
     h = hashlib.sha1()
@@ -217,7 +319,7 @@ class ExcelModell:
         try:
             p = Path(pfad)
             schluessel = (str(p.resolve()), _datei_hash(p),
-                          repr(sorted(config.lade("zuordnung")["excel"].items())),
+                          repr(sorted(config.lade("zuordnung")["excel"].items())) + "|" + _schreiber(),
                           profil.hash if profil is not None else "")
         except (OSError, TypeError, KeyError):
             schluessel = None
@@ -248,6 +350,13 @@ class ExcelModell:
         self._eig: dict[str, _BlattEigenschaften] = {}
         self._formel_bezuege: dict[str, list[tuple[str, int]]] = {}
         self._norm_cache: dict[str, str] = {}
+        # Rich-Text-Zellen mit durchgestrichenen Laeufen: Position in der Neu-Ansicht -> Position im ganzen Zelltext
+        self.roh_abbildung: dict[tuple[str, int, int], list[int]] = {}
+        self.gestrichen: dict[tuple[str, int, int], str] = {}     # ... und ihr durchgestrichener Text (Idempotenz)
+        self.fett_zellen: set[tuple[str, int, int]] = set()      # Textzellen, deren (sichtbarer) Text ganz fett ist
+        self._reg_zeilen: dict[tuple[str, int], RegisterZeile | None] = {}
+        self._reg_ueber: dict[str, set[int]] = {}                 # Register: Ueberschriftzeilen je Blatt
+        self._rc: dict = {}                                       # Konfiguration excel.register
         self._lesen()
         self._fertig = True
         if self._schluessel is not None:
@@ -256,10 +365,12 @@ class ExcelModell:
     # ------------------------------------------------------------ Lesen
     def _lesen(self) -> None:
         cfg = config.lade("zuordnung")["excel"]
+        self._rc = _register_cfg(cfg)
         suffix = self.pfad.suffix.lower()
         if suffix not in (".xlsx", ".xlsm"):
             raise ValueError("Nur .xlsx / .xlsm werden unterstützt. Bitte die Datei in Excel als .xlsx speichern.")
-        self._pruefe_paket()
+        alt_schreiber = _schreiber() == "openpyxl"
+        self._pruefe_paket(alt_schreiber)
         wb = load_workbook(str(self.pfad), rich_text=True, keep_vba=(suffix == ".xlsm"))
         n_formeln = n_rich = 0
         globale_namen = [(n, str(getattr(d, "attr_text", "") or "")) for n, d in wb.defined_names.items()]
@@ -280,9 +391,18 @@ class ExcelModell:
                 if isinstance(v, ArrayFormula):
                     self._formel_merken(eig, c.row, c.column, str(v.text or ""))
                     continue
+                fett = False
                 if isinstance(v, CellRichText):
                     n_rich += 1
-                    v = str(v)
+                    # ADR 0006: Neu-Ansicht (durchgestrichene Laeufe frueherer Runden zaehlen nicht)
+                    roh = str(v)
+                    v, abb, fett = neu_ansicht(v, c.font)
+                    if abb is not None:
+                        self.roh_abbildung[(ws.title, c.row, c.column)] = abb
+                        sichtbar = set(abb)
+                        self.gestrichen[(ws.title, c.row, c.column)] = "".join(z for i, z in enumerate(roh) if i not in sichtbar)
+                elif isinstance(v, str):
+                    fett = bool(c.font is not None and c.font.b)
                 if isinstance(v, str):
                     if v.startswith("="):
                         n_formeln += 1
@@ -291,6 +411,8 @@ class ExcelModell:
                     if v.strip():
                         self.zellen[(ws.title, c.row, c.column)] = v
                         belegt.append((c.row, c.column))
+                        if fett:
+                            self.fett_zellen.add((ws.title, c.row, c.column))
                 elif isinstance(v, (int, float)) and not isinstance(v, bool):
                     self.zellen[(ws.title, c.row, c.column)] = zahl_als_text(v, c.number_format)
                     self.zahl_zellen.add((ws.title, c.row, c.column))
@@ -298,12 +420,17 @@ class ExcelModell:
             lay.max_zeile, lay.max_spalte = max_z, max_s
             self._eigenschaften_lesen(ws, eig)
             self._versteckt_lesen(ws, belegt)
-            if ws.merged_cells.ranges:
+            if ws.merged_cells.ranges and alt_schreiber:
                 self.warnungen.append(f"Blatt '{ws.title}' enthält verbundene Zellen (Zeilen einfügen/löschen verschiebt sie nur teilweise).")
-        if n_formeln:
+        # Diese Warnungen gelten nur fuer das fruehere Speichern mit openpyxl; der Patch-Schreiber (ADR 0007) zieht Formeln und
+        # verbundene Zellen mit und behaelt Teilformatierungen.
+        if n_formeln and alt_schreiber:
             self.warnungen.append(f"{n_formeln} Formelzellen werden nicht verändert; Zeilen einfügen/löschen passt Formeln nicht an.")
-        if n_rich:
+        if n_rich and alt_schreiber:
             self.warnungen.append(f"{n_rich} Zellen mit gemischter Formatierung (z. B. teilweise fett). Geänderte Zellen verlieren diese Teilformatierung.")
+        if self.roh_abbildung:
+            self.warnungen.append(f"{len(self.roh_abbildung)} Zellen enthalten durchgestrichenen Text früherer Runden. Er zählt beim "
+                                  "Vergleich nicht mit und bleibt unverändert stehen.")
         je_blatt: dict[str, dict[tuple[int, int], str]] = {name: {} for name in self.layouts}
         for (b, r, c), t in self.zellen.items():
             je_blatt[b][(r, c)] = t
@@ -383,13 +510,13 @@ class ExcelModell:
             except (AttributeError, ValueError):
                 eig.anker.append(1)
 
-    def _pruefe_paket(self) -> None:
+    def _pruefe_paket(self, alt_schreiber: bool = True) -> None:
         try:
             with zipfile.ZipFile(self.pfad) as z:
                 namen = z.namelist()
         except zipfile.BadZipFile as e:
             raise ValueError("Die Excel-Datei ist beschädigt oder keine .xlsx-Datei.") from e
-        if any(n.startswith(("xl/drawings/", "xl/charts/", "xl/media/")) for n in namen):
+        if alt_schreiber and any(n.startswith(("xl/drawings/", "xl/charts/", "xl/media/")) for n in namen):
             self.warnungen.append("Die Excel enthält Bilder, Diagramme oder Formen. Beim Speichern können diese verloren gehen – "
                                   "bitte das Ergebnis mit dem Original vergleichen.")
         if any("vbaProject" in n for n in namen):
@@ -421,9 +548,219 @@ class ExcelModell:
                     return True
         return False
 
+    # ------------------------------------------------------------ CDE-Register (ADR 0006 Punkt 5)
+    def _register_erkennen(self, blatt: str, cfg: dict, zellen: dict[tuple[int, int], str]) -> bool:
+        """Erkennt ein CDE-Register nur aus der Struktur und setzt dann das Layout. True = Register.
+
+        Section-Spalte: Gliederungswerte ("1.1", "Part 1"), die sich wiederholen (sie stehen in JEDER Datenzeile);
+        Textspalte: die meisten Zeichen; Sub-Section-Spalte: Buchstabenfolge A, B ... je Section neu ab A; Kennwort-Spalte:
+        ein kurzer Wert, der nur neben kurzem oder fettem Text steht; Kopfzeile: viele kurze Koepfe ueber den Beispielzeilen.
+        Ohne Sub-Section- und ohne Kennwort-Spalte ist es kein Register (dann gilt die bisherige Erkennung)."""
+        rc = _register_cfg(cfg)
+        if not rc.get("aktiv", True):
+            return False
+        min_z = int(rc.get("min_zeilen", 6))
+        werte: dict[int, dict[int, str]] = {}
+        for (r, c), t in zellen.items():
+            k = section_kanon(t, rc)
+            if k is not None:
+                werte.setdefault(c, {})[r] = k
+        spalten = [c for c, w in werte.items()
+                   if len(w) >= min_z and len(w) / len(set(w.values())) >= float(rc.get("wiederholung_min", 1.5))]
+        if not spalten:
+            return False
+        s_sp = max(spalten, key=lambda c: (len(werte[c]), -c))
+        daten_ab = min(werte[s_sp])
+        laengen: Counter = Counter()
+        for (r, c), t in zellen.items():
+            if r >= daten_ab and c != s_sp:
+                laengen[c] += len(t)
+        if not laengen:
+            return False
+        g_sp = laengen.most_common(1)[0][0]
+        if sum(1 for (r, c) in zellen if c == g_sp and r >= daten_ab) < min_z:
+            return False
+        f_sp = self._untergliederung_spalte(zellen, werte[s_sp], daten_ab, {s_sp, g_sp}, rc)
+        k_sp, kennwort = self._kennwort_spalte(blatt, zellen, daten_ab, {s_sp, g_sp, f_sp}, g_sp, rc, cfg)
+        if f_sp is None and k_sp is None:
+            return False
+        lay = self.layouts[blatt]
+        lay.register, lay.modell = True, "zeile_pro_absatz"
+        lay.section_spalte, lay.titel_spalte, lay.inhalt_spalte = s_sp, None, g_sp
+        lay.untergliederung_spalte, lay.kennwort_spalte, lay.kennwort = f_sp, k_sp, kennwort
+        lay.kopfzeile, lay.daten_ab = self._kopfzeile(zellen, daten_ab, rc), daten_ab
+        self._register_abschluss(blatt, lay, zellen, rc, cfg)
+        return True
+
+    @staticmethod
+    def _sub_rang(v: str) -> int:
+        """Reihenfolge der Sub-Section-Buchstaben: A=0 ... Z=25, AA=26, BB=27 ... (wie Word), AB (Excel-Art) dahinter."""
+        if len(v) == 1:
+            return ord(v) - 65
+        if v[0] == v[1]:
+            return 26 + ord(v[0]) - 65
+        return 52 + 26 * (ord(v[0]) - 65) + ord(v[1]) - 65
+
+    def _untergliederung_spalte(self, zellen: dict[tuple[int, int], str], sec: dict[int, str], daten_ab: int,
+                                belegt: set, rc: dict) -> int | None:
+        """Spalte mit der Buchstabenfolge A, B ... (je Section neu ab A, nicht fallend); Status- oder Kreuz-Spalten mit
+        einzelnen Grossbuchstaben fallen durch (zufaellige Folge, kein "A" oder nur ein Wert)."""
+        rx = re.compile(rc.get("untergliederung_muster", r"^[A-Z]{1,2}$"))
+        je: dict[int, dict[int, str]] = {}
+        for (r, c), t in zellen.items():
+            if r >= daten_ab and c not in belegt and rx.match(t.strip()):
+                je.setdefault(c, {})[r] = t.strip()
+        beste, wert = None, 0
+        for c, w in je.items():
+            if len(w) < int(rc.get("untergliederung_min", 2)) or "A" not in w.values() or len(set(w.values())) < 2:
+                continue
+            gut = schritte = 0
+            vorher: tuple[str | None, str] | None = None
+            for r in sorted(w):
+                s = sec.get(r)
+                if vorher is not None:
+                    schritte += 1
+                    if (s != vorher[0] and w[r] == "A") or (s == vorher[0] and self._sub_rang(w[r]) >= self._sub_rang(vorher[1])):
+                        gut += 1
+                vorher = (s, w[r])
+            if schritte and gut / schritte >= float(rc.get("untergliederung_folge_min", 0.9)) and len(w) > wert:
+                beste, wert = c, len(w)
+        return beste
+
+    def _kennwort_spalte(self, blatt: str, zellen: dict[tuple[int, int], str], daten_ab: int, belegt: set, g_sp: int,
+                         rc: dict, cfg: dict) -> tuple[int | None, str]:
+        """Spalte, in der ein und derselbe kurze Wert nur in Zeilen mit kurzem oder fettem Text steht (Ueberschriftzeilen) und
+        nicht in den meisten Zeilen (Konstanten wie Spezifikation/Revision stehen in fast allen Zeilen). Bei mehreren gewinnt
+        die Spalte, deren Zeilen am haeufigsten fetten Text haben, dann die mit mehr Zeilen."""
+        titel_max = int(cfg.get("titel_max_zeichen", 160))
+        daten = {r for (r, c) in zellen if r >= daten_ab and c == g_sp}
+        je: dict[int, Counter] = {}
+        for (r, c), t in zellen.items():
+            if r >= daten_ab and c not in belegt:
+                je.setdefault(c, Counter())[t.strip()] += 1
+        beste: tuple[float, int, int, str] | None = None
+        for c, zaehler in je.items():
+            wort, n = zaehler.most_common(1)[0]
+            if n < int(rc.get("kennwort_min_zeilen", 2)) or not wort or len(wort) > int(rc.get("kennwort_max_zeichen", 40)) \
+                    or n > float(rc.get("kennwort_max_anteil", 0.6)) * max(len(daten), 1):
+                continue
+            zeilen = [r for (r, cc), t in zellen.items() if cc == c and r >= daten_ab and t.strip() == wort]
+            if not all((g := zellen.get((r, g_sp))) is not None
+                       and (len(g.strip()) <= titel_max or (blatt, r, g_sp) in self.fett_zellen) for r in zeilen):
+                continue
+            fett = sum(1 for r in zeilen if (blatt, r, g_sp) in self.fett_zellen) / len(zeilen)
+            if fett < float(rc.get("kennwort_min_fett", 0.5)):
+                continue                                   # Ueberschriftzeilen haben fetten Text (Status-Spalten nicht)
+            if beste is None or (fett, n) > beste[:2]:
+                beste = (fett, n, c, wort)
+        return (beste[2], beste[3]) if beste else (None, "")
+
+    @staticmethod
+    def _kopfzeile(zellen: dict[tuple[int, int], str], daten_ab: int, rc: dict) -> int:
+        """Zeile der Spaltenkoepfe: die naechste Zeile ueber den Daten mit vielen kurzen Textkoepfen (dazwischen
+        Beispielzeilen mit Platzhaltern und langen Beispielsaetzen). 0 = keine."""
+        for r in range(daten_ab - 1, max(0, daten_ab - 1 - int(rc.get("kopf_suche_zeilen", 4))), -1):
+            werte = [t.strip() for (rr, _), t in zellen.items() if rr == r]
+            kurz = [t for t in werte if len(t) <= int(rc.get("kopf_max_zeichen", 40)) and "\n" not in t]
+            if len(kurz) >= int(rc.get("kopf_min_zellen", 3)) and len(kurz) == len(werte):
+                return r
+        return 0
+
+    def _register_abschluss(self, blatt: str, lay: BlattLayout, zellen: dict[tuple[int, int], str], rc: dict,
+                            cfg: dict) -> None:
+        """Ueberschriftzeilen, Section je Zeile und Sicherheit eines erkannten (oder per Profil festgelegten) Registers."""
+        ueber: set[int] = set()
+        if lay.kennwort_spalte and lay.kennwort:
+            ueber = {r for (r, c), t in zellen.items() if c == lay.kennwort_spalte and r >= lay.daten_ab
+                     and t.strip() == lay.kennwort}
+        else:            # ohne Kennwort: erste Zeile einer neuen Section mit kurzem Text ohne Listennummer und Sub-Section
+            vorher = None
+            for r in sorted({r for (r, c) in zellen if r >= lay.daten_ab}):
+                s = section_kanon(zellen.get((r, lay.section_spalte)), rc)  # type: ignore[arg-type]
+                g = zellen.get((r, lay.inhalt_spalte), "")                  # type: ignore[arg-type]
+                f = zellen.get((r, lay.untergliederung_spalte), "").strip() if lay.untergliederung_spalte else ""
+                if s and s != vorher and not f and not listen_label(g, rc)[0] and 0 < len(g.strip()) <= int(cfg.get("titel_max_zeichen", 160)):
+                    ueber.add(r)
+                vorher = s or vorher
+        self._reg_ueber[blatt] = ueber
+        aktuell: str | None = None
+        for r in range(1, lay.max_zeile + 1):
+            if r >= lay.daten_ab:
+                aktuell = section_kanon(zellen.get((r, lay.section_spalte)), rc) or aktuell  # type: ignore[arg-type]
+            self.zeilen_section[(blatt, r)] = aktuell if r >= lay.daten_ab else None
+        lay.kopf_zeilen = [r for r in sorted(ueber) if (rz := self.register_zeile(blatt, r)) and rz.art in ("part", "section")]
+        self._zahl_sections(blatt, lay)
+        lay.sicherheit, lay.sicherheit_gruende = HOCH_S, []
+
+    def register_zeile(self, blatt: str, zeile: int) -> RegisterZeile | None:
+        """Form einer Datenzeile des Registers (None: kein Register oder keine Datenzeile)."""
+        key = (blatt, zeile)
+        if key in self._reg_zeilen:
+            return self._reg_zeilen[key]
+        lay = self.layouts.get(blatt)
+        rz: RegisterZeile | None = None
+        if lay is not None and lay.register and lay.daten_ab <= zeile <= lay.max_zeile:
+            rc = self._rc
+            g = self.zellen.get((blatt, zeile, lay.inhalt_spalte), "")             # type: ignore[arg-type]
+            e = self.zellen.get((blatt, zeile, lay.section_spalte), "")            # type: ignore[arg-type]
+            sub = self.zellen.get((blatt, zeile, lay.untergliederung_spalte), "").strip() if lay.untergliederung_spalte else ""
+            if not re.match(rc.get("untergliederung_muster", r"^[A-Z]{1,2}$"), sub):
+                sub = ""
+            if g or e:
+                label, polster, ks = listen_label(g, rc)
+                ueber = zeile in self._reg_ueber.get(blatt, set())
+                if label:
+                    art = "liste_titel" if ueber else "liste"
+                elif sub:
+                    art = "sub_titel" if ueber else "sub"
+                elif ueber:
+                    art = "part" if re.match(rc.get("kapitel_muster", r"^(?:part|teil)\s*(\d{1,2})$"), e.strip(), re.I) \
+                        else "section"
+                else:
+                    art = "absatz"
+                rz = RegisterZeile(zeile, art, self.zeilen_section.get((blatt, zeile)), e, sub, label, polster, ks)
+        self._reg_zeilen[key] = rz
+        return rz
+
+    def register_polster(self, blatt: str, zeile: int, label: str) -> str:
+        """Polster nach einer neuen Listennummer wie in der naechsten Zeile mit derselben Art Listennummer
+        (Tab oder Folge geschuetzter Leerzeichen); sonst excel.register.polster_standard."""
+        lay = self.layouts[blatt]
+        art = label_art(label)
+        for r in sorted(range(lay.daten_ab, lay.max_zeile + 1), key=lambda r: (abs(r - zeile), r > zeile)):
+            rz = self.register_zeile(blatt, r)
+            if rz is not None and rz.label and label_art(rz.label) == art:
+                return rz.polster
+        return str(self._rc.get("polster_standard", "\t"))
+
+    _VERWANDT = {"part": "section", "section": "part", "sub": "sub_titel", "sub_titel": "sub", "liste": "liste_titel",
+                 "liste_titel": "liste", "absatz": "sub"}
+
+    def register_vorlage(self, blatt: str, zeile: int, art: str) -> int:
+        """Vorlagezeile fuer eine neue Zeile: die naechste Zeile gleichen Typs (oben zuerst), sonst eines verwandten Typs."""
+        lay = self.layouts[blatt]
+        reihe = sorted(range(lay.daten_ab, lay.max_zeile + 1), key=lambda r: (abs(r - zeile), r > zeile))
+        for gesucht in (art, self._VERWANDT.get(art, art)):
+            for r in reihe:
+                rz = self.register_zeile(blatt, r)
+                if rz is not None and rz.art == gesucht:
+                    return r
+        return zeile
+
+    def roh_position(self, blatt: str, zeile: int, spalte: int, pos: int) -> int:
+        """Position `pos` im Text des Modells (Neu-Ansicht) -> Position im ganzen Zelltext (mit durchgestrichenen Laeufen)."""
+        abb = self.roh_abbildung.get((blatt, zeile, spalte))
+        if abb is None:
+            return pos
+        if pos < len(abb):
+            return abb[pos]
+        return abb[-1] + 1 if abb else 0
+
     def _layout_erkennen(self, blatt: str, cfg: dict, zellen: dict[tuple[int, int], str]) -> None:
         lay = self.layouts[blatt]
         if not zellen:
+            return
+        if self._register_erkennen(blatt, cfg, zellen):
             return
         zweifel: list[str] = []           # hoechstens "mittel"
         schwer: list[str] = []            # "niedrig"
@@ -548,7 +885,8 @@ class ExcelModell:
             for r in range(1, lay.max_zeile + 1):
                 self.zeilen_section[(blatt, r)] = None
             return
-        genannt = {"Section": bp.section_spalte, "Titel": bp.titel_spalte, "Inhalt": bp.inhalt_spalte}
+        genannt = {"Section": bp.section_spalte, "Titel": bp.titel_spalte, "Inhalt": bp.inhalt_spalte,
+                   "Sub-Section": getattr(bp, "untergliederung_spalte", None), "Kennwort": getattr(bp, "kennwort_spalte", None)}
         if zellen:
             for art, c in genannt.items():
                 if c and c > lay.max_spalte:
@@ -559,6 +897,9 @@ class ExcelModell:
             self.warnungen.append(f"Blatt {nr} ist laut Profil festgelegt, enthält aber keinen Text.")
         lay.section_spalte, lay.titel_spalte, lay.inhalt_spalte = bp.section_spalte, bp.titel_spalte, bp.inhalt_spalte
         lay.modell = bp.modell
+        if bp.modell == "register":
+            self._register_aus_profil(blatt, bp, lay, cfg, zellen)
+            return
         treffer: list[tuple[int, str, str]] = []
         if bp.section_spalte:
             for (r, c), t in sorted(zellen.items()):
@@ -584,6 +925,25 @@ class ExcelModell:
             self.zeilen_section[(blatt, r)] = aktuell
         self._zahl_sections(blatt, lay)
         lay.sicherheit, lay.sicherheit_gruende = HOCH_S, []
+
+    def _register_aus_profil(self, blatt: str, bp: "BlattProfil", lay: BlattLayout, cfg: dict,
+                             zellen: dict[tuple[int, int], str]) -> None:
+        """Profil mit `modell: register`: Rollen aus dem Profil; erste Datenzeile = `daten_ab` oder die erste Zeile unter der
+        Kopfzeile mit Gliederungswert (Beispielzeilen haben Platzhalter); Kennwort = haeufigster Wert der Kennwort-Spalte."""
+        rc = {**_register_cfg(cfg), "aktiv": True}
+        lay.register, lay.modell, lay.titel_spalte = True, "zeile_pro_absatz", None
+        lay.untergliederung_spalte, lay.kennwort_spalte, lay.kopfzeile = bp.untergliederung_spalte, bp.kennwort_spalte, bp.kopfzeile
+        sec_zeilen = sorted(r for (r, c), t in zellen.items() if c == bp.section_spalte and r > bp.kopfzeile
+                            and section_kanon(t, rc) is not None)
+        lay.daten_ab = bp.daten_ab or (sec_zeilen[0] if sec_zeilen else bp.kopfzeile + 1)
+        if not sec_zeilen and zellen:
+            self.warnungen.append(f"Laut Profil steht die Section in Spalte {get_column_letter(bp.section_spalte or 1)}, dort wurde "
+                                  f"aber keine Gliederungsnummer gefunden (Blatt {list(self.layouts).index(blatt) + 1}).")
+        if bp.kennwort_spalte:
+            werte = Counter(t.strip() for (r, c), t in zellen.items() if c == bp.kennwort_spalte and r >= lay.daten_ab)
+            lay.kennwort = werte.most_common(1)[0][0] if werte else ""
+        self._rc = rc
+        self._register_abschluss(blatt, lay, zellen, rc, cfg)
 
     def _zahl_sections(self, blatt: str, lay: BlattLayout) -> None:
         """Section-Nummern, die als Zahl in der Excel stehen: gleich lautende sind nicht unterscheidbar (2.10 wird 2.1)."""
@@ -646,8 +1006,11 @@ class ExcelModell:
                 self.nach_blatt_section.setdefault((blatt, k.section), []).append(k.id)
 
         for (blatt, zeile, spalte), text in sorted(self.zellen.items()):
-            if self.layouts[blatt].ignoriert:
+            lay = self.layouts[blatt]
+            if lay.ignoriert:
                 continue                                  # Profil: dieses Blatt wird nie abgeglichen
+            if lay.register and (spalte != lay.inhalt_spalte or zeile < lay.daten_ab):
+                continue                                  # Register: nur die Textspalte der Datenzeilen (ein Absatz je Zeile)
             absaetze = [(m.start(), m.end()) for m in re.finditer(r"[^\n]+", text) if m.group().strip()]
             for s, e in absaetze:
                 add("absatz", blatt, zeile, spalte, self._tokens(blatt, zeile, spalte, text, s, e), text[s:e], s, e, text)
@@ -672,6 +1035,12 @@ class ExcelModell:
     def section_zeilen(self, blatt: str, kopf_zeile: int) -> range:
         """Zeilen, die zu einer Section gehoeren: Kopfzeile bis vor die naechste Kopfzeile."""
         lay = self.layouts[blatt]
+        if lay.register:                 # Register: alle Zeilen mit demselben Gliederungswert ab der Ueberschrift
+            sec = self.zeilen_section.get((blatt, kopf_zeile))
+            ende = kopf_zeile + 1
+            while ende <= lay.max_zeile and self.zeilen_section.get((blatt, ende)) == sec:
+                ende += 1
+            return range(kopf_zeile, ende)
         spaeter = [r for r in lay.kopf_zeilen if r > kopf_zeile]
         return range(kopf_zeile, (spaeter[0] if spaeter else lay.max_zeile + 1))
 

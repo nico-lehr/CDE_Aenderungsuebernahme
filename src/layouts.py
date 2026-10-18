@@ -33,10 +33,11 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 from . import config
 from .excel_model import ExcelModell, profil_kontext
 
-MODELLE = ("zeile_pro_section", "zeile_pro_absatz")
+MODELLE = ("zeile_pro_section", "zeile_pro_absatz", "register")   # register = zeile_pro_absatz mit Register-Rollen (ADR 0006)
 _PROFIL_KEYS = ("name", "aktiv", "beschreibung", "erkennung", "blaetter")
 _ERKENNUNG_KEYS = ("blattnamen", "kopfzeilen_begriffe")
-_BLATT_KEYS = ("blatt", "ignorieren", "section_spalte", "titel_spalte", "inhalt_spalte", "modell", "kopfzeile")
+_BLATT_KEYS = ("blatt", "ignorieren", "section_spalte", "titel_spalte", "inhalt_spalte", "modell", "kopfzeile",
+               "untergliederung_spalte", "kennwort_spalte", "daten_ab")
 _ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
 _SPALTE = re.compile(r"^[A-Z]{1,3}$")
 
@@ -61,12 +62,22 @@ class BlattProfil:
     inhalt_spalte: int | None = None
     modell: str = ""
     kopfzeile: int = 0                 # Zeile mit den Spaltenueberschriften (0 = keine); darueber/darin gibt es keine Section
+    # ADR 0006, nur mit modell register (CDE-Register: eine Zeile je Absatz/Listenpunkt)
+    untergliederung_spalte: int | None = None   # Sub-Section-Buchstabe (A ... Z, AA ...)
+    kennwort_spalte: int | None = None          # festes Kennwort in Ueberschriftzeilen
+    daten_ab: int = 0                           # erste Datenzeile (0 = erste Zeile mit Gliederungswert unter der Kopfzeile)
 
     def kanon(self) -> dict[str, Any]:
         b = lambda c: get_column_letter(c) if c else None  # noqa: E731
-        return {"blatt": self.blatt, "ignorieren": self.ignorieren, "section_spalte": b(self.section_spalte),
-                "titel_spalte": b(self.titel_spalte), "inhalt_spalte": b(self.inhalt_spalte),
-                "modell": self.modell, "kopfzeile": self.kopfzeile}
+        d = {"blatt": self.blatt, "ignorieren": self.ignorieren, "section_spalte": b(self.section_spalte),
+             "titel_spalte": b(self.titel_spalte), "inhalt_spalte": b(self.inhalt_spalte),
+             "modell": self.modell, "kopfzeile": self.kopfzeile}
+        # Register-Angaben nur, wenn gesetzt: der Hash frueherer Profile bleibt gleich (ihre Bestaetigung gilt weiter)
+        for k, v in (("untergliederung_spalte", b(self.untergliederung_spalte)), ("kennwort_spalte", b(self.kennwort_spalte)),
+                     ("daten_ab", self.daten_ab)):
+            if v:
+                d[k] = v
+        return d
 
 
 @dataclass
@@ -163,25 +174,37 @@ def _blatt_pruefen(eintrag: Any, nr: int, wo: str, probleme: list[str]) -> Blatt
     if not isinstance(kopf, int) or isinstance(kopf, bool) or not 0 <= kopf <= 1048576:
         probleme.append(f"{wo}: 'kopfzeile' muss eine Zeilennummer sein (0 = keine Kopfzeile).")
         kopf = 0
+    unt = _spalte(eintrag.get("untergliederung_spalte"), "untergliederung_spalte", wo, probleme)
+    ken = _spalte(eintrag.get("kennwort_spalte"), "kennwort_spalte", wo, probleme)
+    ab = eintrag.get("daten_ab", 0)
+    if not isinstance(ab, int) or isinstance(ab, bool) or not 0 <= ab <= 1048576:
+        probleme.append(f"{wo}: 'daten_ab' muss eine Zeilennummer sein (0 = automatisch).")
+        ab = 0
     if ign:
-        if any(eintrag.get(k) is not None for k in ("section_spalte", "titel_spalte", "inhalt_spalte", "modell")):
+        if any(eintrag.get(k) is not None for k in ("section_spalte", "titel_spalte", "inhalt_spalte", "modell",
+                                                     "untergliederung_spalte", "kennwort_spalte")):
             probleme.append(f"{wo}: Ein ignoriertes Blatt (ignorieren: true) darf keine Spalten oder kein Modell haben.")
     else:
         if inh is None:
             probleme.append(f"{wo}: Es fehlt 'inhalt_spalte' (oder das Blatt mit 'ignorieren: true' ausschließen).")
         if modell not in MODELLE:
             probleme.append(f"{wo}: 'modell' muss {' oder '.join(MODELLE)} sein.")
-        if modell == "zeile_pro_section" and sek is None:
-            probleme.append(f"{wo}: Das Modell 'zeile_pro_section' braucht eine 'section_spalte'.")
+        if modell in ("zeile_pro_section", "register") and sek is None:
+            probleme.append(f"{wo}: Das Modell '{modell}' braucht eine 'section_spalte'.")
         if tit is not None and sek is None:
             probleme.append(f"{wo}: Eine 'titel_spalte' ergibt nur zusammen mit einer 'section_spalte' Sinn.")
-        belegt = [c for c in (sek, tit, inh) if c is not None]
+        if modell == "register" and tit is not None:
+            probleme.append(f"{wo}: Im Modell 'register' steht der Titel in der Inhaltsspalte; bitte keine 'titel_spalte' angeben.")
+        if modell != "register" and (unt is not None or ken is not None or ab):
+            probleme.append(f"{wo}: 'untergliederung_spalte', 'kennwort_spalte' und 'daten_ab' gibt es nur mit modell 'register'.")
+        belegt = [c for c in (sek, tit, inh, unt, ken) if c is not None]
         if len(belegt) != len(set(belegt)):
-            probleme.append(f"{wo}: Section-, Titel- und Inhaltsspalte müssen verschiedene Spalten sein.")
+            probleme.append(f"{wo}: Section-, Titel-, Inhalts-, Sub-Section- und Kennwort-Spalte müssen verschiedene Spalten sein.")
     if len(probleme) > n0:
         return None
     return BlattProfil(blatt=name, ignorieren=ign, section_spalte=sek, titel_spalte=tit, inhalt_spalte=inh,
-                       modell="" if ign else modell, kopfzeile=kopf)
+                       modell="" if ign else modell, kopfzeile=kopf, untergliederung_spalte=unt, kennwort_spalte=ken,
+                       daten_ab=ab)
 
 
 def profil_aus_dict(d: Any, quelle: str = "", position: int = 1) -> Profil:
@@ -452,6 +475,8 @@ def erstelle_vorschau(excel: str | Path, profil: Profil | None = None) -> dict[s
             "modell": b["modell"], "sections": b["sections"], "zeilen": b["zeilen"], "kandidaten": kandidaten.get(name, 0),
             "sicherheit": b["sicherheit"], "gruende": [_ohne_inhalt(g, namen) for g in b["sicherheit_gruende"]],
             "versteckt": b["versteckt"], "kopfzeile": None, "heuristik": None}
+        if b.get("register"):          # ADR 0006: CDE-Register (nur Spaltenbuchstaben und Zeilennummern)
+            eintrag["register"] = {k: b[k] for k in ("untergliederung_spalte", "kennwort_spalte", "kopfzeile", "daten_ab")}
         if profil is not None and name in profil.blaetter and not lay.ignoriert:
             eintrag["kopfzeile"] = profil.blaetter[name].kopfzeile
             eintrag["heuristik"] = _spalten(auto.layouts[name].beschreibung())
@@ -526,6 +551,10 @@ def formatiere_vorschau(daten: dict[str, Any], profil: Profil | None) -> list[st
                  f"Modell {b['modell']}" + (f" | Kopfzeile {b['kopfzeile']}" if b["kopfzeile"] else ""))
         z.append(f"   Sections {b['sections']} | Zeilen {b['zeilen']} | Kandidaten {b['kandidaten']} | Sicherheit {b['sicherheit']}"
                  + (" | Blatt ausgeblendet" if b["versteckt"] else ""))
+        r = b.get("register")
+        if r:
+            z.append(f"   CDE-Register: Sub-Section-Spalte {r['untergliederung_spalte'] or '-'} | Kennwort-Spalte "
+                     f"{r['kennwort_spalte'] or '-'} | Kopfzeile {r['kopfzeile'] or '-'} | Daten ab Zeile {r['daten_ab']}")
         for g in b["gruende"]:
             z.append(f"   Zweifel: {g}")
         h = b.get("heuristik")

@@ -29,8 +29,19 @@
 #           section_spalte: "A"         # Spalte mit den Gliederungsnummern (1, 2.1, ...); optional
 #           titel_spalte: "B"           # Spalte mit der Ueberschrift neben der Nummer; optional
 #           inhalt_spalte: "C"          # Spalte mit dem Anforderungstext; Pflicht
-#           modell: zeile_pro_section   # zeile_pro_section | zeile_pro_absatz; Pflicht
+#           modell: zeile_pro_section   # zeile_pro_section | zeile_pro_absatz | register; Pflicht
 #           kopfzeile: 1                # Zeilennummer der Spaltenueberschriften (0 oder weglassen = keine)
+#
+# CDE-Register (ADR 0006 Punkt 5): eine Zeile je Absatz/Listenpunkt, die Section-Nummer steht in JEDER Zeile, die Listennummer
+# steht im Text (mit Tab oder geschuetzten Leerzeichen), Sub-Section-Buchstaben (A, B ... AA) in einer eigenen Spalte,
+# Ueberschriftzeilen tragen ein festes Kennwort. Wird meist automatisch erkannt; sonst so festlegen:
+#           modell: register            # = zeile_pro_absatz mit diesen Zusatzrollen (keine titel_spalte: der Titel steht im Text)
+#           section_spalte: "E"         # "1.1", "Part 1" (Pflicht)
+#           inhalt_spalte: "G"          # Text mit Listennummer (Pflicht)
+#           untergliederung_spalte: "F" # Sub-Section-Buchstabe; optional
+#           kennwort_spalte: "I"        # Kennwort der Ueberschriftzeilen (der haeufigste Wert dort gilt); optional
+#           kopfzeile: 6                # Zeile der Spaltenkoepfe; darunter koennen Beispielzeilen stehen
+#           daten_ab: 8                 # erste Datenzeile; 0 oder weglassen = erste Zeile mit Gliederungswert unter der Kopfzeile
 #
 # Spaltenbuchstaben immer in Anfuehrungszeichen ("C"): sonst liest YAML z. B. NO oder ON als "nein"/"an".
 # Blattnamen muessen genau so geschrieben sein wie in Excel.
@@ -53,3 +64,21 @@ profile:
         inhalt_spalte: "C"
         modell: zeile_pro_section
         kopfzeile: 1
+
+  - name: beispiel_cde_register            # ERFUNDEN: ein CDE-Register (ADR 0006), falls die automatische Erkennung danebenliegt
+    aktiv: false
+    beschreibung: >
+      Erfundenes Beispiel: Hauptblatt "Register" mit Kopfbereich, Spaltenkoepfen in Zeile 6, Beispielzeile 7 und Daten ab
+      Zeile 8; Section in E, Sub-Section in F, Text in G, Kennwort der Ueberschriftzeilen in I. Die Nebenblaetter werden
+      ignoriert.
+    blaetter:
+      - blatt: "Hinweise"
+        ignorieren: true
+      - blatt: "Register"
+        section_spalte: "E"
+        inhalt_spalte: "G"
+        untergliederung_spalte: "F"
+        kennwort_spalte: "I"
+        modell: register
+        kopfzeile: 6
+        daten_ab: 8

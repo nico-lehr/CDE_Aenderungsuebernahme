@@ -19,10 +19,12 @@ from typing import Any, Iterable, Iterator
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.utils import get_column_letter
 
+from . import codes as _codes
 from . import config
-from .excel_model import Kandidat, ExcelModell, zahl_als_text
-from .abgleich import (ExaktIndex, _aufbau, Fundstelle, Spur, Zuordnung, _woerter_norm, ganz_loeschen, ops_fuer_spur,
-                       reissverschluss, spuren, umbenennen)
+from . import markierung as mk
+from .excel_model import REGISTER_UEBERSCHRIFT, Kandidat, ExcelModell, zahl_als_text
+from .abgleich import (ExaktIndex, Label, _aufbau, Fundstelle, Spur, Zuordnung, _woerter_norm, ganz_loeschen, label_der_spur,
+                       ops_fuer_spur, reissverschluss, spuren, umbenennen)
 from .gegenprobe import normalform, vergleiche, zustand, zustand_mit_optional
 from .matcher import Matcher, Treffer
 from .models import (ADD, DEL, HOCH, KEEP, MITTEL, MOD, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN,
@@ -155,42 +157,9 @@ class _Ort:
         return f"{self.blatt}!{get_column_letter(self.spalte)}{self.zeile}"
 
 
-# Saetze zu Hinweis-Codes, die der PDF-Leser (noch) nicht erklaert (einfaches Deutsch, ohne Dokumentinhalt)
-_CODE_SATZ = {
-    "fortsetzung_unklar": "Der Absatz geht vielleicht über einen Seitenumbruch weiter (oder ist ein neuer Absatz). "
-                          "Das ist nicht sicher; bitte prüfen.",
-    "absatzgrenze_unklar": "Die Grenze zwischen zwei Absätzen ist im PDF nicht sicher erkennbar.",
-    "trennung_unklar": "Eine Silbentrennung am Zeilenende konnte nicht sicher aufgelöst werden.",
-    "rand_unklar": "Die Markierung endet nicht sauber an einer Wortgrenze.",
-    "farbe_uneinig": "Zwei Lesewege sehen die Farbe dieser Stelle verschieden.",
-    "tinte_unerklaert": "Im Seitenbild gibt es Farbe, die keiner Markierung zugeordnet werden konnte.",
-}
-
-# Gruende (Codes) in einfachem Deutsch, wenn eine Aenderung nicht automatisch eingetragen wird
-_GRUND = {
-    "mehrdeutig": "Der alte Absatz steht mehrmals in der Excel; die Reihenfolge entscheidet nicht, welche Stelle gemeint ist.",
-    "widerspruch": "Der alte Absatz steht in der Excel an einer Stelle, die nicht zur Reihenfolge im PDF passt.",
-    "excel_weicht_ab": "Der alte Absatz aus dem PDF steht so nicht in der Excel; die Stelle ist nur ähnlich.",
-    "excel_umbruch": "In der Excel steht an der Stelle ein Zeilenumbruch.",
-    "naht_unklar": "Die genaue Stelle im Excel-Absatz konnte nicht sicher bestimmt werden.",
-    "mehrere_zellen": "Die Änderung betrifft mehrere Excel-Zellen.",
-    "versteckt": "Die Stelle in der Excel ist ausgeblendet.",
-    "kopfspalte": "Die Stelle liegt in der Nummern- oder Titelspalte und nicht im Fließtext.",
-    "layout_unsicher": "Der Aufbau des Blatts wurde nur unsicher erkannt.",
-    "section_unpassend": "Die Section passt nicht zur gefundenen Stelle.",
-    "kurz": "Sehr kurzer Text, die Stelle ist nicht sicher.",
-    "anker_teil": "Der PDF-Text deckt nur ein Stück des längeren Excel-Absatzes ab (Seitenumbruch?); der neue Absatz könnte "
-                  "mitten im Satz landen.",
-    "anker_luecke": "Zwischen der Ankerstelle und dem nächsten zugeordneten Absatz steht in der Excel Text, der keinem PDF-Absatz "
-                    "zugeordnet ist.",
-    "anker_unsicher": "Der Absatz davor konnte in der Excel nicht sicher zugeordnet werden; die Einfügestelle ist nur ungefähr bestimmbar.",
-}
-
-_A1_SATZ = {
-    "leerraum": "Leerzeichen", "satzzeichen": "ein Satzzeichen", "gross_klein": "Groß-/Kleinschreibung",
-    "ziffer": "eine Ziffer", "buchstabe": "ein Buchstabe", "pdf_laenger": "im PDF steht mehr Text",
-    "excel_laenger": "in der Excel steht mehr Text",
-}
+# Saetze zu Pruefcodes in einfachem Deutsch: EINE Tabelle in src/codes.py (frueher hier _GRUND, _CODE_SATZ, _A1_SATZ)
+_GRUND = _codes.SAETZE
+_A1_SATZ = _codes.A1_ART
 
 
 def _in(a: Fundstelle, b: Fundstelle) -> bool:
@@ -294,7 +263,7 @@ class _Planer:
             if stufe == HOCH:
                 stufe = MITTEL
             for c in sperre:
-                satz = hinweis_text(c) or _CODE_SATZ.get(c, "")
+                satz = hinweis_text(c) or _codes.satz(c)
                 if satz:
                     self._hinweis(ae, satz)
                 codes.append("sperre:" + c)
@@ -396,10 +365,19 @@ class _Planer:
     def lauf(self) -> None:
         self.idx = ExaktIndex(self.xl, self.cfg, self.matcher.index)
         self.spuren = spuren(self.pdf, self.idx, self.cfg)
+        # ADR 0006: CDE-Register in der Mappe -> Labels der PDF-Absaetze (Sub-Section, Section, Part stehen in eigenen Spalten)
+        self._register = any(l.register for l in self.xl.layouts.values())
+        self._labels = [label_der_spur(sp) if self._register else Label() for sp in self.spuren]
         self.zuo = self._zuordnen()
         self._zugeordnet = self._zugeordnete_zeilen()
+        self._anker_je_blatt = Counter(z.fund.blatt for z in self.zuo if z.automatisch and z.fund is not None)
+        self._ausserhalb = self._bereich()
+        self._sub_neu = self._subs_im_neuen_stand() if self._register else []
         for i, sp in enumerate(self.spuren):
             if i in self.verbraucht or not sp.hat_aenderung:
+                continue
+            if i in self._ausserhalb:
+                self._ausserhalb_spur(i, self._ausserhalb[i])
                 continue
             self._spur_start(i)
             if sp.ganz_neu:
@@ -443,7 +421,7 @@ class _Planer:
     def _zuordnen(self) -> list[Zuordnung]:
         nf = self.cfg.get("normalform")
         alle: list[list[tuple[Fundstelle, str]]] = []
-        for sp in self.spuren:
+        for i, sp in enumerate(self.spuren):
             cands: list[tuple[Fundstelle, str]] = []
             ids = {l.aenderung for l in sp.laeufe if l.aenderung}
             alt, opt_alt = zustand_mit_optional(sp.laeufe, set())
@@ -463,8 +441,155 @@ class _Planer:
                         continue
                     cands = [(g, art) for g, art in cands if not (art == "alt" and _in(g, f))]
                     cands.append((f, "neu"))
+            if self._labels[i].art in ("sub", "section", "part"):
+                schon = {(f.blatt, f.zellen) for f, _ in cands}
+                cands += [c for c in self._register_kandidaten(i) if (c[0].blatt, c[0].zellen) not in schon]
             alle.append(self._filtern(sp, cands))
         return reissverschluss(alle)
+
+    # ------------------------------------------------------------ CDE-Register (ADR 0006 Punkt 5)
+    def _register_kandidaten(self, i: int) -> list[tuple[Fundstelle, str]]:
+        """Absatz mit Sub-Section-Buchstabe ("A. Text") bzw. Ueberschrift ("1.1 TITEL", "PART 1 TITEL"): im Register steht das
+        Label in der Sub-Section- bzw. Section-Spalte, in der Textspalte nur der Text. Gesucht wird der Text ohne Label; die
+        Zeile zaehlt nur, wenn ihr Label passt (gleicher Buchstabe / gleiche Section, keine Listennummer im Text)."""
+        sp, lab = self.spuren[i], self._labels[i]
+        koerper = sp.laeufe[lab.n:]
+        ids = {l.aenderung for l in sp.laeufe if l.aenderung}
+        nf = self.cfg.get("normalform")
+        alt, opt_alt = zustand_mit_optional(koerper, set())
+        neu, opt_neu = zustand_mit_optional(koerper, ids)
+        out: list[tuple[Fundstelle, str]] = []
+        if lab.alt and alt.strip():
+            out += [(f, "alt") for f in self.idx.finde(alt, opt_alt) if self._label_passt(f, lab.art, lab.alt)]
+        if lab.neu and neu.strip() and ids and (lab.neu != lab.alt or normalform(neu, nf)[0] != normalform(alt, nf)[0]):
+            orte = {(f.blatt, f.zellen) for f, _ in out}
+            out += [(f, "neu") for f in self.idx.finde(neu, opt_neu) if self._label_passt(f, lab.art, lab.neu)
+                    and (f.blatt, f.zellen) not in orte]
+        return out
+
+    def _label_passt(self, f: Fundstelle, art: str, label: str) -> bool:
+        """Steht der Text an einer ganzen Registerzeile, deren Sub-Section-Buchstabe bzw. Section zum Label passt?"""
+        if len(f.zellen) != 1 or f.art not in ("absatz", "zelle"):
+            return False
+        lay = self.xl.layouts.get(f.blatt)
+        if lay is None or not lay.register or f.spalte != lay.inhalt_spalte:
+            return False
+        rz = self.xl.register_zeile(f.blatt, f.zeile)
+        if rz is None or rz.label:
+            return False
+        if art == "sub":
+            return rz.art in ("sub", "sub_titel") and rz.sub == label.rstrip(".")
+        return rz.art in ("section", "part") and (rz.section or "").casefold() == label.casefold()
+
+    def _koerper_modus(self, i: int, fund: Fundstelle) -> bool:
+        """Die Fundstelle ist die Textzelle einer Registerzeile, das Label steht in einer eigenen Spalte (siehe oben)."""
+        lab = self._labels[i] if i < len(self._labels) else Label()
+        return lab.art in ("sub", "section", "part") and self._label_passt(fund, lab.art, lab.alt or lab.neu)
+
+    def _label_spalte(self, blatt: str, art: str) -> int | None:
+        lay = self.xl.layouts[blatt]
+        return lay.untergliederung_spalte if art == "sub" else lay.section_spalte
+
+    def _label_ops(self, i: int, label_laeufe: list[Lauf], fund: Fundstelle, seq: int) -> dict[str, list[Operation]]:
+        """Operation fuer ein geaendertes Label in der Sub-Section- oder Section-Spalte der Zeile (dazu ein eigener Absatz fuer
+        die Gegenprobe). Der Wert wird in der Schreibweise der Excel ersetzt ("B." -> "B")."""
+        lab = self._labels[i]
+        gid = next((l.aenderung for l in label_laeufe if l.aenderung), "")
+        if not gid:
+            return {}
+        spalte = self._label_spalte(fund.blatt, lab.art)
+        if not spalte:
+            return {gid: []}
+        roh = self.xl.text(fund.blatt, fund.zeile, spalte)
+        s0 = len(roh) - len(roh.lstrip())
+        e0 = len(roh.rstrip())
+        alt_form = roh[s0:e0]
+        neu_form = "" if not lab.neu else (lab.neu.rstrip(".") if lab.art == "sub" else lab.neu)
+        if neu_form == alt_form:
+            return {}
+        op = Operation("ersetzen", fund.blatt, fund.zeile, spalte, s0, e0, neu_form, seq, aenderung=gid)
+        laeufe = [Lauf("d", alt_form, gid)] + ([Lauf("a", neu_form, gid)] if neu_form else [])
+        if alt_form:
+            self._absatz(fund.blatt, [(fund.zeile, spalte, s0, e0)], laeufe)
+        return {gid: [op]}
+
+    def _subs_im_neuen_stand(self) -> list[str]:
+        """Je PDF-Absatz der Sub-Section-Buchstabe, der im NEUEN Stand gilt (fuer die Sub-Section-Spalte neuer Zeilen)."""
+        out: list[str] = []
+        aktuell = ""
+        for sp, lab in zip(self.spuren, self._labels):
+            if not sp.ganz_geloescht:
+                if lab.art in ("section", "part") and lab.neu:
+                    aktuell = ""
+                elif lab.art == "sub" and lab.neu:
+                    aktuell = lab.neu.rstrip(".")
+            out.append(aktuell)
+        return out
+
+    # ------------------------------------------------------------ Bereich der CDE (ADR 0006 Punkt 6)
+    def _bereich(self) -> dict[int, str]:
+        """PDF-Absaetze vor dem ersten bzw. nach dem letzten sicheren Anker im Hauptblatt (das Blatt mit den meisten Ankern)
+        gehoeren nicht zur CDE (Deckblatt, Vorspann, Revisionstabelle, Anhang) -> {Spur: "vorspann" | "anhang"}.
+        Ausnahme: der Absatz steht im Hauptblatt VOR (bzw. HINTER) dem Anker -- dann passt er in die Reihenfolge und gehoert
+        dazu; hinter dem letzten Anker ausserdem alles ab einem Gliederungselement und alles auf derselben Seite. Die Regel gilt
+        erst ab planer.umfang_min_anker Ankern; planer.umfang: register (nur wenn das Hauptblatt ein CDE-Register ist,
+        Standard) | immer | aus."""
+        pl = _planer_cfg(self.cfg)
+        umfang = str(pl.get("umfang", "register"))
+        if umfang == "aus" or not self._anker_je_blatt:
+            return {}
+        haupt = max(self._anker_je_blatt, key=lambda b: (self._anker_je_blatt[b], -list(self.xl.layouts).index(b)))
+        self._hauptblatt = haupt
+        if umfang == "register" and not self.xl.layouts[haupt].register:
+            return {}
+        anker = [i for i, z in enumerate(self.zuo) if z.automatisch and z.fund is not None and z.fund.blatt == haupt]
+        if len(anker) < int(pl.get("umfang_min_anker", 5)):
+            return {}
+        lo = self.zuo[anker[0]].fund.schluessel                                   # type: ignore[union-attr]
+        hi = self.zuo[anker[-1]].fund.end_schluessel                              # type: ignore[union-attr]
+        out: dict[int, str] = {}
+        for i in range(anker[0]):
+            if not any(f.blatt == haupt and f.schluessel < lo for f, _ in self.zuo[i].kandidaten):
+                out[i] = "vorspann"
+        # Hinter dem letzten Anker vorsichtiger (ein neuer Absatz am Ende der Spezifikation darf nie still wegfallen): Anhang ist
+        # nur, was auf einer spaeteren Seite steht und vor dem kein Gliederungselement (Ueberschrift, Listennummer, Sub-Section)
+        # mehr kommt -- sonst geht die Gliederung weiter.
+        seite = self.spuren[anker[-1]].bloecke[-1].page
+        for i in range(anker[-1] + 1, len(self.spuren)):
+            if self._labels[i].art or (self.spuren[i].kind == "ueberschrift" and
+                                        (self.spuren[i].erster.section_alt or self.spuren[i].erster.section_neu)):
+                break
+            if self.spuren[i].erster.page > seite and \
+                    not any(f.blatt == haupt and f.schluessel > hi for f, _ in self.zuo[i].kandidaten):
+                out[i] = "anhang"
+        return out
+
+    _hauptblatt: str = ""
+
+    def _ausserhalb_spur(self, i: int, wo: str) -> None:
+        """Ein PDF-Absatz ausserhalb der CDE: EINE Zeile im Protokoll (zaehlt in der Bilanz), nicht uebernommen, kein offener
+        Punkt (Aenderung.bereich = "ausserhalb")."""
+        sp = self.spuren[i]
+        toks = sp.tokens
+        seite = toks[0].page
+        ist_kopf = sp.kind == "ueberschrift"
+        if sp.ganz_neu:
+            typ = "section_neu" if ist_kopf else "absatz_neu"
+        elif sp.ganz_geloescht:
+            typ = "section_geloescht" if ist_kopf else "absatz_geloescht"
+        else:
+            arten = {t.status for t in toks if t.status != KEEP}
+            typ = "text_geloescht" if arten == {DEL} else "text_eingefuegt" if arten == {ADD} else "text_ersetzt"
+        ae = Aenderung(id=f"A{len(self.out) + 1:04d}", typ=typ, seite=seite, bbox=_bbox([t for t in toks if t.page == seite]),
+                       section=sp.erster.section_neu or sp.erster.section_alt, alt=sp.alt, neu=sp.neu,
+                       woerter=sum(1 for t in toks if t.status != KEEP), block_idx=sp.erster.idx, kontext=(sp.neu or sp.alt)[:400])
+        self.out.append(ae)
+        self._spur_von[ae.id] = i
+        ae.bereich = "ausserhalb"
+        self._nicht(ae, "Gehört nicht zur CDE: " + ("Deckblatt/Vorspann vor dem ersten Absatz der CDE." if wo == "vorspann"
+                                                    else "steht im PDF hinter dem letzten Absatz der CDE (Anhang)."))
+        self._code(ae, "ausserhalb_cde")
+        ae.soll_absatz = sp.neu
 
     @staticmethod
     def _filtern(sp: Spur, cands: list[tuple[Fundstelle, str]]) -> list[tuple[Fundstelle, str]]:
@@ -613,19 +738,29 @@ class _Planer:
         sp, z = self.spuren[i], self.zuo[i]
         aes, laeufe = self._spur_aenderungen(sp)
         seq = sp.erster.idx * 1000
-        so = ops_fuer_spur(laeufe, fund, self.xl.text, self.cfg, seq)
+        koerper = self._koerper_modus(i, fund)
+        n = self._labels[i].n if koerper else 0            # Register: das Label steht in einer eigenen Spalte
+        so = ops_fuer_spur(laeufe[n:], fund, self.xl.text, self.cfg, seq)
         if not so.vergleich.gleich:                       # sollte nicht vorkommen (Fundstelle ist exakt)
             for ae in aes:
                 self._nicht(ae, "Der alte Absatz steht so nicht in der Excel. Bitte von Hand prüfen.", fund.ziel)
                 self._code(ae, "a1_" + (so.vergleich.art or "abweichung"))
             return
-        self._absatz(fund.blatt, fund.zellen, laeufe)
+        self._absatz(fund.blatt, fund.zellen, laeufe[n:])
+        label_ops = self._label_ops(i, laeufe[:n], fund, seq) if koerper else {}
         for ae in aes:
             ae.ist_absatz, ae.excel_text, ae.score, ae.ziel = fund.text, fund.text[:300], 1.0, fund.ziel
             gruende: list[str] = []
             codes: list[str] = []
             stufe = self._stufe_an_stelle(sp, fund, z, gruende, codes)
-            ops = so.ops.get(ae.id, [])
+            ops = so.ops.get(ae.id, []) + label_ops.get(ae.id, [])
+            if ae.id in label_ops:
+                # Sub-Section-Buchstabe / Section-Nummer stehen auch in den Zeilen darunter (dort bleiben sie): ein Mensch prueft
+                stufe = MITTEL
+                codes.append("label_spalte")
+                gruende.append(_codes.satz("label_spalte"))
+                if not label_ops[ae.id]:
+                    codes.append("naht_unklar")
             for c in so.probleme.get(ae.id, []):
                 stufe = MITTEL
                 codes.append(c)
@@ -727,7 +862,9 @@ class _Planer:
             # sonst stimmen die Stellen der anderen Absaetze derselben Zelle fuer die Gegenprobe A3 nicht mehr).
             for z0, s0, a0, e0 in bereiche:
                 self._geloescht_bis[(fund.blatt, z0, s0)] = self._geloescht_bis.get((fund.blatt, z0, s0), []) + [(a0, e0)]
-            self._absatz(fund.blatt, bereiche, laeufe)
+            # Register: nur die Textzelle wird markiert; Sub-Section-Buchstabe und Section-Nummer der Zeile bleiben (wie bei Nico)
+            n = self._labels[i].n if self._koerper_modus(i, fund) else 0
+            self._absatz(fund.blatt, bereiche, laeufe[n:])
             ae.ist_absatz, ae.excel_text, ae.score, ae.ziel, ae.ops = fund.text, fund.text[:300], 1.0, fund.ziel, ops
             gruende: list[str] = []
             codes: list[str] = []
@@ -742,6 +879,16 @@ class _Planer:
                 self._hinweis(ae, gruende[-1])
             self._setze(ae, stufe, "; ".join(g for g in dict.fromkeys(gruende) if g), codes)
             return
+        schon = self._schon_gestrichen(i) if z.fund is None else None
+        if schon is not None:              # zweiter Lauf auf dem markierten Ergebnis: der Absatz steht schon durchgestrichen da
+            aes, _ = self._spur_aenderungen(sp)
+            ziel = f"{schon[0]}!{get_column_letter(schon[2])}{schon[1]}"
+            for ae in aes:
+                ae.typ = "section_geloescht" if sp.kind == "ueberschrift" else "absatz_geloescht"
+                self._nicht(ae, "Der gestrichene Absatz steht schon durchgestrichen in der Excel (die Änderung ist offenbar "
+                                "schon eingetragen).", ziel)
+                self._code(ae, "schon_eingetragen")
+            return
         self._deckel = ["excel_weicht_ab"] if z.status == "keiner" else [z.status, "excel_weicht_ab"]
         for b in sp.bloecke:
             tr = self.treffer(b)
@@ -751,6 +898,22 @@ class _Planer:
             n0 = len(self.out)
             self._geloescht(b)
             self._ersatz_absatz(b, tr, self.out[n0:])
+
+    def _schon_gestrichen(self, i: int) -> tuple[str, int, int] | None:
+        """Zelle, deren durchgestrichener Text (Markierung einer Runde) genau der ganz gestrichene PDF-Absatz ist; im Register
+        auch nur der Text ohne Label (das Label steht durchgestrichen in seiner eigenen Spalte)."""
+        if not self.xl.gestrichen:
+            return None
+        sp, lab = self.spuren[i], self._labels[i]
+        nf = self.cfg.get("normalform")
+        texte = {normalform(sp.alt, nf)[0]}
+        if lab.art in ("sub", "section", "part"):
+            texte.add(normalform(zustand(sp.laeufe[lab.n:], set()), nf)[0])
+        texte.discard("")
+        for key, t in sorted(self.xl.gestrichen.items()):
+            if normalform(t, nf)[0] in texte and not self.xl.text(*key).strip():
+                return key
+        return None
 
     def _ersatz_moeglich(self, i: int) -> bool:
         schw = self.cfg["schwellen"]
@@ -767,14 +930,14 @@ class _Planer:
         for ae in self.out:
             if ae.typ in ("absatz_geloescht", "section_geloescht"):
                 je_spur.setdefault(self._spur_von.get(ae.id, -1), []).append(ae)
-        for kopf in [ae for ae in self.out if ae.typ == "section_geloescht"]:
+        for kopf in [ae for ae in self.out if ae.typ == "section_geloescht" and not ae.bereich]:
             i = self._spur_von.get(kopf.id, -1)
             if i < 0:
                 continue
             folge: list[Aenderung] = []
             k = i + 1
             while k < len(self.spuren) and self.spuren[k].ganz_geloescht and self.spuren[k].kind == "absatz":
-                folge += [a for a in je_spur.get(k, []) if a.typ == "absatz_geloescht"]
+                folge += [a for a in je_spur.get(k, []) if a.typ == "absatz_geloescht" and not a.bereich]
                 k += 1
             if not folge:
                 continue
@@ -1231,6 +1394,18 @@ class _Planer:
         if not ist_kopf and not doppelt and self._in_geleerte_zelle(i, ae):
             return
         ort = self._anker(i)
+        if ort is not None and self._register and not self._anker_je_blatt.get(ort.blatt):
+            # ADR 0006: Nebenblaetter (Hinweise, Deckblatt, Unterschriften) bekommen keine neuen Zeilen, solange dort kein
+            # Absatz sicher zugeordnet ist
+            self._nicht(ae, _codes.satz("blatt_ohne_anker"), ort.ziel)
+            self._code(ae, "blatt_ohne_anker")
+            for k in koerper:
+                self.verbraucht.add(k)
+                kae = self._basis_neu(self.spuren[k], "absatz_neu")
+                kae.gruppe = ae.id
+                self._nicht(kae, _codes.satz("blatt_ohne_anker"), ort.ziel)
+                self._code(kae, "blatt_ohne_anker")
+            return
         if ort is None:
             self._nicht(ae, "Keine Ankerstelle in der Excel gefunden (kein benachbarter Text zuordenbar).")
             self._code(ae, "kein_anker")
@@ -1306,6 +1481,8 @@ class _Planer:
             return False
         lo = loesch[0]
         op = lo.ops[0]
+        if self.xl.layouts[op.blatt].register:
+            return False                                  # Register: der gestrichene bleibt stehen, der neue bekommt eine eigene Zeile
         voll = self.xl.text(op.blatt, op.zeile, op.spalte)
         if not (op.art == "ersetzen" and op.text == "" and op.start == 0 and op.ende == len(voll) and voll):
             return False
@@ -1350,7 +1527,55 @@ class _Planer:
                 return r
         return cand.zeile
 
+    def _register_neu(self, i: int, ort: _Ort) -> tuple[dict[int, str], int]:
+        """Werte einer neuen Registerzeile fuer den PDF-Absatz i (ADR 0006) und ihre Vorlagezeile (naechste Zeile gleichen Typs):
+        Section aus der PDF-Gliederung (Schreibweise wie die Ankerzeile, wenn gleich), Sub-Section = Buchstabe der geltenden
+        Sub-Section (bzw. der eigene bei einer neuen Sub-Section), Text mit Listennummer + Polster wie die Nachbarzeilen
+        gleicher Art (ohne Label bei Sub-Section, Section, Part), Kennwort nur bei Ueberschrift-Typ. Konstanten (Spezifikation,
+        Revision, Datum ...) kopiert der Schreiber aus der Vorlagezeile."""
+        sp, lab = self.spuren[i], self._labels[i]
+        lay = self.xl.layouts[ort.blatt]
+        ids = {l.aenderung for l in sp.laeufe if l.aenderung}
+        text = zustand(sp.laeufe[lab.n:], ids).strip() if lab.art and lab.neu else sp.neu
+        sec = sp.erster.section_neu or ""
+        anker = self.xl.register_zeile(ort.blatt, ort.zeile)
+        if anker is not None and sec and (anker.section or "").casefold() == sec.casefold():
+            e = anker.section_roh
+        else:
+            e = sec or (anker.section_roh if anker is not None else "")
+        sub = self._sub_neu[i] if i < len(self._sub_neu) else ""
+        if lab.art in ("section", "part") and lab.neu:
+            art = lab.art
+        elif lab.art == "sub" and lab.neu:
+            sub = lab.neu.rstrip(".")
+            art = "sub_titel" if self._titel_zeile(ort.blatt, "sub_titel", text) else "sub"
+        elif lab.art == "liste" and lab.neu:
+            art = "liste_titel" if self._titel_zeile(ort.blatt, "liste_titel", text) else "liste"
+            text = lab.neu + self.xl.register_polster(ort.blatt, ort.zeile, lab.neu) + text
+        else:
+            art = "absatz"
+        zellen: dict[int, str] = {}
+        if lay.section_spalte and e:
+            zellen[lay.section_spalte] = e
+        if sub and lay.untergliederung_spalte and art not in ("section", "part"):
+            zellen[lay.untergliederung_spalte] = sub
+        zellen[lay.inhalt_spalte] = text                                    # type: ignore[index]
+        if art in REGISTER_UEBERSCHRIFT and lay.kennwort_spalte and lay.kennwort:
+            zellen[lay.kennwort_spalte] = lay.kennwort
+        return zellen, self.xl.register_vorlage(ort.blatt, ort.zeile, art)
+
+    def _titel_zeile(self, blatt: str, art: str, text: str) -> bool:
+        """Neuer Listenpunkt / Sub-Section-Absatz mit Doppelpunkt am Ende: Ueberschriftzeile, wenn das Register solche hat."""
+        if not text.rstrip().endswith(":"):
+            return False
+        lay = self.xl.layouts[blatt]
+        return any((rz := self.xl.register_zeile(blatt, r)) is not None and rz.art == art
+                   for r in range(lay.daten_ab, lay.max_zeile + 1))
+
     def _neue_section(self, ae, sp: Spur, koerper: list[Spur], koerper_nr: list[int], cand: _Ort, lay, stufe, davor, seq) -> None:
+        if lay.register:
+            self._neue_section_register(ae, koerper_nr, cand, stufe, davor, seq)
+            return
         text = sp.neu
         nr_titel = kopf_zerlegen(text)
         nr, titel = nr_titel if nr_titel else ("", text)
@@ -1408,6 +1633,32 @@ class _Planer:
                 self._anker_grund(kae, self._ag)
                 self._setze(kae, stufe, codes=self._neu_codes(stufe))
 
+    def _neue_section_register(self, ae, koerper_nr: list[int], cand: _Ort, stufe, davor, seq) -> None:
+        """Neue Section im Register: eine Zeile fuer die Ueberschrift (Section-Spalte, Titel, Kennwort) und je neuem Absatz
+        darunter eine eigene Zeile, alle direkt hinter der Ankerzeile in PDF-Reihenfolge; sie gelten nur gemeinsam."""
+        i = self._aktuelle_spur if self._aktuelle_spur is not None else -1
+        zellen, stil = self._register_neu(i, cand)
+        ae.ops = [Operation("zeile_einfuegen", cand.blatt, cand.zeile, 0, text="", seq=seq, zellen=zellen, stil_von=stil,
+                            vor=not davor, aenderung=ae.id)]
+        ae.ziel = f"{cand.blatt}!Zeile {cand.zeile + (1 if davor else 0)} (neu)"
+        self._setze(ae, stufe, codes=self._neu_codes(stufe))
+        folge = seq
+        for k in koerper_nr:
+            self.verbraucht.add(k)
+            kae = self._basis_neu(self.spuren[k], "absatz_neu")
+            kae.gruppe = ae.id
+            kae.score = ae.score
+            if ae.status == NICHT:
+                self._nicht(kae, "Gehört zu einer neuen Section, die nicht eingetragen werden kann.")
+                continue
+            folge += 1
+            z2, st2 = self._register_neu(k, cand)
+            kae.ops = [Operation("zeile_einfuegen", cand.blatt, cand.zeile, 0, text="", seq=folge, zellen=z2, stil_von=st2,
+                                 vor=not davor, aenderung=kae.id)]
+            kae.ziel = ae.ziel
+            self._anker_grund(kae, self._ag)
+            self._setze(kae, stufe, codes=self._neu_codes(stufe))
+
     def _neu_codes(self, stufe: str) -> list[str]:
         return list(self._ag_codes) if stufe != HOCH else []
 
@@ -1457,12 +1708,74 @@ class _Planer:
         if lay.inhalt_spalte is None:
             self._nicht(ae, "Die Inhaltsspalte der Excel konnte nicht erkannt werden.", cand.ziel)
             return
+        if lay.register:
+            zellen, stil = self._register_neu(self._aktuelle_spur if self._aktuelle_spur is not None else -1, cand)
+        else:
+            zellen, stil = {self._text_spalte(cand, lay): sp.neu}, self._absatz_stil(cand, lay)      # type: ignore[dict-item]
         op = Operation("zeile_einfuegen", cand.blatt, cand.zeile, 0, text="", seq=seq,
-                       zellen={self._text_spalte(cand, lay): sp.neu}, stil_von=self._absatz_stil(cand, lay), vor=not davor,
-                       aenderung=ae.id)
+                       zellen=zellen, stil_von=stil, vor=not davor, aenderung=ae.id)
         ae.ops = [op]
         ae.ziel = f"{cand.blatt}!Zeile {cand.zeile + (1 if davor else 0)} (neu)"
         self._setze(ae, stufe, codes=self._neu_codes(stufe))
+
+
+_TEXT_OPS = ("ersetzen", "einfuegen", "zelle_leeren")
+
+
+def end_stuecke(text: str, ops: list[Operation], zwischen: dict[str, str] | None = None, cfg: dict | None = None,
+                absaetze: list[tuple[int, int, list[Lauf], set[str]]] | None = None) -> list[list[str]]:
+    """Voraussichtliche End-Laeufe einer Zelle als [[format, text], ...] (normal | alt | neu) fuer die Anzeige (Schema 4,
+    `Aenderung.stuecke`): geloeschter Text bleibt als alt stehen, neuer steht rot an seiner Stelle (ADR 0005). EINE kleine
+    Funktion, damit sie austauschbar bleibt. Sie rechnet wie der Applier: je PDF-Absatz der Zelle (`absaetze`: Bereich,
+    Laeufe, angewendete Aenderungen) die Projektion der PDF-Laeufe auf die Excel-Zeichen (markierung.projiziere), sonst die
+    Operationen (markierung.markiere_ops) -- auf dem Text des Excel-Modells, ohne Schriften und frueher markierte Laeufe."""
+    vorher = [mk.Stueck(mk.NORMAL, text)] if text else []
+    bereiche: list[tuple[int, int, list]] = []
+    pids: set[str] = set()
+    for a, e, laeufe, aktiv in absaetze or []:
+        res = mk.projiziere([text[a:e]], laeufe, aktiv, cfg) if 0 <= a <= e <= len(text) else None
+        if res is not None:
+            bereiche.append((a, e, res[0]))
+            pids |= aktiv
+    try:
+        if bereiche:
+            try:
+                m = mk.markiere_ops(vorher, [o for o in ops if o.aenderung not in pids], mk.SICHT_FLACH, zwischen or {}, cfg,
+                                    bereiche=bereiche)
+                return mk.klassen_stuecke(m.zeichen)
+            except ValueError:
+                pass
+        m = mk.markiere_ops(vorher, ops, mk.SICHT_FLACH, zwischen or {}, cfg)
+    except ValueError:
+        return []
+    return mk.klassen_stuecke(m.zeichen)
+
+
+def _stuecke_der_aenderung(ae: Aenderung, je_zelle: dict[tuple[str, int, int], list[Operation]], xl: ExcelModell,
+                           zwischen: dict[str, str], cfg: dict,
+                           absatz_von: dict[tuple[str, int, int], list[Absatz]] | None = None) -> list[list[str]]:
+    """End-Laeufe der Zielzelle einer Aenderung: ihre eigenen Operationen plus die der automatisch eingetragenen Aenderungen in
+    derselben Zelle. Neue Zeile: der neue Text (Textspalte) ganz neu."""
+    neu_zeile = next((o for o in ae.ops if o.art == "zeile_einfuegen" and not o.abgedeckt and o.zellen), None)
+    if neu_zeile is not None:
+        lay = xl.layouts.get(neu_zeile.blatt)
+        text = neu_zeile.zellen.get(lay.inhalt_spalte) if lay is not None and lay.inhalt_spalte else None
+        text = text if text is not None else max(neu_zeile.zellen.values(), key=len)
+        return [[mk.NEU, text]] if text else []
+    eigene = [o for o in ae.ops if o.art in _TEXT_OPS and not o.abgedeckt]
+    if not eigene:
+        return []
+    ziel = (eigene[0].blatt, eigene[0].zeile, eigene[0].spalte)
+    ops = [o for o in eigene if (o.blatt, o.zeile, o.spalte) == ziel]
+    ops += [o for o in je_zelle.get(ziel, []) if o.aenderung != ae.id]
+    angewendet = {o.aenderung for o in ops}
+    bereiche = []
+    for ab in (absatz_von or {}).get(ziel, []):
+        aktiv = ab.aenderungen & angewendet
+        if aktiv and len(ab.zellen) == 1:
+            _, _, a, e = ab.zellen[0]
+            bereiche.append((a, e, ab.laeufe, aktiv))
+    return end_stuecke(xl.text(*ziel), ops, zwischen, cfg, bereiche)
 
 
 def plane(pdf: PdfAnalyse, xl: ExcelModell, cfg: dict | None = None) -> Plan:
@@ -1475,6 +1788,22 @@ def plane(pdf: PdfAnalyse, xl: ExcelModell, cfg: dict | None = None) -> Plan:
                 op.erwartet = xl.text(op.blatt, op.zeile, op.spalte)[op.start:op.ende]
             elif op.art == "zelle_leeren":       # der Applier leert nur, wenn die Zelle noch genau so aussieht
                 op.erwartet = xl.text(op.blatt, op.zeile, op.spalte)
+    # Schema 4: Grund in einem Satz und voraussichtliches Ergebnis der Zielzelle (Anzeige)
+    zwischen: dict[str, str] = {}
+    absatz_von: dict[tuple[str, int, int], list[Absatz]] = {}
+    for ab in p.absaetze:
+        zwischen.update(mk.trenner_aus_laeufen(ab.laeufe))
+        for z, s, _, _ in ab.zellen:
+            absatz_von.setdefault((ab.blatt, z, s), []).append(ab)
+    je_zelle: dict[tuple[str, int, int], list[Operation]] = {}
+    for ae in p.out:
+        if ae.status == UEBERNOMMEN:
+            for o in ae.ops:
+                if o.art in _TEXT_OPS and not o.abgedeckt:
+                    je_zelle.setdefault((o.blatt, o.zeile, o.spalte), []).append(o)
+    for ae in p.out:
+        ae.grund_einfach = _codes.grund_einfach(ae)
+        ae.stuecke = _stuecke_der_aenderung(ae, je_zelle, xl, zwischen, cfg, absatz_von)
     warn = list(pdf.warnungen) + list(xl.warnungen)
     plan = Plan(aenderungen=p.out, layout=xl.beschreibung(), warnungen=warn,
                 ignoriert=pdf.ignoriert, markierte_woerter=pdf.markierte_woerter,
