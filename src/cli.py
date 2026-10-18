@@ -2,7 +2,8 @@
 
 analyse  : nur auswerten und die Bilanz anzeigen (schreibt nichts in die Excel)
 lauf     : auswerten und alle sicheren Aenderungen eintragen
-           (mit --alle-vorschlaege werden auch Vorschlaege ("pruefen") uebernommen)
+           (mit --alle-vorschlaege werden auch Vorschlaege ("pruefen") uebernommen;
+            mit --abwahl A0003,A0007 werden diese automatischen Aenderungen NICHT eingetragen)
 messen   : Messwerkzeug fuer Paare (PDF + Excel vorher + nachher), siehe src/messen.py
 steckbrief: Steckbrief eines Paars (nur Zahlen, Farbcodes und Formen, kein Text), siehe src/steckbrief.py und docs/anleitung_steckbrief.md
 farben   : zeigt, welche Farben im PDF vorkommen und wie sie gedeutet werden (nur Zahlen und Farbcodes, keine Woerter)
@@ -136,7 +137,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pdf", required=True)
     p.add_argument("--excel", required=True)
     p.add_argument("--alle-vorschlaege", action="store_true")
+    p.add_argument("--abwahl", default="", metavar="ID,ID",
+                   help="nur bei 'lauf': automatische Änderungen, die NICHT eingetragen werden (IDs mit Komma getrennt)")
     a = p.parse_args(argv)
+    abwahl = [x.strip() for x in a.abwahl.split(",") if x.strip()]
     from pathlib import Path
     for pfad, name in ((a.pdf, "PDF"), (a.excel, "Excel")):
         if not Path(pfad).is_file():
@@ -152,12 +156,16 @@ def main(argv: list[str] | None = None) -> int:
         if a.befehl == "analyse":
             print(f"Gespeichert: Die Analyse liegt als Lauf in {runs.lauf_dir(run_id)}. "
                   "In die Excel wird bei „analyse“ nichts geschrieben.")
+            if abwahl:
+                print("Hinweis: --abwahl gilt nur für „lauf“ (bei „analyse“ wird nichts eingetragen).")
         gezeigt: set[str] = set()
         _zeige(daten, daten.get("luecken", []), gezeigt)
         if a.befehl == "lauf":
             freig = [x["id"] for x in daten["aenderungen"] if x["status"] == "pruefen"] if a.alle_vorschlaege else []
-            res = runs.uebernehmen_lauf(run_id, freig)
+            res = runs.uebernehmen_lauf(run_id, freig, abwahl)
             print("Ergebnis:", runs.lauf_dir(run_id) / res["ordner"] / res["excel"])
+            if abwahl:
+                print(f"Abgewählt (nicht eingetragen): {', '.join(res['abwahl'])}")
             _zeige({"bilanz": res["bilanz"], "warnungen": res["warnungen"]}, None, gezeigt)     # Lücken stehen schon oben
     except NutzerFehler as e:                                  # gewollte Meldung: schon einfaches Deutsch
         print(e.meldung)

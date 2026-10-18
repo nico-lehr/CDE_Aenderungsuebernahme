@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import threading
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request, send_file
@@ -20,6 +21,11 @@ from .einstellungen import srv
 api_bp = Blueprint("api", __name__)
 log = logging.getLogger("cde.api")
 
+# pdfium (pypdfium2, ueber pdfplumber.to_image in src/vorschau.py und in src/sicht.py bei der Analyse) ist NICHT thread-sicher:
+# zwei gleichzeitige Aufrufe koennen den ganzen Server abstuerzen lassen (Speicherfehler). Der Server laeuft mit Threads und das
+# Dashboard laedt mehrere PDF-Ausschnitte zugleich -- deshalb laeuft alles, was pdfium benutzt, nacheinander.
+_PDFIUM = threading.Lock()
+
 _FARBE = {"absatz_neu": "#0071E3", "section_neu": "#0071E3", "text_eingefuegt": "#0071E3",
           "text_ersetzt": "#B9770E"}
 
@@ -31,12 +37,27 @@ def _fehler(text: str, code: int = 400, **extra):
     return jsonify({"fehler": text, **extra}), code
 
 
+def _fuers_frontend(aenderungen: list[dict]) -> list[dict]:
+    """Je Aenderung ohne Operationen (gross, nur intern noetig), dafuer mit `kategorie` (wohin sie im Dashboard gehoert).
+    Alle Felder des Plans (auch Schema 4: bereich, stuecke, grund_einfach) bleiben erhalten."""
+    return [{**{k: v for k, v in a.items() if k != "ops"}, "ops_anzahl": len(a.get("ops", [])),
+             "kategorie": runs.kategorie(a)} for a in aenderungen]
+
+
 def _leicht(plan: dict) -> dict:
-    """Plan fuers Frontend: Operationen weglassen (gross, nur intern noetig)."""
-    out = dict(plan)
-    out["aenderungen"] = [{**{k: v for k, v in a.items() if k != "ops"}, "ops_anzahl": len(a.get("ops", []))}
-                          for a in plan["aenderungen"]]
+    """Plan fuers Frontend: Operationen und PDF-Absaetze (nur fuer die Gegenprobe) weglassen, Zusammenfassung dazu."""
+    out = {k: v for k, v in plan.items() if k != "absaetze"}
+    out["aenderungen"] = _fuers_frontend(plan["aenderungen"])
+    out["zusammenfassung"] = runs.zusammenfassung(plan["aenderungen"])
     return out
+
+
+def _id_liste(daten, name: str):
+    """Liste von IDs aus dem JSON-Body (fehlt sie, ist sie leer); sonst None = ungueltig."""
+    werte = (daten.get(name) or []) if isinstance(daten, dict) else None
+    if not isinstance(werte, list) or not all(isinstance(x, str) for x in werte):
+        return None
+    return werte
 
 
 @api_bp.get("/health")
@@ -83,7 +104,8 @@ def neu():
         run_id = runs.neuer_lauf(p, x, pdf.filename or "aenderungen.pdf", xls.filename or "cde.xlsx")
     profil = (request.form.get("profil") or "").strip() or None    # Layout-Profil: nur bestaetigte werden angenommen
     try:
-        plan = runs.analysiere(run_id, profil)
+        with _PDFIUM:                            # die Analyse liest das PDF ein zweites Mal mit pdfium (src/sicht.py)
+            plan = runs.analysiere(run_id, profil)
     except Exception as e:                       # noqa: BLE001 -- der Lauf bleibt stehen (Regel 29), Meldung einfach halten
         if isinstance(e, NutzerFehler):          # gewollte Meldung (z. B. Profil nicht bestaetigt, Excel beschaedigt): schon einfaches Deutsch
             meldung, code = e.meldung, e.status
@@ -119,18 +141,21 @@ def lauf_wiederherstellen(run_id: str):
 @api_bp.post("/lauf/<run_id>/uebernehmen")
 def uebernehmen(run_id: str):
     daten = request.get_json(silent=True) or {}
-    freig = (daten.get("freigaben") or []) if isinstance(daten, dict) else None
-    if not isinstance(freig, list) or not all(isinstance(x, str) for x in freig):
+    freig, abwahl = _id_liste(daten, "freigaben"), _id_liste(daten, "abwahl")
+    if freig is None:
         return _fehler("freigaben muss eine Liste von IDs sein.")
+    if abwahl is None:
+        return _fehler("abwahl muss eine Liste von IDs sein.")
     try:
-        res = runs.uebernehmen_lauf(run_id, freig)
+        res = runs.uebernehmen_lauf(run_id, freig, abwahl)
     except NutzerFehler:
         raise                                     # zentrale Behandlung (app.py): klare Meldung + Status
     except Exception:                             # noqa: BLE001
         log.exception("Uebernahme fuer Lauf %s fehlgeschlagen", run_id)
         return _fehler("Das Übernehmen ist fehlgeschlagen. Es wurde nichts verändert und kein Ergebnis angelegt. "
                        "Bitte noch einmal versuchen.", 500)
-    res["aenderungen"] = [{k: v for k, v in a.items() if k != "ops"} for a in res["aenderungen"]]
+    res["zusammenfassung"] = runs.zusammenfassung(res["aenderungen"])
+    res["aenderungen"] = _fuers_frontend(res["aenderungen"])
     return jsonify(res)
 
 
@@ -142,7 +167,8 @@ def vorschau(run_id: str, aid: str):
         return _fehler("Änderung nicht gefunden.", 404)
     pdf = runs.lauf_dir(run_id) / "eingabe" / plan["pdf_name"]
     farbe = "#D93025" if "geloescht" in a["typ"] else _FARBE.get(a["typ"], "#0071E3")
-    png = ausschnitt(pdf, a["seite"], tuple(a["bbox"]), farbe)
+    with _PDFIUM:                                # nie zwei Ausschnitte gleichzeitig rendern (siehe _PDFIUM)
+        png = ausschnitt(pdf, a["seite"], tuple(a["bbox"]), farbe)
     return Response(png, mimetype="image/png", headers={"Cache-Control": "private, max-age=600"})
 
 
