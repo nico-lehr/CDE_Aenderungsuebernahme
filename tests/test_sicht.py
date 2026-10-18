@@ -263,3 +263,62 @@ def test_fehlalarm_farbiger_text_in_legendenfremder_farbe(tmp_path):
     a = _lies(tmp_path, dok)
     assert any(l["art"] == "unbekannte_farbe" for l in a.luecken)
     _still(a)
+
+
+# ------------------------------------------------------------------------------------------- Word-Markup (ADR 0006)
+def _word_lies(tmp_path, d, name: str = "w.pdf"):
+    return analysiere_pdf(d.speichern(tmp_path / name), _cfg())
+
+
+def _word_seite(kopf_fuss: bool = False):
+    from tests._word_pdf import EBENEN, WordDok, breite as wbreite, fuellzeilen, voll
+    d = WordDok(mit_kopf_fuss=kopf_fuss)
+    tops = d.absatz([voll([("Die ", "k"), ("Pumpe", "n"), (" ", "k"), ("Ventil", "d"), (" Wert ", "k"),
+                           ("[Platzhalter]", "k")])] + fuellzeilen(3, 1))
+    x = EBENEN[1] + wbreite("Die Pumpe Ventil Wert ")
+    d.gelb(x, x + wbreite("[Platzhalter]"), tops[0])
+    d.aenderungsbalken(tops[0], tops[0] + 8.4)
+    d.sprechblase(tops[0] - 2, "hat formatiert:", "Nicht Hervorheben", anker=(x + 3, tops[0]))
+    d.sprechblase(tops[2] + 6, "Kommentiert [ZF1]:", "Bitte pruefen", anker=(EBENEN[1] + 50, tops[2]))
+    return d, tops
+
+
+@pytest.mark.legende_neu
+def test_fehlalarm_word_markup_leiste_sprechblasen_linien_gelb_balken(tmp_path):
+    from tests._word_pdf import LEISTE
+    d, tops = _word_seite(kopf_fuss=True)
+    for i in range(2):
+        d.neue_seite()
+        d.absatz([[("Weiter im Text.", "k")]])
+    roh = SichtDok()                        # nur fuer `wirkt`: dieselben Seitenbefehle als Roh-Dokument rendern
+    roh.bytes = d.bytes                      # type: ignore[method-assign]
+    assert wirkt(roh, LEISTE[0] + 20, tops[0] - 1, LEISTE[0] + 22, tops[0] + 9) == "rot"     # Sprechblasen-Rand
+    a = _word_lies(tmp_path, d)
+    assert a.markup_leiste and a.legende_modus == "linie"
+    _still(a)
+
+
+@pytest.mark.legende_neu
+def test_c3_unerklaerte_kurve_auf_word_seite_wird_weiter_gemeldet(tmp_path):
+    """Gegenprobe: die neuen Erklaerungen (Leiste, Linien, Anker, Hinterlegung) verschlucken keine echte Farbe im Text."""
+    from tests._word_pdf import EBENEN, WORT_ROT
+    d, tops = _word_seite()
+    d.kurvenflaeche(EBENEN[1] + 150, tops[1] - 1, EBENEN[1] + 190, tops[1] + 9, WORT_ROT)
+    a = _word_lies(tmp_path, d)
+    assert "tinte_unerklaert" in _codes(a)
+
+
+@pytest.mark.legende_neu
+def test_c3_kopf_fuss_baender_wie_beim_lesen(tmp_path):
+    """Farbe in einer wiederkehrenden Kopfzeile ausserhalb des alten 7-%-Randes: die Inventur nutzt dieselben Baender wie der
+    Leser (kein Fehlalarm); dieselbe Flaeche im Text wird gemeldet."""
+    from tests._word_pdf import EBENEN, WORT_ROT, WordDok, fuellzeilen
+    d = WordDok(mit_kopf_fuss=True)
+    for i in range(3):
+        if i:
+            d.neue_seite()
+        d.kurvenflaeche(EBENEN[0] + 10, 123.0, EBENEN[0] + 40, 133.0, WORT_ROT)     # hinter "Projekt" (Kopfzeile)
+        d.absatz(fuellzeilen(3, i))
+    a = _word_lies(tmp_path, d)
+    assert len([i for i in a.ignoriert if i["grund"] == "kopf_fuss"]) == 9
+    _still(a)

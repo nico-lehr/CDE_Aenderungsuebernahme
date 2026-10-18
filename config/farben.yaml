@@ -10,6 +10,15 @@ legende:
   blau: neu          # neu | entfaellt | ignorieren
   rot: entfaellt
   durchgestrichen: entfaellt
+  # auto: Word-Markup ohne Leiste erkennen = farbige Unter- UND Durchstreichungen in derselben Farbe ...
+  auto_min_linien: 1         # ... je Art mindestens so viele Linien ...
+  auto_max_farbe_ohne_linie: 0.5   # ... und hoechstens dieser Anteil farbiger Zeichen steht ganz ohne Linie (sonst farbe)
+  # linie: wann ist eine Unterstreichung "farbig" (= neu)?
+  linie_min_saettigung: 0.35 # bunte Linie (Saettigung) ...
+  linie_min_helligkeit: 0.1  # ... und nicht schwarz
+  linie_farbe_toleranz: 0.15 # ... oder Linienfarbe ~ farbige Textfarbe (groesster Abstand je Kanal, 0..1)
+  linie_sauber_ab: 0.85      # die Linie deckt ein Zeichen so weit ab: zeichengenau (kein Hinweis)
+  linie_rand_ab: 0.15        # zwischen diesem Wert und linie_sauber_ab: Linie endet mitten im Zeichen -> rand_unklar
 
 # Schwellen in HSV (Farbton in Grad, Saettigung/Helligkeit 0..1).
 # Mit dem Dashboard-Bereich "Farben im PDF" pruefen, ob echte PDFs passen.
@@ -39,9 +48,30 @@ durchstreichung:
   hell_min_helligkeit: 0.6   # hellgraue Linien (neutral und heller als das) sind Zierlinien, keine Durchstreichung
   hell_max_saettigung: 0.1
   unterstreichung_band: [0.8, 1.3]   # Hoehenband (Anteil der Zeichenhoehe) einer Unterstreichung
+  min_laenge_pt: 1.0         # ADR 0006: kuerzere Linien sind keine Linienkandidaten (gestrichenes Leerzeichen ~2 pt); Legende alt: 2 pt
 
 annotationen:                # PDF-Kommentare (Hervorheben / Durchstreichen)
   aktiv: true
+
+markup_leiste:               # ADR 0006: graue Markup-Leiste der Word-Aenderungsverfolgung (rechts, mit Sprechblasen)
+  aktiv: true
+  min_x0_anteil: 0.6         # gefuellte graue Flaeche beginnt rechts von diesem Anteil der Seitenbreite ...
+  rand_toleranz_pt: 3.0      # ... reicht bis zum rechten Seitenrand (hoechstens so weit davor) ...
+  min_hoehe_anteil: 0.4      # ... und ist mindestens so hoch (Anteil der Seitenhoehe)
+  max_saettigung: 0.08       # Grau (Word: 0.949)
+  min_helligkeit: 0.75
+  max_helligkeit: 0.99       # reines Weiss ist keine Leiste
+  linie_toleranz_pt: 3.0     # Linien, die bis so nah an die Leiste reichen, sind Verbindungslinien (nie Strich/Unterstreichung)
+  anker_min_pt: 1.2          # kleine gefuellte Form (Ankerpunkt einer Verbindungslinie): kuerzere Seite mindestens ...
+  anker_max_pt: 4.0          # ... und laengere Seite hoechstens so gross (duennere Formen sind Linien)
+  sprechblase_min_breite_pt: 20   # Umriss einer Sprechblase in der Leiste
+  sprechblase_min_hoehe_pt: 4
+  notiz_max_zeichen: 160     # so lang wird der Text einer Sprechblase in PdfAnalyse.randnotizen
+  notiz_luecke_em: 1.5       # Text ohne Sprechblasen-Umriss: neue Notiz ab so viel Zeilenabstand (Schriftgroessen)
+  notiz_formatiert: ["hat formatiert", "formatiert"]   # Anfang des Sprechblasen-Textes -> art "formatiert"
+  notiz_kommentar: ["kommentiert", "kommentar"]        # ... -> art "kommentar"; sonst "sonstig"
+  # Sprechblase mit einer TEXTaenderung (Word-Option "Loeschungen in Sprechblasen"): im Fliesstext nicht sichtbar -> Luecke
+  notiz_inhalt: ["hat gelöscht", "gelöscht", "hat eingefügt", "eingefügt", "geloescht", "eingefuegt", "deleted", "inserted"]
 
 layout:
   zeilen_toleranz: 0.5       # Anteil der Schriftgroesse fuer "gleiche Zeile"
@@ -59,6 +89,17 @@ layout:
   kopf_fuss_anteil: 0.07     # oberer/unterer Seitenrand fuer Kopf-/Fusszeilen
   kopf_fuss_abstand_em: 1.5  # Randzeile (ganz im Seitenrand) ohne Wiederholungsmuster ist Kopf-/Fusszeile, wenn sie so weit (Schriftgroessen) vom Text abgesetzt steht
   kopf_fuss_max_schrift: 1.15  # ... und nicht groesser als Fliesstext * Faktor ist
+  # ADR 0006: wiederkehrende Kopf-/Fusszeilen in breiteren Randbaendern (Word-PDF auf ~70 % verkleinert)
+  kopf_fuss_band_anteil: 0.25      # oberes/unteres Randband (Anteil der Seitenhoehe)
+  kopf_fuss_min_seiten_anteil: 0.5 # Zeile kehrt auf so vielen Seiten (mit Text) wieder ...
+  kopf_fuss_min_seiten: 2          # ... mindestens aber auf so vielen Seiten ...
+  kopf_fuss_hoehe_toleranz_pt: 2.0 # ... an derselben Hoehe (+-); Schluessel nur aus unveraenderten Woertern, Ziffern egal
+  # ADR 0006: Listen und Ueberschriften (CDE: eine Zeile je Absatz/Listenpunkt)
+  liste_min_einzug_em: 1.2   # Luecke zwischen Listennummer und Text (haengender Einzug, Tab) in Schriftgroessen
+  section_nummer: '^\d{1,2}(?:\.\d{1,3}){1,5}\.?$'   # Section-Nummer mit innerem Punkt ("1.6"; eine Listennummer "1." zaehlt nicht)
+  section_kapitel: '^(?:PART|TEIL)\s+(\d{1,2})\b'    # Kapitelzeile "PART 1 TITEL" (gross geschrieben) ...
+  section_kapitel_name: 'Part {n}'                   # ... wird zur Section "Part 1"
+  section_min_gross_anteil: 0.6   # nicht fette Ueberschrift: so viel des Titels in Grossbuchstaben (oder Tab nach der Nummer)
   silbentrennung_zusammenfuegen: true
   keine_silbentrennung_vor: [und, oder, bzw, sowie, bis, to, and, or]
   silbentrennung_min_buchstaben: 2   # so viele Buchstaben muss das Stueck vor dem Trennstrich haben (auch beim unsichtbaren weichen Strich)
