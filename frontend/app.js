@@ -1,59 +1,53 @@
 /* CDE-Änderungsübernahme – Dashboard (reines JavaScript, keine Abhängigkeiten, keine externen Quellen).
-   Regel 8: reine Darstellung. Das Dashboard zeigt, was die API liefert; es rechnet nichts Fachliches nach.
-   Alle Texte aus Daten werden über textContent gesetzt (Fremdtext wird nie als HTML eingesetzt).
+   Drei Schritte statt vieler Reiter: 1 Dateien · 2 Prüfen · 3 Fertig. Vorbild: „Überarbeiten“ in Word und Review-Werkzeuge
+   für Anforderungen: eine Liste, gleiche Farben wie im Ergebnis, eine Entscheidung je Punkt, Tastatur, Technik versteckt.
+   Regel 8: reine Darstellung. Das Dashboard zeigt, was die API liefert (Kategorie und Zusammenfassung kommen vom Server);
+   es rechnet nichts Fachliches nach. Alle Texte aus Daten werden über textContent gesetzt (nie als HTML).
    Alle Aufrufe gehen an relative /api/-Pfade (keine festen Adressen oder Ports). */
 (() => {
   'use strict';
 
-  // ------------------------------------------------------------------ Beschriftungen (einfaches Deutsch)
-  const STATUS = {
-    uebernommen: { text: 'Übernommen', farbe: 'green', rang: 2 },
-    pruefen: { text: 'Zu prüfen', farbe: 'amber', rang: 0 },
-    nicht_uebernommen: { text: 'Nicht übernommen', farbe: 'red', rang: 1 },
+  // ------------------------------------------------------------------ Texte (einfaches Deutsch)
+  const INFO = {
+    pruefen: { titel: 'Was heißt „Bitte prüfen“?', text: 'Hier ist sich das Tool nicht sicher, zum Beispiel weil die Excel an der Stelle etwas anders aussieht als das PDF. Ohne dein „Übernehmen“ wird davon nichts eingetragen. Die Vorschau zeigt, wie die Zelle danach in der Excel aussieht: hellblau durchgestrichen fällt weg, rot kommt dazu.' },
+    archiv: { titel: 'Archivieren', text: 'Archivierte Abgleiche bleiben vollständig auf diesem Rechner erhalten (Dateien, Prüfung, erstellte Excel-Dateien). Sie stehen nur nicht mehr unter „Zuletzt“. Mit „Archivierte anzeigen“ findest du sie wieder und kannst sie wiederherstellen.' },
+  };
+  const LEGENDE = {
+    linie: 'Linie entscheidet (Word-Änderungsverfolgung: unterstrichen = neu, durchgestrichen = entfällt)',
+    farbe: 'Farbe und Strich (von Hand markiert: durchgestrichen = entfällt, farbig = neu)',
+    alt: 'Blau = neu, Rot = entfällt (ältere Testdaten)',
   };
   const ART = {
     text_ersetzt: 'Text ersetzt', text_eingefuegt: 'Text eingefügt', text_geloescht: 'Text entfällt',
-    absatz_neu: 'Absatz neu', absatz_geloescht: 'Absatz entfällt',
-    section_neu: 'Section neu', section_geloescht: 'Section entfällt',
+    absatz_neu: 'Absatz neu', absatz_geloescht: 'Absatz entfällt', section_neu: 'Section neu', section_geloescht: 'Section entfällt',
   };
-  const KONF = { hoch: { farbe: 'green', rang: 2 }, mittel: { farbe: 'amber', rang: 1 }, niedrig: { farbe: 'red', rang: 0 } };
+  const STATUS = { uebernommen: 'eingetragen', pruefen: 'Vorschlag', nicht_uebernommen: 'nicht eingetragen' };
+  const WIRKUNG = { ok: 'wie geplant', keine: 'keine Wirkung', abweichung: 'weicht ab' };
   const LUECKE_ART = {
     scan_seite: 'Scan-Seite (kein Text lesbar)', mehrspaltig: 'Text in mehreren Spalten', tabelle: 'Tabelle', bild: 'Bild',
-    unbekannte_farbe: 'Unbekannte Farbe', nicht_lesbarer_text: 'Nicht lesbarer Text', sonstiges: 'Sonstiges',
-  };
-  const WIRKUNG = {
-    ok: { text: 'Wirkung geprüft', lang: 'Die Excel hat sich nachweislich wie geplant geändert.', farbe: 'green', schlecht: false },
-    keine: { text: 'Keine Wirkung', lang: 'Die Änderung hat an der Excel nichts bewirkt. Sie gilt deshalb nicht als übernommen.', farbe: 'red', schlecht: true },
-    abweichung: { text: 'Weicht vom Plan ab', lang: 'Die Excel sieht nach dem Eintragen anders aus als geplant.', farbe: 'red', schlecht: true },
+    unbekannte_farbe: 'Unbekannte Farbe', nicht_lesbarer_text: 'Nicht lesbarer Text', unerklaerte_markierung: 'Unerklärte Markierung', sonstiges: 'Sonstiges',
   };
   const LAUF_STATUS = {
-    analysiert: { text: 'Analysiert, noch nichts übernommen', farbe: 'blue', offen: true },
-    uebernommen: { text: 'Übernommen', farbe: 'green', offen: true },
-    fehlgeschlagen: { text: 'Analyse fehlgeschlagen', farbe: 'red', offen: false },
-    beschaedigt: { text: 'Beschädigt', farbe: 'red', offen: false },
-    neuere_version: { text: 'Aus neuerer Programmversion', farbe: 'amber', offen: false },
-    angelegt: { text: 'Noch nicht analysiert', farbe: 'grey', offen: false },
-  };
-  const INFO = {
-    bilanz: { titel: 'Was ist die Bilanz?', text: 'Das Tool zählt alle im PDF markierten Wörter. Jedes davon muss übernommen, zu prüfen oder mit Grund nicht übernommen sein. Stimmt die Summe nicht, ist etwas verloren gegangen.' },
-    luecken: { titel: 'Was sind Lücken?', text: 'Lücken sind Stellen im PDF, die das Tool nicht sicher lesen konnte, zum Beispiel Scan-Seiten, Tabellen oder Text in mehreren Spalten. Dort kann eine Änderung fehlen. Bitte diese Stellen im PDF selbst ansehen.' },
-    sicherheit: { titel: 'Sicherheit', text: 'Wie sicher das Tool bei der Stelle in der Excel ist. Hoch: eindeutig. Mittel oder niedrig: bitte genau ansehen. Unsichere Treffer trägt das Tool nie von selbst ein.' },
-    auswahl: { titel: 'Vorschläge freigeben', text: 'Nur Vorschläge mit Häkchen werden beim Erzeugen der Excel eingetragen. Sichere Treffer (Status „Übernommen“) trägt das Tool automatisch ein. Das lässt sich hier noch nicht abwählen. Die Original-Excel bleibt immer unverändert.' },
-    vorher_nachher: { titel: 'Vorher / Nachher', text: 'Links steht, was jetzt in der Excel an dieser Stelle steht. Rechts steht, was sich im PDF ändert: durchgestrichen ist der alte Text, blau der neue.' },
-    wirkung: { titel: 'Wirkung', text: 'Nach dem Eintragen prüft das Tool, ob die Excel sich wirklich wie geplant geändert hat. „Keine Wirkung“ heißt: Es hat sich nichts geändert. Dann gilt die Änderung nicht als übernommen.' },
-    layout: { titel: 'Erkannter Aufbau', text: 'So hat das Tool die Tabellenblätter verstanden: in welcher Spalte die Section-Nummer, der Titel und der Inhalt stehen. Weicht das stark von der Wirklichkeit ab, bitte melden.' },
-    archiv: { titel: 'Archivieren', text: 'Archivierte Läufe bleiben vollständig auf diesem Rechner erhalten (Eingabe, Analyse, Ergebnisse). Sie erscheinen nur nicht mehr in der Liste. Mit „Archivierte anzeigen“ findest du sie wieder und kannst sie wiederherstellen.' },
-    farben: { titel: 'Farben im PDF', text: 'Zeigt, welche Farben im geöffneten PDF vorkommen und wie sie gedeutet werden. Passt etwas nicht, lassen sich die Schwellen in config/farben.yaml anpassen.' },
+    analysiert: { text: 'noch keine Excel erstellt', offen: true },
+    uebernommen: { text: 'Excel erstellt', offen: true },
+    fehlgeschlagen: { text: 'Abgleich fehlgeschlagen', offen: false, warn: true },
+    beschaedigt: { text: 'beschädigt', offen: false, warn: true },
+    neuere_version: { text: 'aus einer neueren Programmversion', offen: false, warn: true },
+    angelegt: { text: 'noch nicht abgeglichen', offen: false },
   };
   const TXT_SERVER = 'Der Server antwortet nicht. Läuft das Dashboard noch?';
-  const TXT_UNERWARTET = 'Im Dashboard ist etwas schiefgelaufen. Bitte die Seite neu laden. Deine Läufe sind gespeichert.';
-  const SEITENGROESSE = 200;
+  const TXT_UNERWARTET = 'Im Dashboard ist etwas schiefgelaufen. Bitte die Seite neu laden. Deine Abgleiche sind gespeichert.';
+  const AUTO_SEITE = 20;          // so viele automatische Karten zuerst
+  const ZULETZT = 5;              // so viele Abgleiche unter „Zuletzt“
+  const RAND = 160;               // so viele Zeichen unveränderten Textes um eine Änderung herum (lange Zellen)
+  const SCHRITTE = ['dateien', 'pruefen', 'fertig'];
 
   // ------------------------------------------------------------------ Zustand und Helfer
-  const neuerFilter = () => ({ suche: '', status: 'alle', warn: false, typ: '', seite: '', section: '', konfidenz: '', sort: 'nr' });
   const state = {
-    plan: null, ergebnis: null, ergebnisse: [], f: neuerFilter(), freig: new Set(), offen: new Set(), limit: SEITENGROESSE,
-    files: { pdf: null, xlsx: null }, zeigeArchiv: false,
+    schritt: 'dateien', plan: null, ergebnis: null, ergebnisse: [],
+    entscheid: new Map(),         // Vorschlag-ID -> 'ja' | 'nein'
+    abwahl: new Set(),            // automatische Änderungen, die NICHT eingetragen werden sollen
+    files: { pdf: null, xlsx: null }, zeigeArchiv: false, zuletztAlle: false, suche: '', autoLimit: AUTO_SEITE,
   };
   const $ = (id) => document.getElementById(id);
 
@@ -65,7 +59,7 @@
       else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
       else el.setAttribute(k, v === true ? '' : v);
     }
-    for (const k of kinder.flat()) if (k != null && k !== false) el.append(k.nodeType ? k : document.createTextNode(String(k)));
+    for (const k of kinder.flat(2)) if (k != null && k !== false) el.append(k.nodeType ? k : document.createTextNode(String(k)));
     return el;
   }
 
@@ -73,18 +67,39 @@
   const text = (x) => (typeof x === 'string' ? x : x == null ? '' : String(x));
   const zahl = (x) => (typeof x === 'number' && isFinite(x) ? x : 0);
   const pl = (n, ein, mehr) => `${n} ${n === 1 ? ein : mehr}`;
-  const kurz = (t, n) => { t = text(t); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
-  const natuerlich = (a, b) => text(a).localeCompare(text(b), 'de', { numeric: true, sensitivity: 'base' });
+  const kurz = (t, n) => { t = text(t).replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
   const hatWort = (x) => (x === 0 || x ? String(x) : '–');
+  const sicher = (id) => text(id).replace(/[^\w-]/g, '_');
+  const lauf = (id) => encodeURIComponent(id);
+  const reduziert = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function fmtZeit(iso) {
     const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(text(iso));
     return m ? `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}` : '';
   }
 
+  // Einordnung kommt vom Server (kategorie); der Rückfall gilt nur für sehr alte Antworten ohne dieses Feld.
+  function kat(a) {
+    if (a.kategorie) return a.kategorie;
+    if (a.status === 'uebernommen') return 'automatisch';
+    if (a.bereich === 'ausserhalb') return 'ausserhalb';
+    return a.status === 'pruefen' ? 'pruefen' : 'nicht';
+  }
+  const aenderungen = () => liste(state.plan && state.plan.aenderungen);
+  const vorschlaege = () => aenderungen().filter((a) => kat(a) === 'pruefen');
+  const automatische = () => aenderungen().filter((a) => kat(a) === 'automatisch');
+  const nichtEingetragen = () => aenderungen().filter((a) => kat(a) === 'ausserhalb' || kat(a) === 'nicht');
+  function zusammenfassung() {
+    const z = state.plan && state.plan.zusammenfassung;
+    if (z && typeof z === 'object') return z;
+    const l = aenderungen();
+    return { gesamt: l.length, automatisch: automatische().length, pruefen: vorschlaege().length,
+      ausserhalb: l.filter((a) => kat(a) === 'ausserhalb').length, nicht: l.filter((a) => kat(a) === 'nicht').length };
+  }
+
   function infoIcon(key) {
-    const t = INFO[key] ? INFO[key].titel : '';
-    return h('button', { class: 'info-icon', type: 'button', 'data-info': key, 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-label': `Erklärung: ${t}` }, 'i');
+    return h('button', { class: 'info-icon', type: 'button', 'data-info': key, 'aria-haspopup': 'dialog', 'aria-expanded': 'false',
+      'aria-label': `Erklärung: ${INFO[key] ? INFO[key].titel : ''}` }, 'i');
   }
 
   // ------------------------------------------------------------------ Meldungen
@@ -97,15 +112,14 @@
     toastZeit = setTimeout(() => { t.textContent = ''; }, 6000);
   }
   function toastFehler(msg) {
-    const box = $('toast-fehler-box');
-    box.hidden = false;
+    $('toast-fehler-box').hidden = false;
     $('toast-fehler').textContent = '';
     setTimeout(() => { $('toast-fehler').textContent = msg; }, 30);
   }
   function fehlerSchliessen() { $('toast-fehler-box').hidden = true; $('toast-fehler').textContent = ''; }
   function meldeFehler(e) {
     if (e instanceof ApiFehler) {
-      const extra = e.daten && e.daten.run_id ? ' Der Lauf bleibt im Verlauf gespeichert.' : '';
+      const extra = e.daten && e.daten.run_id ? ' Der Abgleich bleibt unter „Zuletzt“ gespeichert.' : '';
       toastFehler(e.message + extra);
     } else {
       console.error(e);
@@ -114,21 +128,30 @@
   }
 
   // ------------------------------------------------------------------ Warte-Anzeige (Fokus + alles andere gesperrt)
-  let busyZuvor = null;
-  function busy(an, msg = 'Bitte warten …') {
+  let busyZuvor = null, busyUhr = null;
+  function busy(an, titel = 'Einen Moment bitte', msg = 'Bitte warten …') {
     const b = $('busy');
     if (an) {
+      $('busy-titel').textContent = titel;
       $('busy-text').textContent = msg;
+      $('busy-zeit').textContent = '';
+      const start = Date.now();
+      clearInterval(busyUhr);
+      busyUhr = setInterval(() => {
+        const s = Math.round((Date.now() - start) / 1000);
+        $('busy-zeit').textContent = s >= 2 ? `Bisher ${s} Sekunden` : '';
+      }, 1000);
       if (b.hidden) {
         busyZuvor = document.activeElement;
-        for (const id of ['kopf', 'seiten-tabs', 'main', 'fuss']) $(id).inert = true;
+        for (const id of ['kopf', 'schritte', 'main', 'fuss']) $(id).inert = true;
         b.hidden = false;
         $('busy-card').focus();
       }
     } else if (!b.hidden) {
+      clearInterval(busyUhr);
       b.hidden = true;
-      for (const id of ['kopf', 'seiten-tabs', 'main', 'fuss']) $(id).inert = false;
-      if (busyZuvor && document.contains(busyZuvor) && typeof busyZuvor.focus === 'function') busyZuvor.focus();
+      for (const id of ['kopf', 'schritte', 'main', 'fuss']) $(id).inert = false;
+      if (busyZuvor && document.contains(busyZuvor) && busyZuvor.offsetParent !== null && typeof busyZuvor.focus === 'function') busyZuvor.focus();
       busyZuvor = null;
     }
   }
@@ -153,7 +176,6 @@
     if (daten === null) throw new ApiFehler('Der Server hat eine unerwartete Antwort geschickt. Bitte noch einmal versuchen.');
     return daten;
   }
-  const lauf = (id) => encodeURIComponent(id);
 
   // ------------------------------------------------------------------ Info-Popup
   let popup = null, popupAuf = null;
@@ -186,29 +208,26 @@
     popup.style.top = `${r.bottom + 8 + ph > innerHeight ? Math.max(8, r.top - ph - 8) : r.bottom + 8}px`;
   }
 
-  // ------------------------------------------------------------------ Tabs
-  const TABS = ['lauf', 'pruefen', 'verlauf', 'farben'];
-  function zeigeTab(name, fokus = false) {
-    for (const b of document.querySelectorAll('.page-tab')) {
-      const aktiv = b.dataset.tab === name;
-      b.setAttribute('aria-selected', aktiv ? 'true' : 'false');
-      b.tabIndex = aktiv ? 0 : -1;
-      if (aktiv && fokus) b.focus();
+  // ------------------------------------------------------------------ Schritte
+  function zeigeSchritt(name, fokus = true) {
+    if (!SCHRITTE.includes(name)) return;
+    state.schritt = name;
+    for (const s of SCHRITTE) {
+      $('schritt-' + s).hidden = s !== name;
+      const k = $('schritt-knopf-' + s);
+      if (s === name) k.setAttribute('aria-current', 'step'); else k.removeAttribute('aria-current');
     }
-    for (const s of document.querySelectorAll('.tab')) s.hidden = s.id !== 'tab-' + name;
-    if (name === 'verlauf') ladeVerlauf();
-  }
-  function tabTaste(ev) {
-    const i = TABS.indexOf(ev.target.dataset.tab);
-    if (i < 0) return;
-    let n = null;
-    if (ev.key === 'ArrowRight') n = (i + 1) % TABS.length;
-    else if (ev.key === 'ArrowLeft') n = (i + TABS.length - 1) % TABS.length;
-    else if (ev.key === 'Home') n = 0;
-    else if (ev.key === 'End') n = TABS.length - 1;
-    if (n === null) return;
-    ev.preventDefault();
-    zeigeTab(TABS[n], true);
+    $('schritt-knopf-pruefen').disabled = !state.plan;
+    $('schritt-knopf-fertig').disabled = !state.ergebnis;
+    $('schritt-knopf-dateien').classList.toggle('erledigt', !!state.plan);
+    $('schritt-knopf-pruefen').classList.toggle('erledigt', !!state.ergebnis);
+    zeichneWarnungen();
+    zeichneFachleute();
+    if (name === 'dateien') ladeZuletzt();
+    if (fokus) {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+      $('titel-' + name).focus({ preventScroll: true });
+    }
   }
 
   // ------------------------------------------------------------------ Hell / Dunkel
@@ -223,9 +242,8 @@
     themeKnopf();
   }
 
-  // ------------------------------------------------------------------ Upload
+  // ------------------------------------------------------------------ Schritt 1: Dateien
   function dateiGewaehlt(art, datei) {
-    const dz = art === 'pdf' ? $('dz-pdf') : $('dz-xlsx');
     const okPdf = art === 'pdf' && /\.pdf$/i.test(datei.name);
     const okXlsx = art === 'xlsx' && /\.(xlsx|xlsm)$/i.test(datei.name);
     if (!okPdf && !okXlsx) {
@@ -233,9 +251,9 @@
       return;
     }
     state.files[art] = datei;
-    dz.classList.add('filled');
+    $(art === 'pdf' ? 'dz-pdf' : 'dz-xlsx').classList.add('filled');
     $(art === 'pdf' ? 'dz-pdf-sub' : 'dz-xlsx-sub').textContent = `✓ ${datei.name}`;
-    $('btn-analyse').disabled = !(state.files.pdf && state.files.xlsx);
+    $('btn-abgleichen').disabled = !(state.files.pdf && state.files.xlsx);
   }
 
   function dropzone(id, inputId, art) {
@@ -247,589 +265,614 @@
     dz.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); input.click(); } });
   }
 
-  async function analysieren() {
+  function dateienZuruecksetzen() {
+    state.files = { pdf: null, xlsx: null };
+    for (const [dz, sub, inp, t] of [['dz-pdf', 'dz-pdf-sub', 'file-pdf', 'Hierher ziehen oder klicken'], ['dz-xlsx', 'dz-xlsx-sub', 'file-xlsx', 'Hierher ziehen oder klicken (.xlsx)']]) {
+      $(dz).classList.remove('filled');
+      $(sub).textContent = t;
+      $(inp).value = '';
+    }
+    $('btn-abgleichen').disabled = true;
+  }
+
+  async function abgleichen() {
+    if (!(state.files.pdf && state.files.xlsx)) return;
     const fd = new FormData();
     fd.append('pdf', state.files.pdf);
     fd.append('excel', state.files.xlsx);
-    busy(true, 'Analysiere das PDF und die Excel … (bei vielen Seiten kann das einen Moment dauern)');
-    try {
-      const plan = await api('/lauf', { method: 'POST', body: fd });
-      oeffne(plan);
-      toast('Analyse fertig. Es wurde noch nichts in die Excel geschrieben.');
-    } catch (e) { meldeFehler(e); } finally { busy(false); }
+    busy(true, 'PDF wird gelesen …', 'Das dauert etwa 15 Sekunden. In die Excel wird dabei noch nichts geschrieben.');
+    let plan;
+    try { plan = await api('/lauf', { method: 'POST', body: fd }); } catch (e) { busy(false); meldeFehler(e); ladeZuletzt(); return; }
+    busy(false);
+    oeffne(plan);
+    toast('Abgleich fertig. Es wurde noch nichts in die Excel geschrieben.');
   }
 
-  function oeffne(plan) {
-    state.plan = plan;
-    state.ergebnis = null;
-    state.ergebnisse = liste(plan.ergebnisse);
-    state.f = neuerFilter();
-    state.freig = new Set();
-    state.offen = new Set();
-    state.limit = SEITENGROESSE;
-    zeichne();
-    zeigeTab('pruefen');
-  }
-
-  // ------------------------------------------------------------------ Hilfen zur Darstellung der Änderungen
-  const aktuelleAenderungen = () => liste(state.ergebnis ? state.ergebnis.aenderungen : state.plan && state.plan.aenderungen);
-  const aktuelleBilanz = () => (state.ergebnis && state.ergebnis.bilanz) || (state.plan && state.plan.bilanz) || {};
-  const artText = (typ) => ART[typ] || text(typ).replace(/_/g, ' ');
-  const wirkungSchlecht = (a) => !!(WIRKUNG[a.wirkung] && WIRKUNG[a.wirkung].schlecht);
-  const nachkontrolleAbweichung = (a) => a.nachkontrolle === 'abweichung';
-  const hatProblem = (a) => wirkungSchlecht(a) || nachkontrolleAbweichung(a);
-  const hatHinweis = (a) => liste(a.hinweise).length > 0;
-  const auffaellig = (a) => hatProblem(a) || hatHinweis(a);
-
-  function kachel(wert, label, farbe = '', istText = false) {
-    return h('div', { class: 'stat-card ' + farbe }, h('span', { class: 'stat-value' + (istText ? ' text' : '') }, wert), h('span', { class: 'stat-label' }, label));
-  }
-
-  function banner(farbe, symbol, titel, kinder, rolle) {
-    return h('div', { class: 'banner ' + farbe, role: rolle || 'region', 'aria-label': titel },
-      h('span', { class: 'banner-symbol', 'aria-hidden': 'true' }, symbol),
-      h('div', { class: 'banner-inhalt' }, h('div', { class: 'banner-titel' }, titel), kinder));
-  }
-
-  // ------------------------------------------------------------------ Hauptdarstellung
-  function zeichne() {
-    const p = state.plan;
-    $('leer-pruefen').hidden = !!p;
-    $('pruefen-inhalt').hidden = !p;
-    zeichneFarben();
-    if (!p) return;
-    const b = aktuelleBilanz();
-    $('run-titel').textContent = `${text(p.pdf_name)}  →  ${text(p.excel_name)}`;
-    $('run-sub').textContent = `Lauf ${text(p.run_id)} · ${pl(zahl(p.seiten), 'PDF-Seite', 'PDF-Seiten')}`;
-    $('archiv-hinweis').hidden = !p.archiviert;
-
-    zeichneBanner(b);
-    $('stats').replaceChildren(
-      kachel(zahl(b.aenderungen), 'Änderungen erkannt'),
-      kachel(zahl(b.uebernommen), 'Übernommen', 'green'),
-      kachel(zahl(b.pruefen), 'Zu prüfen', 'amber'),
-      kachel(zahl(b.nicht_uebernommen), 'Nicht übernommen', 'red'),
-      gelesenKachel(b));
-    zeichneBilanzDetail(b);
-
-    const warn = liste(state.ergebnis ? state.ergebnis.warnungen : p.warnungen);
-    const w = $('warnungen');
-    w.hidden = !warn.length;
-    w.replaceChildren(h('strong', {}, 'Hinweise zum Lauf'), h('ul', {}, warn.map((x) => h('li', {}, text(x)))));
-
-    zeichneLayout(p);
-    zeichneErgebnisse();
-    fuelleFilter();
-    zeichneChips();
-    zeichneTabelle();
-    zeichneAuswahl();
-  }
-
-  function unvollstaendig(b) { return b.vollstaendig === false || (liste(state.plan && state.plan.luecken).length > 0); }
-
-  function gelesenKachel(b) {
-    if (unvollstaendig(b)) return kachel('Unvollständig', 'Gelesen', 'amber', true);
-    if (b.vollstaendig === true) return kachel('Vollständig', 'Gelesen', b.stimmt === true && !zahl(b.nachkontrolle_abweichungen) ? 'green' : 'grey', true);
-    return kachel('Unbekannt', 'Gelesen', 'grey', true);
-  }
-
-  function zeichneBanner(b) {
-    const box = [];
-    const luecken = liste(state.plan.luecken);
-    const abw = zahl(b.nachkontrolle_abweichungen);
-    const stimmt = b.stimmt === true;
-    const unvoll = unvollstaendig(b);
-
-    if (!stimmt) {
-      box.push(banner('rot', '!', 'Die Bilanz stimmt nicht', h('p', { class: 'banner-text' },
-        `Die Wörter im PDF (${hatWort(b.woerter_im_pdf)} markiert) und die Summe aus „übernommen“, „zu prüfen“, „nicht übernommen“ und „ignoriert“ passen nicht zusammen. ` +
-        'Etwas kann verloren gegangen sein. Bitte dieses Ergebnis nicht verwenden und den Fehler melden.'), 'alert'));
-    }
-    if (unvoll) {
-      const n = luecken.length || zahl(b.luecken);
-      const kinder = [h('p', { class: 'banner-text' },
-        `Das Tool konnte nicht alles im PDF lesen (${pl(n, 'Lücke', 'Lücken')}). An diesen Stellen kann eine Änderung fehlen. ` +
-        'Bitte diese Stellen im PDF selbst prüfen, bevor du dich auf das Ergebnis verlässt.')];
-      if (luecken.length) {
-        kinder.push(h('ul', { class: 'luecken-liste', 'aria-label': 'Lücken im PDF' }, luecken.map((l) => h('li', {},
-          h('span', { class: 'seite' }, l.seite ? `Seite ${l.seite}` : 'Seite unbekannt'), '· ',
-          h('span', { class: 'art' }, LUECKE_ART[l.art] || text(l.art).replace(/_/g, ' ') || 'Sonstiges'),
-          text(l.beschreibung) ? '– ' + text(l.beschreibung) : '',
-          zahl(l.woerter) ? h('span', { class: 'woerter' }, ` (${pl(zahl(l.woerter), 'Wort', 'Wörter')})`) : ''))));
-      }
-      box.push(banner('gelb', '!', 'Unvollständig gelesen', kinder, 'alert'));
-    } else if (b.vollstaendig === undefined || b.vollstaendig === null) {
-      box.push(banner('gelb', '?', 'Vollständigkeit nicht bekannt', h('p', { class: 'banner-text' },
-        'Dieser Lauf stammt aus einer älteren Programmversion. Ob das PDF vollständig gelesen wurde, ist dort nicht festgehalten.')));
-    }
-    if (abw) {
-      box.push(banner('rot', '!', `${pl(abw, 'Änderung weicht', 'Änderungen weichen')} ab`, [h('p', { class: 'banner-text' },
-        'Bei der Nachkontrolle hat die Excel sich nicht wie geplant geändert (keine Wirkung oder Abweichung). Diese Zeilen sind unten markiert.'),
-        h('button', { class: 'btn btn-secondary btn-small', type: 'button', onclick: nurProbleme }, 'Nur diese zeigen')], 'alert'));
-    }
-    if (stimmt && b.vollstaendig === true && !abw) {
-      box.push(banner('gruen', '✓', 'Bilanz stimmt', h('p', { class: 'banner-text' },
-        `Alle ${hatWort(b.woerter_im_pdf)} markierten Wörter im PDF sind übernommen, zu prüfen oder mit Grund aufgelistet. Das PDF wurde vollständig gelesen. Nichts ging still verloren.`), 'status'));
-    }
-    $('banner-box').replaceChildren(...box);
-  }
-
-  function zeichneBilanzDetail(b) {
-    const zeilen = [
-      ['Wörter im PDF markiert', b.woerter_im_pdf], ['davon übernommen', b.woerter_uebernommen], ['davon zu prüfen', b.woerter_pruefen],
-      ['davon nicht übernommen', b.woerter_nicht_uebernommen], ['bewusst ignoriert', b.woerter_ignoriert],
-      ['Lücken beim Lesen', b.luecken],
-    ];
-    $('bilanz-dl').replaceChildren(...zeilen.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, hatWort(v))]));
-  }
-
-  function zeichneLayout(p) {
-    const box = $('layout-inhalt');
-    const zeilen = liste(p.layout);
-    box.replaceChildren(
-      h('p', { class: 'hint' }, 'So hat das Tool den Aufbau je Tabellenblatt verstanden. Weicht das stark von der Wirklichkeit ab, bitte melden. ', infoIcon('layout')),
-      zeilen.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'changes', 'aria-label': 'Erkannter Aufbau der Excel' },
-        h('thead', {}, h('tr', {}, ['Blatt', 'Section-Spalte', 'Titel-Spalte', 'Inhalt-Spalte', 'Modell', 'Sections'].map((x) => h('th', { scope: 'col' }, x)))),
-        h('tbody', {}, zeilen.map((l) => h('tr', {}, [l.blatt, l.section_spalte || '–', l.titel_spalte || '–', l.inhalt_spalte || '–',
-          l.modell === 'zeile_pro_section' ? 'eine Zeile je Section' : 'eine Zeile je Absatz', hatWort(l.sections)].map((x) => h('td', {}, text(x)))))))) :
-        h('p', { class: 'hint' }, 'Für diesen Lauf ist kein Aufbau gespeichert.'));
-  }
-
-  // ------------------------------------------------------------------ Ergebnisse (neu + frühere)
-  function ergebnisNummer(ordner) { const m = /ergebnis_(\d+)/.exec(text(ordner)); return m ? m[1] : text(ordner); }
-  function downloadLink(ordner, name, label, primaer) {
-    return h('a', { class: 'btn ' + (primaer ? 'btn-primary' : 'btn-secondary'), href: `/api/lauf/${lauf(state.plan.run_id)}/download/${encodeURIComponent(ordner)}/${encodeURIComponent(name)}` }, label);
-  }
-
-  function zeichneErgebnisse() {
-    const e = state.ergebnis, box = $('ergebnis-box');
-    box.hidden = !e;
-    if (e) {
-      const b = e.bilanz || {};
-      const schlecht = b.stimmt !== true || zahl(b.nachkontrolle_abweichungen) > 0;
-      box.className = 'box ' + (schlecht ? 'ergebnis-schlecht' : 'ergebnis-neu');
-      const hinweisText = schlecht
-        ? 'Es wurde ein Ergebnis angelegt, aber bei der Prüfung ist etwas aufgefallen (siehe oben). Bitte vor der Verwendung genau ansehen.'
-        : 'Die Original-Excel wurde nicht verändert. Das Protokoll listet jede Änderung mit alt/neu, Quelle im PDF und Stelle in der Excel.';
-      box.replaceChildren(h('h3', {}, schlecht ? `Ergebnis ${ergebnisNummer(e.ordner)} erstellt – bitte prüfen` : `Fertig – Ergebnis ${ergebnisNummer(e.ordner)} liegt bereit`),
-        h('p', { class: 'hint' }, hinweisText),
-        h('div', { class: 'btn-reihe' }, downloadLink(e.ordner, e.excel, 'Aktualisierte Excel herunterladen', true),
-          downloadLink(e.ordner, 'aenderungsprotokoll.xlsx', 'Änderungsprotokoll herunterladen', false)));
-    }
-    const fr = $('fruehere-box');
-    const andere = state.ergebnisse.filter((x) => !(e && x.ordner === e.ordner)).slice().reverse();
-    fr.hidden = !andere.length;
-    if (!andere.length) return;
-    const titel = e ? 'Frühere Ergebnisse dieses Laufs' : `Dieser Lauf hat schon ${pl(andere.length, 'Ergebnis', 'Ergebnisse')}`;
-    fr.replaceChildren(h('h3', {}, titel),
-      e ? '' : h('p', { class: 'hint' }, 'Du kannst die vorhandenen Ergebnisse unten herunterladen. Ein weiteres Ergebnis ist möglich, die früheren bleiben erhalten.'),
-      h('ul', { class: 'ergebnis-liste' }, andere.map((x) => {
-        const bb = x.bilanz || {};
-        const flags = [];
-        if (bb.stimmt !== true) flags.push(h('span', { class: 'badge red' }, 'Bilanz stimmt nicht'));
-        if (bb.vollstaendig === false) flags.push(h('span', { class: 'badge amber' }, 'Unvollständig gelesen'));
-        if (zahl(bb.nachkontrolle_abweichungen)) flags.push(h('span', { class: 'badge red' }, pl(zahl(bb.nachkontrolle_abweichungen), 'Abweichung', 'Abweichungen')));
-        return h('li', {},
-          h('div', {}, h('strong', {}, `Ergebnis ${ergebnisNummer(x.ordner)}`),
-            h('div', { class: 'meta' }, [fmtZeit(x.erstellt), `${pl(liste(x.freigaben).length, 'Vorschlag', 'Vorschläge')} freigegeben`, `${zahl(bb.uebernommen)} übernommen`].filter(Boolean).join(' · ')),
-            flags.length ? h('div', {}, flags) : ''),
-          h('div', { class: 'btn-reihe' }, downloadLink(x.ordner, x.excel, 'Excel', false), downloadLink(x.ordner, 'aenderungsprotokoll.xlsx', 'Protokoll', false)));
-      })));
-  }
-
-  // ------------------------------------------------------------------ Filter, Suche, Sortierung
-  function fuelleSelect(id, alle, optionen) {
-    const sel = $(id), alt = sel.value;
-    sel.replaceChildren(h('option', { value: '' }, alle), ...optionen.map(([v, t]) => h('option', { value: v }, t)));
-    sel.value = optionen.some(([v]) => v === alt) ? alt : '';
-  }
-  function fuelleFilter() {
-    const l = aktuelleAenderungen();
-    const typen = [...new Set(l.map((a) => a.typ))].sort((a, b) => natuerlich(artText(a), artText(b)));
-    const seiten = [...new Set(l.map((a) => a.seite))].filter((s) => s != null).sort((a, b) => a - b);
-    const sections = [...new Set(l.map((a) => a.section).filter(Boolean))].sort(natuerlich);
-    fuelleSelect('f-typ', 'Alle Arten', typen.map((t) => [t, artText(t)]));
-    fuelleSelect('f-seite', 'Alle Seiten', seiten.map((s) => [String(s), `Seite ${s}`]));
-    fuelleSelect('f-section', 'Alle Sections', [['__ohne', 'Ohne Section'], ...sections.map((s) => [s, s])]);
-    fuelleSelect('f-konfidenz', 'Alle', ['hoch', 'mittel', 'niedrig'].filter((k) => l.some((a) => a.konfidenz === k)).map((k) => [k, k]));
-    $('f-suche').value = state.f.suche;
-    $('f-typ').value = state.f.typ; $('f-seite').value = state.f.seite; $('f-section').value = state.f.section;
-    $('f-konfidenz').value = state.f.konfidenz; $('f-sort').value = state.f.sort;
-  }
-
-  function zeichneChips() {
-    const l = aktuelleAenderungen();
-    const n = (s) => l.filter((a) => a.status === s).length;
-    const zeilen = [['alle', `Alle (${l.length})`], ['uebernommen', `Übernommen (${n('uebernommen')})`],
-      ['pruefen', `Zu prüfen (${n('pruefen')})`], ['nicht_uebernommen', `Nicht übernommen (${n('nicht_uebernommen')})`]];
-    const fr = $('filter-row');
-    const fokusIdx = [...fr.children].indexOf(document.activeElement);
-    const chips = zeilen.map(([k, t]) => h('button', { class: 'chip', type: 'button', 'aria-pressed': state.f.status === k ? 'true' : 'false',
-      onclick: () => { state.f.status = k; neuFiltern(); } }, t));
-    chips.push(h('button', { class: 'chip', type: 'button', 'aria-pressed': state.f.warn ? 'true' : 'false',
-      onclick: () => { state.f.warn = !state.f.warn; neuFiltern(); } }, `Mit Hinweis oder Abweichung (${l.filter(auffaellig).length})`));
-    fr.replaceChildren(...chips);
-    if (fokusIdx >= 0 && chips[fokusIdx]) chips[fokusIdx].focus();
-    const offen = state.ergebnis ? 0 : l.filter((a) => a.status === 'pruefen').length;
-    $('pruef-hinweis').hidden = !offen;
-    $('pruef-hinweis-titel').textContent = `${pl(offen, 'Vorschlag wartet', 'Vorschläge warten')} auf deine Prüfung`;
-  }
-
-  function neuFiltern() { state.limit = SEITENGROESSE; zeichneChips(); zeichneTabelle(); zeichneAuswahl(); }
-  function nurProbleme() { state.f = { ...neuerFilter(), warn: true }; fuelleFilter(); neuFiltern(); }
-
-  function gefiltert() {
-    const f = state.f;
-    const tokens = f.suche.toLowerCase().split(/\s+/).filter(Boolean);
-    const l = aktuelleAenderungen().filter((a) => {
-      if (f.status !== 'alle' && a.status !== f.status) return false;
-      if (f.warn && !auffaellig(a)) return false;
-      if (f.typ && a.typ !== f.typ) return false;
-      if (f.seite && String(a.seite) !== f.seite) return false;
-      if (f.section === '__ohne' ? !!a.section : (f.section && a.section !== f.section)) return false;
-      if (f.konfidenz && a.konfidenz !== f.konfidenz) return false;
-      if (tokens.length) {
-        const heu = [a.alt, a.neu, a.section, a.ziel, a.excel_text].map(text).join('\n').toLowerCase();
-        if (!tokens.every((t) => heu.includes(t))) return false;
-      }
-      return true;
-    });
-    const rang = { nr: (x, y) => natuerlich(x.id, y.id),
-      seite: (x, y) => zahl(x.seite) - zahl(y.seite),
-      section: (x, y) => natuerlich(x.section || '', y.section || ''),
-      status: (x, y) => ((STATUS[x.status] || {}).rang ?? 9) - ((STATUS[y.status] || {}).rang ?? 9),
-      konfidenz: (x, y) => ((KONF[x.konfidenz] || {}).rang ?? 9) - ((KONF[y.konfidenz] || {}).rang ?? 9),
-      auffaellig: (x, y) => (hatProblem(y) - hatProblem(x)) || (hatHinweis(y) - hatHinweis(x)) };
-    const vgl = rang[f.sort] || rang.nr;
-    return l.slice().sort((x, y) => vgl(x, y) || natuerlich(x.id, y.id));
-  }
-
-  // ------------------------------------------------------------------ Tabelle
-  function warnZeilen(a) {
-    const out = [];
-    const w = WIRKUNG[a.wirkung];
-    if (w && w.schlecht) out.push(h('div', { class: 'warn-zeile rot' }, h('span', { class: 'sym', 'aria-hidden': 'true' }, '⚠'), h('span', {}, `${w.text}: ${w.lang}`)));
-    if (nachkontrolleAbweichung(a) && !(w && w.schlecht)) out.push(h('div', { class: 'warn-zeile rot' }, h('span', { class: 'sym', 'aria-hidden': 'true' }, '⚠'), h('span', {}, 'Nachkontrolle: Die Excel weicht von dem ab, was geplant war.')));
-    const hin = liste(a.hinweise);
-    for (const x of hin.slice(0, 2)) out.push(h('div', { class: 'warn-zeile' }, h('span', { class: 'sym', 'aria-hidden': 'true' }, '⚠'), h('span', {}, h('span', { class: 'sr-only' }, 'Hinweis: '), text(x))));
-    if (hin.length > 2) out.push(h('div', { class: 'warn-mehr' }, `+ ${pl(hin.length - 2, 'weiterer Hinweis', 'weitere Hinweise')} (Zeile öffnen)`));
-    return out;
-  }
-
-  function statusZelle(a) {
-    const s = STATUS[a.status] || { text: text(a.status) || 'Unbekannt', farbe: 'grey' };
-    const w = WIRKUNG[a.wirkung];
-    const teile = [h('span', { class: 'badge ' + s.farbe }, s.text)];
-    if (w && w.schlecht) teile.push(h('span', { class: 'badge red' }, w.text));
-    else if (nachkontrolleAbweichung(a)) teile.push(h('span', { class: 'badge red' }, 'Abweichung'));
-    if (w && !w.schlecht) teile.push(h('span', { class: 'badge green' }, w.text));
-    return teile;
-  }
-
-  function konfZelle(a) {
-    const k = KONF[a.konfidenz];
-    return h('span', { class: 'konf' }, h('span', { class: 'dot ' + (k ? k.farbe : 'grey'), 'aria-hidden': 'true' }), text(a.konfidenz) || '–');
-  }
-
-  function zeile(a) {
-    const kannFreigeben = a.status === 'pruefen' && !state.ergebnis;
-    const chk = kannFreigeben ? h('label', { class: 'chk-ziel' }, h('input', { type: 'checkbox', 'aria-label': `Vorschlag ${a.id} übernehmen`,
-      onclick: (ev) => ev.stopPropagation(),
-      onchange: (ev) => { ev.target.checked ? state.freig.add(a.id) : state.freig.delete(a.id); zeichneAuswahl(); } })) : '';
-    if (chk) chk.firstChild.checked = state.freig.has(a.id);
-    const offen = state.offen.has(a.id);
-    const tr = h('tr', { class: 'row' + (hatProblem(a) ? ' bad' : hatHinweis(a) ? ' warn' : ''), tabindex: '0', 'data-id': a.id,
-      'aria-expanded': offen ? 'true' : 'false', 'aria-controls': 'detail-' + a.id,
-      onclick: (ev) => { if (!ev.target.closest('label, input, a, button')) schalteDetail(tr, a); },
-      onkeydown: (ev) => zeilenTaste(ev, tr, a) },
-      h('td', { class: 'col-chk' }, chk), h('td', {}, text(a.id)), h('td', {}, hatWort(a.seite)), h('td', {}, artText(a.typ)), h('td', {}, a.section || '–'),
-      h('td', { class: 'zeile-text' },
-        a.alt ? h('span', { class: 'alt' }, kurz(a.alt, 70)) : '', a.alt && a.neu ? h('span', { class: 'pfeil', 'aria-label': 'ersetzt durch' }, '→') : '',
-        a.neu ? h('span', { class: 'neu' }, kurz(a.neu, 70)) : '', warnZeilen(a)),
-      h('td', { class: 'col-opt' }, a.ziel || '–'),
-      h('td', { class: 'col-opt' }, konfZelle(a)),
-      h('td', {}, statusZelle(a)));
-    return tr;
-  }
-
-  function schalteDetail(tr, a) {
-    const folge = tr.nextElementSibling;
-    if (state.offen.has(a.id)) {
-      state.offen.delete(a.id);
-      if (folge && folge.classList.contains('detail')) folge.remove();
-      tr.setAttribute('aria-expanded', 'false');
-    } else {
-      state.offen.add(a.id);
-      tr.after(detail(a));
-      tr.setAttribute('aria-expanded', 'true');
-    }
-  }
-
-  function zeilenTaste(ev, tr, a) {
-    if (ev.target !== tr) return;                      // Tasten in der Checkbox gehören der Checkbox
-    const rows = [...$('tabelle').querySelectorAll('tr.row')];
-    const i = rows.indexOf(tr);
-    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); schalteDetail(tr, a); }
-    else if (ev.key === 'ArrowDown' && rows[i + 1]) { ev.preventDefault(); rows[i + 1].focus(); }
-    else if (ev.key === 'ArrowUp' && rows[i - 1]) { ev.preventDefault(); rows[i - 1].focus(); }
-    else if (ev.key === 'Home') { ev.preventDefault(); rows[0].focus(); }
-    else if (ev.key === 'End') { ev.preventDefault(); rows[rows.length - 1].focus(); }
-    else if (ev.key === 'Escape' && state.offen.has(a.id)) { ev.preventDefault(); schalteDetail(tr, a); }
-  }
-
-  function zeichneTabelle() {
-    const tb = $('tabelle');
-    const alle = aktuelleAenderungen();
-    const l = gefiltert();
-    $('treffer-info').textContent = `${l.length} von ${alle.length} Änderungen werden angezeigt.`;
-    if (!l.length) {
-      tb.replaceChildren(h('tr', {}, h('td', { colspan: 9, class: 'empty' }, alle.length ? 'Keine Einträge zu diesem Filter. Filter zurücksetzen, um alle zu sehen.' : 'In diesem Lauf wurden keine Änderungen erkannt.')));
-      $('mehr-zeile').hidden = true;
-      return;
-    }
-    const sicht = l.slice(0, state.limit);
-    const zeilen = [];
-    for (const a of sicht) {
-      const tr = zeile(a);
-      zeilen.push(tr);
-      if (state.offen.has(a.id)) zeilen.push(detail(a));
-    }
-    tb.replaceChildren(...zeilen);
-    const rest = l.length - sicht.length;
-    $('mehr-zeile').hidden = rest <= 0;
-    $('btn-mehr').textContent = `Weitere ${Math.min(rest, SEITENGROESSE)} anzeigen (${rest} noch ausgeblendet)`;
-  }
-
-  function vnBox(titel, kinder, info) {
-    return h('section', { class: 'vn-box' }, h('h4', {}, titel, info ? infoIcon(info) : ''), kinder);
-  }
-
-  function detail(a) {
-    const bild = h('figure', { class: 'detail-bild' },
-      h('img', { loading: 'lazy', alt: `Ausschnitt aus dem PDF, Seite ${hatWort(a.seite)}`, src: `/api/lauf/${lauf(state.plan.run_id)}/vorschau/${encodeURIComponent(a.id)}.png`,
-        onerror: (ev) => { const fig = ev.target.parentNode; ev.target.remove(); fig.append(h('p', { class: 'bild-fehlt' }, 'Der PDF-Ausschnitt konnte nicht geladen werden.')); } }),
-      h('figcaption', {}, `PDF-Ausschnitt, Seite ${hatWort(a.seite)}`));
-
-    const excel = vnBox('Dort steht jetzt', [
-      h('p', { class: 'vn-text' }, a.excel_text ? text(a.excel_text) : '– (an dieser Stelle ist kein Text hinterlegt)'),
-      h('p', { class: 'vn-meta' }, `Stelle in der Excel: ${a.ziel || '–'}`)], 'vorher_nachher');
-    const pdf = vnBox('Im PDF: alt → neu', [
-      a.alt ? h('p', { class: 'vn-text alt' }, text(a.alt)) : h('p', { class: 'vn-text hint' }, 'Alt: – (nichts Altes im PDF)'),
-      a.neu ? h('p', { class: 'vn-text neu' }, text(a.neu)) : h('p', { class: 'vn-text hint' }, 'Neu: – (der Text entfällt)'),
-      h('p', { class: 'vn-meta' }, `${artText(a.typ)} · Seite ${hatWort(a.seite)}`)]);
-
-    const hin = liste(a.hinweise), w = WIRKUNG[a.wirkung];
-    const wichtig = [];
-    if (w && w.schlecht) wichtig.push(h('li', {}, h('strong', {}, `${w.text}: `), w.lang));
-    if (nachkontrolleAbweichung(a)) wichtig.push(h('li', {}, h('strong', {}, 'Nachkontrolle: '), 'Die Excel weicht von dem ab, was geplant war.'));
-    const box = hin.length || wichtig.length ? h('div', { class: 'detail-hinweise' + (hatProblem(a) ? ' rot' : ''), role: 'group', 'aria-label': 'Hinweise zu dieser Änderung' },
-      h('strong', {}, '⚠ Bitte beachten'), h('ul', {}, wichtig, hin.map((x) => h('li', {}, text(x))))) : '';
-
-    const konf = KONF[a.konfidenz] ? a.konfidenz : text(a.konfidenz) || '–';
-    const kv = h('dl', { class: 'kv' },
-      h('dt', {}, 'Sicherheit'), h('dd', {}, `${konf}${a.score ? ` (Übereinstimmung ${Math.round(zahl(a.score) * 100)} %)` : ''}`),
-      h('dt', {}, 'Grund'), h('dd', {}, a.grund || '–'),
-      h('dt', {}, 'Wirkung in der Excel'), h('dd', {}, w ? `${w.text}. ${w.lang}` : 'Noch nicht angewendet.'),
-      h('dt', {}, 'Wörter'), h('dd', {}, hatWort(a.woerter)),
-      a.kontext ? [h('dt', {}, 'Umgebung im PDF'), h('dd', {}, kurz(a.kontext, 400))] : '');
-
-    return h('tr', { class: 'detail', id: 'detail-' + a.id }, h('td', { colspan: 9 },
-      h('div', { class: 'detail-grid' }, bild, h('div', {}, h('div', { class: 'vn-grid' }, excel, pdf), box, kv))));
-  }
-
-  // ------------------------------------------------------------------ Auswahl der Vorschläge
-  const vorschlaege = () => liste(state.plan && state.plan.aenderungen).filter((a) => a.status === 'pruefen');
-
-  function zeichneAuswahl() {
-    const p = state.plan;
-    if (!p) return;
-    const fertig = !!state.ergebnis;
-    const v = vorschlaege();
-    $('auswahl-zeile').hidden = fertig || !v.length;
-    $('chk-alle').closest('label').hidden = fertig || !v.length;
-    $('auswahl-info').textContent = `${state.freig.size} von ${pl(v.length, 'Vorschlag', 'Vorschlägen')} freigegeben`;
-    const sicht = gefiltert().filter((a) => a.status === 'pruefen');
-    const gew = sicht.filter((a) => state.freig.has(a.id)).length;
-    const c = $('chk-alle');
-    c.checked = sicht.length > 0 && gew === sicht.length;
-    c.indeterminate = gew > 0 && gew < sicht.length;
-    c.disabled = !sicht.length;
-    for (const cb of $('tabelle').querySelectorAll('tr.row input[type=checkbox]')) {
-      const id = cb.closest('tr').dataset.id;
-      cb.checked = state.freig.has(id);
-    }
-    // Knopf
-    const bt = $('btn-uebernehmen');
-    const hat = state.ergebnisse.length > 0;
-    bt.textContent = (hat ? 'Weiteres Ergebnis erzeugen' : 'Excel erzeugen') + (state.freig.size ? ` (${pl(state.freig.size, 'Vorschlag', 'Vorschläge')} freigegeben)` : '');
-    bt.hidden = fertig;
-    $('btn-zurueck-auswahl').hidden = !fertig;
-  }
-
-  function waehle(ids, an) {
-    for (const id of ids) an ? state.freig.add(id) : state.freig.delete(id);
-    zeichneAuswahl();
-  }
-
-  // ------------------------------------------------------------------ Farben
-  const FARBE_OK = /^#[0-9a-f]{3,8}$/i;
-  function zeichneFarben() {
-    const p = state.plan;
-    $('farben-leer').hidden = !!p;
-    $('farben-inhalt').hidden = !p;
-    if (!p) return;
-    const fl = liste(p.farben);
-    $('farben-sub').textContent = fl.length ? `Farben im PDF „${text(p.pdf_name)}“ und wie sie gedeutet werden.` : 'Im PDF wurden keine Farben erkannt oder der Lauf hat keine Farbübersicht gespeichert.';
-    $('farben-tabelle').replaceChildren(...fl.map((f) => {
-      const feld = h('span', { class: 'farbe-feld', 'aria-hidden': 'true' });
-      if (FARBE_OK.test(text(f.farbe))) feld.style.backgroundColor = f.farbe;       // Farbe des PDFs, keine Dashboard-Farbe
-      return h('tr', {}, h('td', {}, feld, text(f.farbe)), h('td', { class: 'zahl' }, hatWort(f.zeichen)), h('td', {}, text(f.art)),
-        h('td', {}, text(f.klasse) === '-' ? '–' : text(f.klasse)), h('td', {}, text(f.bedeutung)));
-    }));
-  }
-
-  // ------------------------------------------------------------------ Aktionen
-  async function uebernehmen() {
-    if (!state.plan || state.ergebnis) return;
-    const b = state.plan.bilanz || {};
-    if (!zahl(b.uebernommen) && !state.freig.size) { toastFehler('Es gibt nichts Sicheres zu übernehmen. Wähle Vorschläge aus oder prüfe die Liste.'); return; }
-    if (state.ergebnisse.length && !confirm(`Für diesen Lauf gibt es schon ${pl(state.ergebnisse.length, 'Ergebnis', 'Ergebnisse')}. Soll ein weiteres Ergebnis erzeugt werden? Die früheren bleiben erhalten.`)) return;
-    busy(true, 'Trage die Änderungen in eine Kopie der Excel ein …');
-    try {
-      const id = state.plan.run_id;
-      const res = await api(`/lauf/${lauf(id)}/uebernehmen`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ freigaben: [...state.freig] }) });
-      state.ergebnis = res;
-      try { state.ergebnisse = liste((await api('/lauf/' + lauf(id))).ergebnisse); }
-      catch (_) { state.ergebnisse = [...state.ergebnisse, { ordner: res.ordner, excel: res.excel, bilanz: res.bilanz, erstellt: '', freigaben: [...state.freig] }]; }
-      state.f = neuerFilter();
-      state.limit = SEITENGROESSE;
-      zeichne();
-      busy(false);
-      toast('Das Ergebnis ist fertig. Die Excel und das Protokoll stehen zum Download bereit.');
-      $('ergebnis-box').scrollIntoView({ block: 'nearest' });
-      $('ergebnis-box').focus();
-    } catch (e) { meldeFehler(e); } finally { busy(false); }
-  }
-
-  function zurueckZurAuswahl() {
-    state.ergebnis = null;
-    state.f = neuerFilter();
-    state.limit = SEITENGROESSE;
-    zeichne();
-    $('btn-uebernehmen').focus();
-  }
-
-  // ------------------------------------------------------------------ Verlauf
-  function laufKarte(r) {
-    const st = LAUF_STATUS[r.status] || { text: 'Unbekannter Zustand', farbe: 'grey', offen: false };
-    const name = r.pdf && r.excel ? `${r.pdf} → ${r.excel}` : `Lauf ${text(r.run_id)}`;
-    const b = r.bilanz && typeof r.bilanz === 'object' ? r.bilanz : null;
+  // Zuletzt: die letzten Abgleiche
+  function laufZeile(r) {
+    const st = LAUF_STATUS[r.status] || { text: 'unbekannter Zustand', offen: false, warn: true };
+    const name = r.pdf && r.excel ? `${r.pdf} → ${r.excel}` : `Abgleich ${text(r.run_id)}`;
     const meta = [fmtZeit(r.angelegt)];
-    if (b) meta.push(`${pl(zahl(b.aenderungen), 'Änderung', 'Änderungen')}`, `${zahl(b.pruefen)} zu prüfen`, `${zahl(b.nicht_uebernommen)} nicht übernommen`);
-    meta.push(pl(zahl(r.ergebnisse), 'Ergebnis', 'Ergebnisse'));
-    const badges = [h('span', { class: 'badge ' + st.farbe }, st.text)];
-    if (r.archiviert) badges.push(h('span', { class: 'badge grey' }, 'Archiviert'));
-    if (b && b.stimmt === false) badges.push(h('span', { class: 'badge red' }, 'Bilanz stimmt nicht'));
-    if (b && b.vollstaendig === false) badges.push(h('span', { class: 'badge amber' }, 'Unvollständig gelesen'));
-    if (b && zahl(b.nachkontrolle_abweichungen)) badges.push(h('span', { class: 'badge red' }, pl(zahl(b.nachkontrolle_abweichungen), 'Abweichung', 'Abweichungen')));
-    const knoepfe = [];
-    if (st.offen) knoepfe.push(h('button', { class: 'btn btn-primary btn-small', type: 'button', 'aria-label': `Lauf öffnen: ${name}`, onclick: () => laden(r.run_id) }, 'Öffnen'));
-    knoepfe.push(r.archiviert
-      ? h('button', { class: 'btn btn-secondary btn-small', type: 'button', 'aria-label': `Lauf wiederherstellen: ${name}`, onclick: () => wiederherstellen(r.run_id) }, 'Wiederherstellen')
-      : h('button', { class: 'btn btn-secondary btn-small', type: 'button', 'aria-label': `Lauf archivieren: ${name}`, onclick: () => archivieren(r.run_id) }, 'Archivieren'));
-    return h('li', { class: 'run-card' + (r.archiviert ? ' archiviert' : '') },
-      h('div', { class: 'run-info' }, h('div', { class: 'run-name' }, name), h('div', { class: 'meta' }, meta.filter(Boolean).join(' · ')),
-        h('div', { class: 'badges' }, badges), r.meldung ? h('p', { class: 'run-meldung' }, text(r.meldung)) : ''),
-      h('div', { class: 'run-knoepfe' }, knoepfe));
+    if (r.status === 'uebernommen') meta.push(pl(zahl(r.ergebnisse), 'Excel erstellt', 'Excel-Dateien erstellt'));
+    else meta.push(h('span', { class: st.warn ? 'warn' : '' }, st.text));
+    if (r.archiviert) meta.push('archiviert');
+    const teile = meta.filter(Boolean).flatMap((m, i) => (i ? [' · ', m] : [m]));
+    const menu = h('details', { class: 'menu' });
+    const eintrag = r.archiviert
+      ? h('button', { class: 'menu-eintrag', type: 'button', onclick: () => { menu.open = false; wiederherstellen(r.run_id); } }, 'Wiederherstellen')
+      : h('button', { class: 'menu-eintrag', type: 'button', onclick: () => { menu.open = false; archivieren(r.run_id); } }, 'Archivieren');
+    menu.append(h('summary', { class: 'menu-knopf', 'aria-label': `Mehr zu ${name}`, title: 'Mehr' }, h('span', { 'aria-hidden': 'true' }, '⋯')),
+      h('div', { class: 'menu-liste' }, eintrag));
+    return h('li', { class: 'lauf-zeile' + (r.archiviert ? ' archiviert' : '') },
+      h('div', { class: 'lauf-info' }, h('div', { class: 'lauf-titel' }, name), h('div', { class: 'lauf-meta' }, teile),
+        r.meldung ? h('div', { class: 'lauf-meta' }, text(r.meldung)) : ''),
+      h('div', { class: 'lauf-knoepfe' },
+        st.offen ? h('button', { class: 'btn btn-secondary btn-small', type: 'button', 'aria-label': `Öffnen: ${name}`, onclick: () => laden(r.run_id) }, 'Öffnen') : '',
+        menu));
   }
 
-  async function ladeVerlauf() {
-    const box = $('verlauf-liste');
+  async function ladeZuletzt() {
+    const box = $('zuletzt-liste');
     try {
       const l = liste(await api(state.zeigeArchiv ? '/lauf?archiviert=1' : '/lauf'));
+      const knopf = $('btn-zuletzt-alle');
+      knopf.hidden = l.length <= ZULETZT;
+      knopf.textContent = state.zuletztAlle ? 'Weniger anzeigen' : `Alle ${l.length} anzeigen`;
       if (!l.length) {
-        box.replaceChildren(h('p', { class: 'empty' }, state.zeigeArchiv ? 'Es gibt noch keine Läufe.' : 'Noch keine Läufe. Starte einen neuen Lauf im ersten Tab.'));
+        box.replaceChildren(h('p', { class: 'leer' }, state.zeigeArchiv ? 'Es gibt noch keine Abgleiche.' : 'Noch keine Abgleiche. Lege oben die zwei Dateien ab.'));
         return;
       }
-      box.replaceChildren(h('ul', { class: 'run-liste' }, l.map(laufKarte)));
+      box.replaceChildren(h('ul', { class: 'lauf-liste' }, (state.zuletztAlle ? l : l.slice(0, ZULETZT)).map(laufZeile)));
     } catch (e) {
-      box.replaceChildren(h('p', { class: 'empty' }, e.message));
-      meldeFehler(e);
+      box.replaceChildren(h('p', { class: 'leer' }, e.message));
+      if (!(e instanceof ApiFehler)) meldeFehler(e);
     }
   }
 
   async function laden(id) {
-    busy(true, 'Lade Lauf …');
-    try { oeffne(await api('/lauf/' + lauf(id))); }
-    catch (e) { meldeFehler(e); } finally { busy(false); }
+    busy(true, 'Abgleich wird geöffnet …');
+    let plan;
+    try { plan = await api('/lauf/' + lauf(id)); } catch (e) { busy(false); meldeFehler(e); return; }
+    busy(false);
+    oeffne(plan);
   }
 
   async function archivieren(id) {
     try {
       await api('/lauf/' + lauf(id), { method: 'DELETE' });
-      toast('Der Lauf ist archiviert. Er bleibt auf diesem Rechner erhalten. Unter „Archivierte anzeigen“ kannst du ihn wiederherstellen.');
-      if (state.plan && state.plan.run_id === id) { state.plan.archiviert = true; $('archiv-hinweis').hidden = false; }
-      await ladeVerlauf();
-      $('verlauf-titel').focus();
+      toast('Archiviert. Der Abgleich bleibt auf diesem Rechner erhalten. Unter „Archivierte anzeigen“ kannst du ihn wiederherstellen.');
+      if (state.plan && state.plan.run_id === id) state.plan.archiviert = true;
+      await ladeZuletzt();
+      $('zuletzt-titel').focus();
     } catch (e) { meldeFehler(e); }
   }
 
   async function wiederherstellen(id) {
     try {
       await api(`/lauf/${lauf(id)}/wiederherstellen`, { method: 'POST' });
-      toast('Der Lauf ist wiederhergestellt.');
-      if (state.plan && state.plan.run_id === id) { state.plan.archiviert = false; $('archiv-hinweis').hidden = true; }
-      if ($('tab-verlauf').hidden === false) { await ladeVerlauf(); $('verlauf-titel').focus(); }
+      toast('Der Abgleich ist wiederhergestellt.');
+      if (state.plan && state.plan.run_id === id) state.plan.archiviert = false;
+      await ladeZuletzt();
+      $('zuletzt-titel').focus();
     } catch (e) { meldeFehler(e); }
   }
 
-  // ------------------------------------------------------------------ Start
-  function verdrahteFilter() {
-    let zeit = null;
-    $('f-suche').addEventListener('input', (ev) => { clearTimeout(zeit); zeit = setTimeout(() => { state.f.suche = ev.target.value; neuFiltern(); }, 150); });
-    const feld = { 'f-typ': 'typ', 'f-seite': 'seite', 'f-section': 'section', 'f-konfidenz': 'konfidenz', 'f-sort': 'sort' };
-    for (const [id, key] of Object.entries(feld)) $(id).addEventListener('change', (ev) => { state.f[key] = ev.target.value; neuFiltern(); });
-    $('btn-filter-reset').addEventListener('click', () => { const s = state.f.sort; state.f = neuerFilter(); state.f.sort = s; fuelleFilter(); neuFiltern(); });
-    $('btn-nur-vorschlaege').addEventListener('click', () => { state.f = { ...neuerFilter(), status: 'pruefen' }; fuelleFilter(); neuFiltern(); });
-    $('btn-mehr').addEventListener('click', () => { state.limit += SEITENGROESSE; zeichneTabelle(); });
-    $('btn-alle-vorschlaege').addEventListener('click', () => waehle(vorschlaege().map((a) => a.id), true));
-    $('btn-sichtbare').addEventListener('click', () => waehle(gefiltert().filter((a) => a.status === 'pruefen').map((a) => a.id), true));
-    $('btn-keine').addEventListener('click', () => waehle([...state.freig], false));
-    $('chk-alle').addEventListener('change', (ev) => waehle(gefiltert().filter((a) => a.status === 'pruefen').map((a) => a.id), ev.target.checked));
+  // ------------------------------------------------------------------ Einen Abgleich öffnen
+  function oeffne(plan) {
+    state.plan = plan;
+    state.ergebnisse = liste(plan.ergebnisse);
+    state.entscheid = new Map();
+    state.abwahl = new Set();
+    state.suche = '';
+    state.autoLimit = AUTO_SEITE;
+    $('suche-auto').value = '';
+    $('klapp-auto').open = false;
+    $('klapp-nicht').open = false;
+    const letzte = state.ergebnisse[state.ergebnisse.length - 1];
+    state.ergebnis = letzte ? { ...letzte, aenderungen: null, frueher: true } : null;
+    if (letzte) {                                      // die Entscheidungen der letzten Excel wieder vorbelegen
+      const v = new Set(vorschlaege().map((a) => a.id)), au = new Set(automatische().map((a) => a.id));
+      for (const id of liste(letzte.freigaben)) if (v.has(id)) state.entscheid.set(id, 'ja');
+      for (const id of liste(letzte.abwahl)) if (au.has(id)) state.abwahl.add(id);
+    }
+    zeichnePruefen();
+    if (letzte) zeichneFertig();
+    zeigeSchritt(letzte ? 'fertig' : 'pruefen');
   }
 
+  function neuerAbgleich() {
+    state.plan = null;
+    state.ergebnis = null;
+    state.ergebnisse = [];
+    state.entscheid = new Map();
+    state.abwahl = new Set();
+    dateienZuruecksetzen();
+    $('fachleute').open = false;
+    zeigeSchritt('dateien');
+  }
+
+  // ------------------------------------------------------------------ Darstellung einer Änderung
+  function ortText(a) {
+    const s = text(a.section);
+    const teile = [s ? (/^\d/.test(s) ? `Section ${s}` : s) : `Seite ${hatWort(a.seite)}`];
+    const z = text(a.ziel);
+    let m = /Zeile\s+(\d+)\s*\(neu\)\s*$/.exec(z);
+    if (m) teile.push(`neue Zeile ${m[1]}`);
+    else if ((m = /![A-Z]{1,3}(\d+)(?::[A-Z]{1,3}\d+)?$/.exec(z))) teile.push(`Zeile ${m[1]}`);
+    return teile.join(' · ');
+  }
+
+  function grundText(a) {
+    const g = text(a.grund_einfach) || text(a.grund);
+    if (g) return g;
+    if (kat(a) === 'ausserhalb') return 'Gehört nicht zur CDE (zum Beispiel Deckblatt oder Revisionstabelle).';
+    if (kat(a) === 'pruefen') return 'Das Tool ist sich an dieser Stelle nicht sicher.';
+    return '–';
+  }
+
+  const altEl = (t) => h('del', { class: 'st-alt' }, h('span', { class: 'sr-only' }, '[fällt weg: '), t, h('span', { class: 'sr-only' }, ']'));
+  const neuEl = (t) => h('ins', { class: 'st-neu' }, h('span', { class: 'sr-only' }, '[kommt dazu: '), t, h('span', { class: 'sr-only' }, ']'));
+  const stuecke = (a) => liste(a.stuecke).filter((s) => Array.isArray(s) && s.length >= 2 && typeof s[1] === 'string');
+  const ausgelassen = () => h('span', { class: 'ausgelassen', 'aria-label': 'Text ausgelassen' }, '…');
+
+  function gekuerzt(t, erstes, letztes) {
+    if (erstes && letztes) return t.length > 2 * RAND ? [t.slice(0, RAND), ausgelassen()] : [t];
+    if (erstes) return t.length > RAND ? [ausgelassen(), t.slice(-RAND)] : [t];
+    if (letztes) return t.length > RAND ? [t.slice(0, RAND), ausgelassen()] : [t];
+    return t.length > 2 * RAND ? [t.slice(0, RAND), ' ', ausgelassen(), ' ', t.slice(-RAND)] : [t];
+  }
+
+  function fuelleVorschau(p, st, kuerzen) {
+    p.replaceChildren(...st.flatMap(([fmt, t], i) => {
+      if (fmt === 'alt') return [altEl(t)];
+      if (fmt === 'neu') return [neuEl(t)];
+      return kuerzen ? gekuerzt(t, i === 0, i === st.length - 1) : [t];
+    }));
+  }
+
+  // Ergebnis-Vorschau genau wie in der Excel (stuecke); ohne stuecke wie früher: alt durchgestrichen, neu farbig.
+  function vorschau(a) {
+    const p = h('p', { class: 'vorschau' });
+    const st = stuecke(a);
+    if (!st.length) {
+      if (!a.alt && !a.neu) { p.classList.add('vorschau-leer'); p.textContent = '(kein Text)'; return p; }
+      p.append(...[a.alt ? altEl(text(a.alt)) : '', a.alt && a.neu ? ' ' : '', a.neu ? neuEl(text(a.neu)) : ''].filter(Boolean));
+      return p;
+    }
+    const lang = st.some(([fmt, t]) => fmt === 'normal' && t.length > 2 * RAND);
+    fuelleVorschau(p, st, lang);
+    if (!lang) return p;
+    let ganz = false;
+    const knopf = h('button', { class: 'link-btn mehr-text', type: 'button', 'aria-expanded': 'false', onclick: () => {
+      ganz = !ganz;
+      fuelleVorschau(p, st, !ganz);
+      knopf.setAttribute('aria-expanded', ganz ? 'true' : 'false');
+      knopf.textContent = ganz ? 'Weniger zeigen' : 'Ganzen Text zeigen';
+    } }, 'Ganzen Text zeigen');
+    return h('div', {}, p, knopf);
+  }
+
+  function bildPdf(a) {
+    return h('figure', { class: 'im-pdf' }, h('figcaption', {}, `Im PDF · Seite ${hatWort(a.seite)}`),
+      h('img', { loading: 'lazy', alt: `Ausschnitt aus dem PDF, Seite ${hatWort(a.seite)}`,
+        src: `/api/lauf/${lauf(state.plan.run_id)}/vorschau/${encodeURIComponent(a.id)}.png`,
+        onerror: (ev) => { const fig = ev.target.parentNode; ev.target.remove(); if (fig) fig.append(h('p', { class: 'bild-fehlt' }, 'Der PDF-Ausschnitt konnte nicht geladen werden.')); } }));
+  }
+
+  const grundZeile = (a) => h('p', { class: 'grund' }, h('span', { class: 'grund-label' }, 'Grund'), grundText(a));
+
+  // ------------------------------------------------------------------ Schritt 2: Prüfen
+  function statusText(e) {
+    if (e === 'ja') return [h('span', { 'aria-hidden': 'true' }, '✓'), 'Wird übernommen'];
+    if (e === 'nein') return [h('span', { 'aria-hidden': 'true' }, '✕'), 'Wird nicht übernommen'];
+    return [h('span', { 'aria-hidden': 'true' }, '●'), 'Noch offen'];
+  }
+
+  function karteBitte(a) {
+    const e = state.entscheid.get(a.id) || '';
+    const tid = 'kt-' + sicher(a.id), sid = 'ks-' + sicher(a.id);
+    const knopf = (wert, beschriftung) => h('button', { class: `btn btn-secondary entscheid ${wert}`, type: 'button', 'data-wert': wert,
+      'aria-pressed': e === wert ? 'true' : 'false', 'aria-describedby': tid, onclick: () => entscheide(a.id, wert, false) }, beschriftung);
+    return h('li', {}, h('article', { class: 'karte', tabindex: '0', 'data-id': a.id, 'data-entscheid': e || 'offen', 'aria-labelledby': tid, 'aria-describedby': sid },
+      h('div', { class: 'karte-kopf' }, h('h3', { id: tid }, ortText(a)), h('p', { class: 'karte-status', id: sid }, statusText(e))),
+      vorschau(a),
+      grundZeile(a),
+      h('div', { class: 'karte-unten' }, bildPdf(a),
+        h('div', { class: 'entscheid-knoepfe', role: 'group', 'aria-label': 'Entscheidung' }, knopf('ja', 'Übernehmen'), knopf('nein', 'Nicht übernehmen')))));
+  }
+
+  function karteZu(listeId, id) { return [...$(listeId).querySelectorAll('.karte')].find((k) => k.dataset.id === id) || null; }
+
+  function aktualisiereKarte(id) {
+    const k = karteZu('karten-bitte', id);
+    if (!k) return;
+    const e = state.entscheid.get(id) || '';
+    k.dataset.entscheid = e || 'offen';
+    for (const b of k.querySelectorAll('.entscheid')) b.setAttribute('aria-pressed', b.dataset.wert === e ? 'true' : 'false');
+    k.querySelector('.karte-status').replaceChildren(...statusText(e));
+  }
+
+  function entscheide(id, wert, weiter) {
+    if (state.entscheid.get(id) === wert && !weiter) state.entscheid.delete(id);    // erneuter Klick hebt die Entscheidung auf
+    else state.entscheid.set(id, wert);
+    aktualisiereKarte(id);
+    zeichneFortschritt();
+    if (weiter) naechsteOffene(id);
+  }
+
+  function naechsteOffene(id) {
+    const karten = [...$('karten-bitte').querySelectorAll('.karte')];
+    const i = karten.findIndex((k) => k.dataset.id === id);
+    const reihe = [...karten.slice(i + 1), ...karten.slice(0, Math.max(i, 0))];
+    const ziel = reihe.find((k) => !state.entscheid.has(k.dataset.id));
+    if (ziel) fokusKarte(ziel);
+    else if (karten[i + 1]) fokusKarte(karten[i + 1]);
+    else $('btn-excel').focus();
+  }
+
+  function fokusKarte(k) {
+    k.focus({ preventScroll: true });
+    k.scrollIntoView({ block: 'nearest', behavior: reduziert() ? 'auto' : 'smooth' });
+  }
+
+  function karteAuto(a) {
+    const tid = 'ka-' + sicher(a.id);
+    const ab = state.abwahl.has(a.id);
+    const partner = a.gruppe ? automatische().filter((x) => x.gruppe === a.gruppe && x.id !== a.id).length : 0;
+    const hinweis = h('p', { class: 'gruppe-hinweis', hidden: !(ab && partner) },
+      `Hängt mit ${pl(partner, 'weiteren Änderung', 'weiteren Änderungen')} zusammen. ${partner === 1 ? 'Die wird' : 'Die werden'} dann auch nicht eingetragen.`);
+    const cb = h('input', { type: 'checkbox', role: 'switch', 'aria-describedby': tid, onchange: (ev) => setzeAbwahl(a.id, ev.target.checked) });
+    cb.checked = ab;
+    const karte = h('article', { class: 'karte kompakt' + (ab ? ' abgewaehlt' : ''), tabindex: '0', 'data-id': a.id, 'data-partner': String(partner), 'aria-labelledby': tid },
+      h('div', { class: 'karte-kopf' }, h('h3', { id: tid }, ortText(a)), h('label', { class: 'schalter' }, cb, 'Trotzdem nicht eintragen')),
+      vorschau(a), hinweis,
+      h('details', { class: 'mini' }, h('summary', {}, 'Im PDF ansehen'), bildPdf(a), grundZeile(a)));
+    return h('li', {}, karte);
+  }
+
+  function setzeAbwahl(id, an) {
+    if (an) state.abwahl.add(id); else state.abwahl.delete(id);
+    const k = karteZu('karten-auto', id);
+    if (k) {
+      k.classList.toggle('abgewaehlt', an);
+      k.querySelector('input[type=checkbox]').checked = an;
+      k.querySelector('.gruppe-hinweis').hidden = !(an && Number(k.dataset.partner) > 0);
+    }
+    zeichneFortschritt();
+  }
+
+  function autoTreffer() {
+    const woerter = state.suche.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!woerter.length) return automatische();
+    return automatische().filter((a) => {
+      const heu = [a.alt, a.neu, a.section, a.ziel, a.grund_einfach, a.grund, ...stuecke(a).map((s) => s[1])].map(text).join('\n').toLowerCase();
+      return woerter.every((w) => heu.includes(w));
+    });
+  }
+
+  function zeichneAuto() {
+    const alle = automatische(), l = autoTreffer();
+    const sicht = l.slice(0, state.autoLimit);
+    $('karten-auto').replaceChildren(...sicht.map(karteAuto));
+    const knopf = $('btn-auto-alle');
+    knopf.hidden = l.length <= sicht.length;
+    knopf.textContent = `Alle ${l.length} anzeigen`;
+    $('suche-info').textContent = state.suche ? `${l.length} von ${alle.length} gefunden.` : '';
+  }
+
+  function zeichneNicht() {
+    $('liste-nicht').replaceChildren(...nichtEingetragen().map((a) => {
+      const st = stuecke(a).filter(([fmt]) => fmt !== 'normal').map((s) => s[1]).join(' ');
+      return h('li', {}, h('span', { class: 'nicht-ort' }, ortText(a)), h('span', { class: 'nicht-text' }, `„${kurz(st || a.neu || a.alt, 140)}“`),
+        h('span', { class: 'nicht-grund' }, `Grund: ${grundText(a)}`));
+    }));
+  }
+
+  function zeichnePruefen() {
+    const p = state.plan;
+    if (!p) return;
+    $('lauf-name').textContent = `${text(p.pdf_name)} → ${text(p.excel_name)}${p.archiviert ? ' · archiviert' : ''}`;
+    const bitte = vorschlaege();
+    $('anzahl-bitte').textContent = String(bitte.length);
+    $('karten-bitte').replaceChildren(...bitte.map(karteBitte));
+    $('bitte-leer').hidden = bitte.length > 0;
+    $('btn-alle-ja').hidden = bitte.length < 2;
+    $('anzahl-auto').textContent = String(automatische().length);
+    $('anzahl-nicht').textContent = String(nichtEingetragen().length);
+    $('klapp-auto').hidden = !automatische().length;
+    $('klapp-nicht').hidden = !nichtEingetragen().length;
+    zeichneAuto();
+    zeichneNicht();
+    zeichneFortschritt();
+  }
+
+  function zeichneFortschritt() {
+    if (!state.plan) return;
+    const z = zusammenfassung();
+    const bitte = vorschlaege();
+    const erledigt = bitte.filter((a) => state.entscheid.has(a.id)).length;
+    const ja = bitte.filter((a) => state.entscheid.get(a.id) === 'ja').length;
+    const abw = automatische().filter((a) => state.abwahl.has(a.id)).length;
+    const teile = [`${pl(zahl(z.gesamt), 'Änderung', 'Änderungen')} gefunden`,
+      `${zahl(z.automatisch)} automatisch eingetragen${abw ? ` (${abw} abgewählt)` : ''}`,
+      `${bitte.length} bitte prüfen (${erledigt} erledigt)`];
+    const draussen = zahl(z.ausserhalb) + zahl(z.nicht);
+    if (draussen) teile.push(`${draussen} nicht in der CDE`);
+    $('fortschritt-satz').textContent = teile.join(' · ');
+    const balken = $('fortschritt');
+    balken.hidden = !bitte.length;
+    balken.setAttribute('aria-valuemax', String(bitte.length));
+    balken.setAttribute('aria-valuenow', String(erledigt));
+    balken.setAttribute('aria-valuetext', `${erledigt} von ${bitte.length} Vorschlägen geprüft`);
+    $('fortschritt-fuellung').style.width = bitte.length ? `${Math.round((erledigt / bitte.length) * 100)}%` : '0%';
+
+    const offen = bitte.length - erledigt;
+    const saetze = [];
+    if (offen) saetze.push(`${offen === 1 ? '1 Vorschlag ist' : `${offen} Vorschläge sind`} noch offen und ${offen === 1 ? 'wird' : 'werden'} nicht eingetragen.`);
+    else if (bitte.length) saetze.push('Alle Vorschläge sind entschieden.');
+    saetze.push(`Eingetragen ${automatische().length - abw + ja === 1 ? 'wird 1 Änderung' : `werden ${automatische().length - abw + ja} Änderungen`}.`);
+    if (state.ergebnisse.length) saetze.push(`Zu diesem Abgleich gibt es schon ${pl(state.ergebnisse.length, 'Excel', 'Excel-Dateien')}; eine neue kommt dazu, die frühere bleibt.`);
+    $('excel-hinweis').textContent = saetze.join(' ');
+  }
+
+  async function excelErstellen() {
+    if (!state.plan) return;
+    const freigaben = vorschlaege().filter((a) => state.entscheid.get(a.id) === 'ja').map((a) => a.id);
+    const abwahl = automatische().filter((a) => state.abwahl.has(a.id)).map((a) => a.id);
+    if (automatische().length - abwahl.length + freigaben.length <= 0) {
+      toastFehler('Es gibt nichts einzutragen. Gib mindestens einen Vorschlag mit „Übernehmen“ frei.');
+      return;
+    }
+    const id = state.plan.run_id;
+    busy(true, 'Excel wird erstellt …', 'Die Änderungen werden in eine Kopie deiner Excel eingetragen. Das Original bleibt unverändert.');
+    let res;
+    try {
+      res = await api(`/lauf/${lauf(id)}/uebernehmen`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ freigaben, abwahl }) });
+    } catch (e) { busy(false); meldeFehler(e); return; }
+    state.ergebnis = res;
+    try { state.ergebnisse = liste((await api('/lauf/' + lauf(id))).ergebnisse); }
+    catch (_) { state.ergebnisse = [...state.ergebnisse, { ordner: res.ordner, excel: res.excel, bilanz: res.bilanz, erstellt: '', freigaben, abwahl }]; }
+    busy(false);
+    zeichneFertig();
+    zeichneFortschritt();
+    zeigeSchritt('fertig');
+    toast('Die neue Excel ist fertig.');
+  }
+
+  // ------------------------------------------------------------------ Schritt 3: Fertig
+  const dlPfad = (ordner, name) => `/api/lauf/${lauf(state.plan.run_id)}/download/${encodeURIComponent(ordner)}/${encodeURIComponent(name)}`;
+
+  function zeichneFertig() {
+    const e = state.ergebnis;
+    if (!e || !state.plan) return;
+    const b = e.bilanz || {};
+    const abw = zahl(b.nachkontrolle_abweichungen);
+    const problem = b.stimmt !== true || abw > 0;
+    $('fertig-symbol').textContent = problem ? '!' : '✓';
+    $('fertig-symbol').classList.toggle('warn', problem);
+    $('titel-fertig').textContent = problem ? 'Fertig – bitte kurz ansehen.' : 'Fertig.';
+    const wann = e.frueher && fmtZeit(e.erstellt) ? ` (erstellt am ${fmtZeit(e.erstellt)})` : '';
+    $('fertig-satz').textContent = `${pl(zahl(b.uebernommen), 'Änderung', 'Änderungen')} eingetragen.${wann}`;
+    const warn = [];
+    if (abw) {
+      const betroffen = liste(e.aenderungen).filter((a) => a.nachkontrolle === 'abweichung' || a.wirkung === 'keine' || a.wirkung === 'abweichung');
+      warn.push(h('div', { class: 'banner gelb', role: 'status' }, h('span', { class: 'banner-symbol', 'aria-hidden': 'true' }, '!'),
+        h('div', { class: 'banner-inhalt' },
+          h('div', { class: 'banner-titel' }, `Bei ${pl(abw, 'Änderung', 'Änderungen')} ist die Excel nicht genau so geworden wie geplant`),
+          h('p', { class: 'banner-text' }, 'Sie sind im Protokoll markiert. Bitte diese Stellen in der neuen Excel ansehen.'),
+          betroffen.length ? h('ul', { class: 'banner-liste' }, betroffen.slice(0, 20).map((a) => h('li', {}, `${ortText(a)}: ${grundText(a)}`))) : '')));
+    }
+    $('fertig-warn').replaceChildren(...warn);
+    $('fertig-knoepfe').replaceChildren(
+      h('a', { class: 'btn btn-primary', href: dlPfad(e.ordner, e.excel), download: '' }, 'Excel herunterladen'),
+      h('a', { class: 'btn btn-secondary', href: dlPfad(e.ordner, 'aenderungsprotokoll.xlsx'), download: '' }, 'Protokoll herunterladen'),
+      h('button', { class: 'btn btn-secondary', type: 'button', onclick: neuerAbgleich }, 'Neuer Abgleich'));
+  }
+
+  // ------------------------------------------------------------------ Warnungen oben (nur wenn etwas nicht stimmt)
+  let warnSchluessel = '';
+  function banner(farbe, titel, satz) {
+    return h('div', { class: 'banner ' + farbe, role: 'alert' }, h('span', { class: 'banner-symbol', 'aria-hidden': 'true' }, '!'),
+      h('div', { class: 'banner-inhalt' }, h('div', { class: 'banner-titel' }, titel), h('p', { class: 'banner-text' }, satz)));
+  }
+  function zeichneWarnungen() {
+    const out = [];
+    if (state.plan && state.schritt !== 'dateien') {
+      const b = (state.schritt === 'fertig' && state.ergebnis && state.ergebnis.bilanz) || state.plan.bilanz || {};
+      if (b.stimmt === false) {
+        out.push(['bilanz', banner('rot', 'Die Bilanz stimmt nicht',
+          'Die im PDF markierten Wörter passen nicht zu den gefundenen Änderungen. Es kann etwas verloren gegangen sein. Bitte das Ergebnis nicht verwenden und den Fehler melden.')]);
+      }
+      const luecken = liste(state.plan.luecken);
+      if (b.vollstaendig === false || luecken.length) {
+        const seiten = [...new Set(luecken.map((l) => l.seite).filter((s) => typeof s === 'number'))].sort((x, y) => x - y);
+        const wo = seiten.length ? `${seiten.length === 1 ? 'Seite' : 'den Seiten'} ${seiten.join(', ')}` : 'einigen Seiten';
+        out.push([`luecken${seiten.join(',')}`, banner('gelb', 'PDF unvollständig gelesen',
+          `Auf ${wo} konnte das Tool nicht alles lesen. Dort kann eine Änderung fehlen. Bitte diese Seiten im PDF selbst ansehen.`)]);
+      }
+    }
+    const schluessel = out.map((x) => x[0]).join('|');
+    if (schluessel === warnSchluessel) return;          // nur neu zeichnen (und ansagen), wenn sich etwas ändert
+    warnSchluessel = schluessel;
+    $('warn-box').replaceChildren(...out.map((x) => x[1]));
+  }
+
+  // ------------------------------------------------------------------ Details für Fachleute (alles Technische an einer Stelle)
+  function dl(paare) {
+    return h('dl', { class: 'dl-grid' }, paare.filter(Boolean).flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, hatWort(v))]));
+  }
+  function tabelle(titel, kopf, zeilen, breit = false) {
+    return h('div', { class: 'table-wrap' }, h('table', { class: 'tabelle' + (breit ? ' breit' : ''), 'aria-label': titel },
+      h('thead', {}, h('tr', {}, kopf.map((x) => h('th', { scope: 'col' }, x)))),
+      h('tbody', {}, zeilen.map((z) => h('tr', {}, z.map((x) => h('td', {}, x)))))));
+  }
+  const jaNein = (x) => (x === true ? 'ja' : x === false ? 'nein' : 'unbekannt (älterer Abgleich)');
+
+  function zeichneFachleute() {
+    const d = $('fachleute');
+    d.hidden = !state.plan;
+    if (!state.plan || !d.open) return;
+    const p = state.plan, e = state.schritt === 'fertig' ? state.ergebnis : null;
+    const b = (e && e.bilanz) || p.bilanz || {};
+    const l = liste(e && e.aenderungen ? e.aenderungen : p.aenderungen);
+    const luecken = liste(p.luecken);
+    const warn = liste(e && e.warnungen ? e.warnungen : p.warnungen);
+    const teile = [
+      h('h3', {}, 'Abgleich'),
+      dl([['Lauf-ID', p.run_id], ['PDF', p.pdf_name], ['Excel', p.excel_name], ['PDF-Seiten', p.seiten], ['Archiviert', p.archiviert ? 'ja' : 'nein'],
+        e ? ['Ergebnis-Ordner', e.ordner] : null]),
+      h('h3', {}, e ? 'Wort-Bilanz (nach dem Eintragen)' : 'Wort-Bilanz'),
+      dl([['Wörter im PDF markiert', b.woerter_im_pdf], ['davon eingetragen', b.woerter_uebernommen], ['davon Vorschlag', b.woerter_pruefen],
+        ['davon nicht eingetragen', b.woerter_nicht_uebernommen], ['bewusst ignoriert (Kopf-/Fußzeile)', b.woerter_ignoriert],
+        ['Bilanz stimmt', jaNein(b.stimmt)], ['PDF vollständig gelesen', jaNein(b.vollstaendig)], ['Lücken beim Lesen', b.luecken],
+        ['Abweichungen nach dem Eintragen', b.nachkontrolle_abweichungen]]),
+      h('h3', {}, 'Lücken: Stellen, die nicht gelesen werden konnten'),
+      luecken.length ? h('ul', { class: 'einfach-liste' }, luecken.map((x) => h('li', {}, `Seite ${hatWort(x.seite)} · ${LUECKE_ART[x.art] || text(x.art) || 'Sonstiges'}`,
+        text(x.beschreibung) ? ` – ${text(x.beschreibung)}` : '', zahl(x.woerter) ? ` (${pl(zahl(x.woerter), 'Wort', 'Wörter')})` : ''))) : h('p', { class: 'hint' }, 'Keine.'),
+      h('h3', {}, 'Hinweise zum Abgleich'),
+      warn.length ? h('ul', { class: 'einfach-liste' }, warn.map((x) => h('li', {}, text(x)))) : h('p', { class: 'hint' }, 'Keine.'),
+      h('h3', {}, 'Erkannter Aufbau der Excel'),
+      liste(p.layout).length ? tabelle('Erkannter Aufbau der Excel', ['Blatt', 'Section', 'Titel', 'Inhalt', 'Modell', 'Sections', 'Sicherheit'],
+        liste(p.layout).map((x) => [text(x.blatt), x.section_spalte || '–', x.titel_spalte || '–', x.inhalt_spalte || '–',
+          x.modell === 'zeile_pro_section' ? 'eine Zeile je Section' : 'eine Zeile je Absatz', hatWort(x.sections), text(x.sicherheit) || '–']))
+        : h('p', { class: 'hint' }, 'Für diesen Abgleich ist kein Aufbau gespeichert.'),
+      h('h3', {}, 'Farben im PDF'),
+      dl([['Erkannte Legende', LEGENDE[p.legende_modus] || text(p.legende_modus) || 'nicht gespeichert (älterer Abgleich)'],
+        ['Sprechblasen am Rand', typeof p.sprechblasen === 'number' ? p.sprechblasen : 'nicht gespeichert (älterer Abgleich)']]),
+      liste(p.farben).length ? tabelle('Farben im PDF', ['Farbe', 'Zeichen', 'Art', 'Gruppe', 'Bedeutung'], liste(p.farben).map((f) => {
+        const feld = h('span', { class: 'farbe-feld', 'aria-hidden': 'true' });
+        if (/^#[0-9a-f]{3,8}$/i.test(text(f.farbe))) feld.style.backgroundColor = f.farbe;     // Farbe des PDFs, keine Dashboard-Farbe
+        return [[feld, text(f.farbe)], hatWort(f.zeichen), text(f.art), text(f.klasse) === '-' ? '–' : text(f.klasse), text(f.bedeutung)];
+      })) : h('p', { class: 'hint' }, 'Keine Farben gespeichert.'),
+      h('h3', {}, `Alle Änderungen (${l.length})`),
+      l.length ? tabelle('Alle Änderungen', ['Nr.', 'Status', 'Art', 'Seite', 'Section', 'Stelle', 'Sicherheit', 'Prüfcodes', 'Hinweise', 'Wirkung', 'Jetzt in der Excel'],
+        l.map((a) => [text(a.id), (STATUS[a.status] || text(a.status)) + (a.bereich === 'ausserhalb' ? ' (außerhalb der CDE)' : '') + (a.bestaetigt ? ', freigegeben' : ''),
+          ART[a.typ] || text(a.typ), hatWort(a.seite), text(a.section) || '–', text(a.ziel) || '–',
+          `${text(a.konfidenz) || '–'}${a.score ? ` (${Math.round(zahl(a.score) * 100)} %)` : ''}`,
+          liste(a.pruefcodes).join(', ') || '–', liste(a.hinweise).join(' · ') || '–',
+          [WIRKUNG[a.wirkung] || text(a.wirkung), a.nachkontrolle === 'abweichung' ? 'Nachkontrolle weicht ab' : ''].filter(Boolean).join(', ') || '–',
+          kurz(a.excel_text, 160) || '–']), true) : h('p', { class: 'hint' }, 'Im PDF wurden keine Änderungen gefunden.'),
+      h('h3', {}, 'Erstellte Excel-Dateien'),
+      state.ergebnisse.length ? h('ul', { class: 'ergebnis-liste' }, state.ergebnisse.slice().reverse().map((x) => {
+        const bb = x.bilanz || {};
+        return h('li', {}, h('div', {}, h('strong', {}, text(x.ordner)),
+          h('div', { class: 'meta' }, [fmtZeit(x.erstellt), `${zahl(bb.uebernommen)} eingetragen`, `${liste(x.freigaben).length} freigegeben`,
+            `${liste(x.abwahl).length} abgewählt`, bb.stimmt === true ? '' : 'Bilanz stimmt nicht'].filter(Boolean).join(' · '))),
+        h('div', { class: 'btn-reihe' }, h('a', { class: 'btn btn-secondary btn-small', href: dlPfad(x.ordner, x.excel), download: '' }, 'Excel'),
+          h('a', { class: 'btn btn-secondary btn-small', href: dlPfad(x.ordner, 'aenderungsprotokoll.xlsx'), download: '' }, 'Protokoll')));
+      })) : h('p', { class: 'hint' }, 'Noch keine.'),
+    ];
+    $('fachleute-inhalt').replaceChildren(...teile);
+  }
+
+  // ------------------------------------------------------------------ Tastatur (wie „Überarbeiten“ in Word)
+  let hilfeZuvor = null;
+  function hilfeAuf() {
+    const d = $('hilfe');
+    if (d.open) return;
+    hilfeZuvor = document.activeElement;
+    if (typeof d.showModal === 'function') d.showModal(); else d.setAttribute('open', '');
+    $('hilfe-zu').focus();
+  }
+  function hilfeZu() {
+    const d = $('hilfe');
+    if (typeof d.close === 'function') d.close(); else d.removeAttribute('open');
+  }
+
+  function sichtbareKarten() { return [...$('schritt-pruefen').querySelectorAll('.karte')].filter((k) => k.offsetParent !== null); }
+
+  function springe(karte, richtung) {
+    const l = sichtbareKarten();
+    if (!l.length) return;
+    let i = karte ? l.indexOf(karte) + richtung : (richtung > 0 ? 0 : l.length - 1);
+    i = Math.max(0, Math.min(l.length - 1, i));
+    fokusKarte(l[i]);
+  }
+
+  function tasten(ev) {
+    if (ev.defaultPrevented || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if ($('hilfe').open || !$('busy').hidden) return;
+    const ziel = ev.target instanceof Element ? ev.target : null;
+    if (ziel && ziel.closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (ev.key === '?') { ev.preventDefault(); hilfeAuf(); return; }
+    if (state.schritt !== 'pruefen' || !state.plan) return;
+    const karte = ziel ? ziel.closest('.karte') : null;
+    const taste = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+    if (taste === 'j' || (taste === 'ArrowDown' && karte)) { ev.preventDefault(); springe(karte, 1); }
+    else if (taste === 'k' || (taste === 'ArrowUp' && karte)) { ev.preventDefault(); springe(karte, -1); }
+    else if (taste === 'a' || taste === 'n') {
+      ev.preventDefault();
+      if (!karte) { springe(null, 1); return; }             // erst eine Karte wählen, nie blind entscheiden
+      const id = karte.dataset.id;
+      if (karte.classList.contains('kompakt')) { setzeAbwahl(id, taste === 'n'); springe(karte, 1); }
+      else entscheide(id, taste === 'a' ? 'ja' : 'nein', true);
+    }
+  }
+
+  // ------------------------------------------------------------------ Start
   document.addEventListener('DOMContentLoaded', async () => {
     try { const t = localStorage.getItem('cde-theme'); if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t); } catch (_) { /* ignorieren */ }
     themeKnopf();
     matchMedia('(prefers-color-scheme: dark)').addEventListener('change', themeKnopf);
     $('theme-toggle').addEventListener('click', () => setzeTheme(istDunkel() ? 'light' : 'dark'));
-    for (const b of document.querySelectorAll('.page-tab')) { b.addEventListener('click', () => zeigeTab(b.dataset.tab)); b.addEventListener('keydown', tabTaste); }
-    for (const b of document.querySelectorAll('[data-gehe]')) b.addEventListener('click', () => zeigeTab(b.dataset.gehe, true));
+    for (const b of document.querySelectorAll('.schritt')) b.addEventListener('click', () => zeigeSchritt(b.dataset.schritt));
     dropzone('dz-pdf', 'file-pdf', 'pdf');
     dropzone('dz-xlsx', 'file-xlsx', 'xlsx');
     for (const e of ['dragover', 'drop']) window.addEventListener(e, (ev) => ev.preventDefault());   // eine daneben gezogene Datei darf die Seite nicht verlassen
-    $('btn-analyse').addEventListener('click', analysieren);
-    $('btn-uebernehmen').addEventListener('click', uebernehmen);
-    $('btn-zurueck-auswahl').addEventListener('click', zurueckZurAuswahl);
-    $('btn-lauf-wiederherstellen').addEventListener('click', () => state.plan && wiederherstellen(state.plan.run_id));
+    $('btn-abgleichen').addEventListener('click', abgleichen);
+    $('btn-archiv').addEventListener('click', () => {
+      state.zeigeArchiv = !state.zeigeArchiv;
+      $('btn-archiv').setAttribute('aria-pressed', state.zeigeArchiv ? 'true' : 'false');
+      $('btn-archiv').textContent = state.zeigeArchiv ? 'Archivierte ausblenden' : 'Archivierte anzeigen';
+      ladeZuletzt();
+    });
+    $('btn-zuletzt-alle').addEventListener('click', () => { state.zuletztAlle = !state.zuletztAlle; ladeZuletzt(); });
+    $('btn-alle-ja').addEventListener('click', () => {
+      for (const a of vorschlaege()) { state.entscheid.set(a.id, 'ja'); aktualisiereKarte(a.id); }
+      zeichneFortschritt();
+    });
+    $('btn-tasten').addEventListener('click', hilfeAuf);
+    $('btn-hilfe').addEventListener('click', hilfeAuf);
+    $('hilfe-zu').addEventListener('click', hilfeZu);
+    $('hilfe').addEventListener('close', () => {          // Fokus zurück, aber nur, wenn ihn inzwischen niemand woanders hingesetzt hat
+      const frei = !document.activeElement || document.activeElement === document.body || $('hilfe').contains(document.activeElement);
+      if (frei && hilfeZuvor && document.contains(hilfeZuvor)) hilfeZuvor.focus();
+      hilfeZuvor = null;
+    });
+    let suchZeit = null;
+    $('suche-auto').addEventListener('input', (ev) => {
+      clearTimeout(suchZeit);
+      suchZeit = setTimeout(() => { state.suche = ev.target.value; state.autoLimit = AUTO_SEITE; zeichneAuto(); }, 150);
+    });
+    $('btn-auto-alle').addEventListener('click', () => { state.autoLimit = Infinity; zeichneAuto(); });
+    $('btn-excel').addEventListener('click', excelErstellen);
+    $('btn-zurueck-pruefen').addEventListener('click', () => zeigeSchritt('pruefen'));
+    $('fachleute').addEventListener('toggle', zeichneFachleute);
     $('toast-schliessen').addEventListener('click', fehlerSchliessen);
-    $('chk-archiv').addEventListener('change', (ev) => { state.zeigeArchiv = ev.target.checked; ladeVerlauf(); });
-    $('btn-verlauf-neu').addEventListener('click', ladeVerlauf);
-    verdrahteFilter();
 
     document.addEventListener('click', (ev) => {
       const icon = ev.target.closest('.info-icon');
       if (icon) { ev.preventDefault(); ev.stopPropagation(); oeffnePopup(icon); return; }
       if (popup && !popup.contains(ev.target)) schliessePopup(false);
+      for (const m of document.querySelectorAll('details.menu[open]')) if (!m.contains(ev.target)) m.open = false;
     });
-    document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') { if (popup) schliessePopup(); else if (!$('toast-fehler-box').hidden) fehlerSchliessen(); } });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        const menu = document.querySelector('details.menu[open]');
+        if (popup) schliessePopup();
+        else if (menu) { menu.open = false; menu.querySelector('summary').focus(); }
+        else if (!$('toast-fehler-box').hidden) fehlerSchliessen();
+        return;
+      }
+      tasten(ev);
+    });
     window.addEventListener('scroll', setzePopup, true);
     window.addEventListener('resize', setzePopup);
     window.addEventListener('unhandledrejection', (ev) => { ev.preventDefault(); meldeFehler(ev.reason); });
     window.addEventListener('error', (ev) => { console.error(ev.error || ev.message); toastFehler(TXT_UNERWARTET); });
 
-    zeichne();
+    zeigeSchritt('dateien', false);
     try {
       const g = await api('/health');
       $('port-text').textContent = g.port;

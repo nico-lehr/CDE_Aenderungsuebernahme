@@ -264,6 +264,73 @@ def test_uebernehmen_mit_unsinn_im_body(client, tmp_path):
     assert r.status_code == 400 and r.is_json
     r = client.post(f"/api/lauf/{rid}/uebernehmen", json={"freigaben": ["gibt-es-nicht"]})
     assert r.status_code in (400, 404) and r.is_json
+    for unsinn in ("A0001", [1], {"x": 1}, [None]):
+        r = client.post(f"/api/lauf/{rid}/uebernehmen", json={"freigaben": [], "abwahl": unsinn})
+        assert r.status_code == 400 and r.is_json and "abwahl" in r.get_json()["fehler"]
+    r = client.post(f"/api/lauf/{rid}/uebernehmen", json={"abwahl": ["gibt-es-nicht"]})
+    assert r.status_code == 400 and r.is_json and "Unbekannte" in r.get_json()["fehler"]
+    assert not list(runs.lauf_dir(rid).glob("ergebnis_*"))                 # ungueltige Abwahl legt kein Ergebnis an
+
+
+def test_plan_fuers_dashboard_hat_schema_4_felder_und_zusammenfassung(client, tmp_path):
+    plan = _hochladen(client, erzeuge(tmp_path / "fx")).get_json()
+    assert "absaetze" not in plan                                          # nur intern (Gegenprobe), nicht fuers Dashboard
+    for a in plan["aenderungen"]:
+        assert {"bereich", "stuecke", "grund_einfach", "kategorie", "status", "ziel", "section"} <= set(a) and "ops" not in a
+        assert a["kategorie"] in ("automatisch", "pruefen", "ausserhalb", "nicht")
+    z = plan["zusammenfassung"]
+    assert z["gesamt"] == len(plan["aenderungen"]) == z["automatisch"] + z["pruefen"] + z["ausserhalb"] + z["nicht"]
+    assert {"legende_modus", "sprechblasen"} <= set(plan)
+    g = client.get(f"/api/lauf/{plan['run_id']}").get_json()
+    assert g["zusammenfassung"] == z and "absaetze" not in g
+
+
+def test_pdf_ausschnitte_gleichzeitig_lassen_den_server_nicht_abstuerzen(client, tmp_path):
+    """Das Dashboard laedt mehrere PDF-Ausschnitte zugleich; pdfium ist nicht thread-sicher (frueher Speicherfehler)."""
+    import threading
+
+    from src.vorschau import _seite
+    fx = erzeuge(tmp_path / "fx")
+    laeufe = []
+    for i in range(4):                                      # verschiedene Laeufe = verschiedene PDF-Pfade (kein Cache-Treffer)
+        rid = runs.neuer_lauf(fx["pdf"], fx["alt"], f"p{i}.pdf", "cde.xlsx")
+        laeufe.append((rid, runs.analysiere(rid)["aenderungen"][0]["id"]))
+    _seite.cache_clear()
+    antworten, fehler = [], []
+
+    def hole(rid, aid):
+        try:
+            for _ in range(3):
+                r = app.test_client().get(f"/api/lauf/{rid}/vorschau/{aid}.png")
+                antworten.append((r.status_code, r.data[:4]))
+                _seite.cache_clear()
+        except Exception as e:                              # noqa: BLE001
+            fehler.append(repr(e))
+    ts = [threading.Thread(target=hole, args=x) for x in laeufe for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(120)
+    assert not fehler and len(antworten) == 24
+    assert all(code == 200 and kopf == b"\x89PNG" for code, kopf in antworten)
+
+
+def test_abwahl_ueber_die_api_und_rueckgabe_in_ergebnissen(client, tmp_path):
+    plan = _hochladen(client, erzeuge(tmp_path / "fx")).get_json()
+    rid = plan["run_id"]
+    auto = [a["id"] for a in plan["aenderungen"] if a["kategorie"] == "automatisch" and not a["gruppe"]][-1]
+    r = client.post(f"/api/lauf/{rid}/uebernehmen", json={"freigaben": [], "abwahl": [auto]})
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["abwahl"] == [auto] and next(a for a in j["aenderungen"] if a["id"] == auto)["status"] == "nicht_uebernommen"
+    assert j["zusammenfassung"]["automatisch"] == plan["zusammenfassung"]["automatisch"] - 1
+    erg = client.get(f"/api/lauf/{rid}").get_json()["ergebnisse"]
+    assert erg[-1]["abwahl"] == [auto] and erg[-1]["freigaben"] == []
+    # Abwahl nur fuer Automatisches: ein Vorschlag oder etwas Nicht-Eingetragenes laesst sich nicht abwaehlen
+    andere = [a["id"] for a in plan["aenderungen"] if a["kategorie"] != "automatisch"]
+    if andere:
+        r = client.post(f"/api/lauf/{rid}/uebernehmen", json={"abwahl": andere[:1]})
+        assert r.status_code == 400 and r.is_json
 
 
 def test_upload_mit_unbestaetigtem_profil_wird_abgelehnt(client, tmp_path):

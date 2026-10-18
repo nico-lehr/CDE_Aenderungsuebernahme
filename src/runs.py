@@ -31,7 +31,7 @@ from . import layouts
 from .fehler import NichtGefunden, NutzerFehler
 from .gegenprobe import absaetze_aus_liste
 from .excel_model import ExcelModell, profil_kontext
-from .models import GELESENE_SCHEMAS
+from .models import GELESENE_SCHEMAS, PRUEFEN, UEBERNOMMEN
 from .pdf_reader import analysiere_pdf
 from .planner import plane
 from .protokoll import aenderung_aus_dict, bilanz, schreibe_json, schreibe_xlsx
@@ -245,6 +245,9 @@ def analysiere(run_id: str, profil: str | None = None) -> dict[str, Any]:
         "luecken": plan.luecken,
         "farben": pa.farben, "aenderungen": [a.zu_dict() for a in plan.aenderungen],
         "absaetze": [ab.zu_dict() for ab in plan.absaetze],   # Schema 3: fuer die Gegenprobe nach dem Speichern
+        # Schema 4, nur Info fuer "Details fuer Fachleute": erkannte Legende und Zahl der Sprechblasen (kein Text daraus)
+        "legende_modus": str(getattr(pa, "legende_modus", "") or ""),
+        "sprechblasen": len(getattr(pa, "randnotizen", None) or []),
     }
     _schreibe_json_atomar(d / "plan.json", daten)
     return daten
@@ -309,7 +312,8 @@ def _ergebnis_lesen(e: Path) -> dict[str, Any] | None:
         daten = _lese_json(j)
         pruefe_schema(daten)
         return {"ordner": e.name, "bilanz": daten["bilanz"], "excel": daten["ergebnis_name"],
-                "erstellt": daten["erstellt"], "freigaben": daten.get("freigaben", [])}
+                "erstellt": daten["erstellt"], "freigaben": daten.get("freigaben", []),
+                "abwahl": daten.get("abwahl", [])}         # aeltere Ergebnisse kennen keine Abwahl
     except (LaufFehler, KeyError):
         return None
 
@@ -348,7 +352,38 @@ def _profil_des_plans(plan: dict[str, Any]) -> "layouts.Profil | None":
         raise LaufFehler(getattr(e, "meldung", "Das Profil dieses Laufs ist nicht mehr bestätigt. Bitte neu analysieren."), 409, "profil") from None
 
 
-def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[str, Any]:
+def kategorie(a: dict[str, Any]) -> str:
+    """Wohin eine Aenderung im Dashboard gehoert (reine Einordnung, nichts wird veraendert):
+    automatisch (wird eingetragen) | pruefen (Vorschlag, ein Mensch entscheidet) | ausserhalb (gehoert nicht zur CDE,
+    z. B. Deckblatt oder Revisionstabelle; kein offener Punkt, ADR 0006) | nicht (mit Grund nicht eingetragen).
+    Was eingetragen wird, steht immer unter "automatisch" (auch wenn es ausserhalb laege), damit es abwaehlbar bleibt."""
+    status = a.get("status")
+    if status == UEBERNOMMEN:
+        return "automatisch"
+    if a.get("bereich") == "ausserhalb":
+        return "ausserhalb"
+    if status == PRUEFEN:
+        return "pruefen"
+    return "nicht"
+
+
+def zusammenfassung(aenderungen: list[dict[str, Any]]) -> dict[str, int]:
+    """Zahlen fuer den einen Satz oben im Dashboard (gesamt = automatisch + pruefen + ausserhalb + nicht)."""
+    zahl = {"gesamt": len(aenderungen), "automatisch": 0, "pruefen": 0, "ausserhalb": 0, "nicht": 0}
+    for a in aenderungen:
+        zahl[kategorie(a)] += 1
+    return zahl
+
+
+def _id_liste(werte: list[str] | None) -> set[str]:
+    return {str(x) for x in (werte or [])}
+
+
+def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None, abwahl: list[str] | None = None) -> dict[str, Any]:
+    """Traegt die sicheren Aenderungen und die freigegebenen Vorschlaege in eine NEUE Excel ein (eigener Ergebnis-Ordner).
+    `freigaben`: IDs von Vorschlaegen ("pruefen"), die ein Mensch freigibt. `abwahl`: IDs automatischer Aenderungen
+    ("uebernommen"), die ein Mensch NICHT eingetragen haben will (gekoppelte Aenderungen fallen mit weg, siehe Applier).
+    Unbekannte IDs, eine Abwahl von etwas nicht Automatischem und dieselbe ID in beiden Listen sind Fehler (400)."""
     d = lauf_dir(run_id)
     plan = _lese_plan(d)
     info = _info(d)
@@ -360,16 +395,22 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[st
         absaetze = absaetze_aus_liste(plan.get("absaetze"))       # Schema <= 2: None (alte Nachkontrolle)
     except (KeyError, TypeError, ValueError, AttributeError):
         raise _beschaedigt() from None
-    freig = set(freigaben or [])
-    unbekannt = freig - {a.id for a in aenderungen}
+    freig, abw = _id_liste(freigaben), _id_liste(abwahl)
+    bekannt = {a.id: a for a in aenderungen}
+    unbekannt = (freig | abw) - set(bekannt)
     if unbekannt:
         raise NutzerFehler(f"Unbekannte Änderungs-IDs: {sorted(unbekannt)}", 400)
+    if freig & abw:
+        raise NutzerFehler(f"Eine Änderung kann nicht zugleich freigegeben und abgewählt sein: {sorted(freig & abw)}", 400)
+    nicht_auto = sorted(x for x in abw if bekannt[x].status != UEBERNOMMEN)
+    if nicht_auto:
+        raise NutzerFehler(f"Abwählen geht nur bei automatisch eingetragenen Änderungen: {nicht_auto}", 400)
     ordner = _neuer_ergebnis_ordner(d)
     try:
         stamm = Path(info["excel"]).stem
         ziel = ordner / f"{stamm}_aktualisiert{Path(info['excel']).suffix}"
         with profil_kontext(_profil_des_plans(plan)):          # der Applier liest die Excel selbst: gleicher Aufbau wie bei der Analyse
-            res = uebernehmen(aenderungen, quelle, ziel, freig, absaetze=absaetze)
+            res = uebernehmen(aenderungen, quelle, ziel, freig, absaetze=absaetze, abwahl=abw)
         markierte = plan["bilanz"]["woerter_im_pdf"]
         luecken = plan.get("luecken")
         bil = bilanz(aenderungen, markierte, plan.get("ignoriert", []), luecken if isinstance(luecken, list) else [])
@@ -383,7 +424,7 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[st
                       plan.get("farben", []), plan.get("luecken", []))
         _schreibe_json_atomar(ordner / "ergebnis.json", {   # zuletzt: erst damit zaehlt das Ergebnis
             "run_id": run_id, "erstellt": datetime.now().isoformat(timespec="seconds"), "ergebnis_name": ziel.name,
-            "freigaben": sorted(freig), "bilanz": bil, "warnungen": warn,
+            "freigaben": sorted(freig), "abwahl": sorted(abw), "bilanz": bil, "warnungen": warn,
             "eingabe": {"pdf": info["pdf"], "excel": info["excel"], "pdf_sha256": plan.get("pdf_sha256", ""),
                         "excel_sha256": plan["excel_sha256"]},
             "aenderungen": [a.zu_dict() for a in aenderungen]})
@@ -391,6 +432,7 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None) -> dict[st
         shutil.rmtree(ordner, ignore_errors=True)    # eigener, noch unfertiger Ordner (ohne ergebnis.json)
         raise
     return {"ordner": ordner.name, "excel": ziel.name, "bilanz": bil, "warnungen": warn,
+            "freigaben": sorted(freig), "abwahl": sorted(abw),
             "aenderungen": [a.zu_dict() for a in aenderungen]}
 
 

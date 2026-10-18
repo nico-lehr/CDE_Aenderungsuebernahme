@@ -288,3 +288,84 @@ def test_lauf_json_mit_pfad_im_namen_ist_beschaedigt(lauf):
         json.dumps({"pdf": "../x.pdf", "excel": "cde.xlsx", "angelegt": ""}), encoding="utf-8")
     with pytest.raises(runs.LaufFehler):
         runs.uebernehmen_lauf(lauf, [])
+
+
+# --- Abwahl, Zusammenfassung (Dashboard, Auftrag 003) -----------------------------------------------
+@pytest.fixture
+def lauf_mit_vorschlag(tmp_path):
+    """Erfundenes Paar, in dem genau ein Vorschlag ("pruefen") steckt (teilweise hinterlegtes Wort)."""
+    fx = erzeuge(tmp_path / "fx_h", "hintergrund")
+    rid = runs.neuer_lauf(fx["pdf"], fx["alt"])
+    plan = runs.analysiere(rid)
+    (vorschlag,) = [a for a in plan["aenderungen"] if a["status"] == "pruefen"]          # "Rack{+s+}"
+    # die automatische Ersetzung "{-zwei-} {+drei+} Wochen" (keine Gruppe, andere Zelle als der Vorschlag)
+    (auto,) = [a for a in plan["aenderungen"] if a["status"] == "uebernommen" and (a["alt"], a["neu"]) == ("zwei", "drei")]
+    assert not auto["gruppe"] and auto["ziel"] != vorschlag["ziel"]
+    return rid, vorschlag, auto
+
+
+def _cde_text(pfad: Path) -> str:
+    from openpyxl import load_workbook
+    ws = load_workbook(str(pfad))["CDE"]
+    return "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
+
+
+def test_abwahl_wird_nicht_eingetragen_freigabe_schon(lauf_mit_vorschlag):
+    rid, vorschlag, auto = lauf_mit_vorschlag
+    res = runs.uebernehmen_lauf(rid, [vorschlag["id"]], [auto["id"]])
+    nach_id = {a["id"]: a for a in res["aenderungen"]}
+    assert nach_id[auto["id"]]["status"] == "nicht_uebernommen" and "abgewaehlt" in nach_id[auto["id"]]["pruefcodes"]
+    assert nach_id[vorschlag["id"]]["status"] == "uebernommen" and nach_id[vorschlag["id"]]["bestaetigt"]
+    assert res["abwahl"] == [auto["id"]] and res["freigaben"] == [vorschlag["id"]]
+    assert res["bilanz"]["stimmt"]                                         # nichts geht still verloren
+    text = _cde_text(runs.lauf_dir(rid) / res["ordner"] / res["excel"])
+    assert "dauert zwei Wochen" in text and "dauert drei Wochen" not in text      # abgewaehlt: bleibt wie vorher
+    assert "Die Racks werden" in text                                              # freigegeben: eingetragen
+    gespeichert = json.loads((runs.lauf_dir(rid) / res["ordner"] / "ergebnis.json").read_text(encoding="utf-8"))
+    assert gespeichert["abwahl"] == [auto["id"]] and gespeichert["freigaben"] == [vorschlag["id"]]
+    assert runs.ergebnisse(rid)[0]["abwahl"] == [auto["id"]]
+
+
+@pytest.mark.parametrize("fall", ["unbekannt", "nicht_automatisch", "beides"])
+def test_abwahl_ungueltig_legt_kein_ergebnis_an(lauf_mit_vorschlag, fall):
+    rid, vorschlag, auto = lauf_mit_vorschlag
+    freig, abwahl, erwartet = {
+        "unbekannt": ([], ["A9999"], "Unbekannte"),
+        "nicht_automatisch": ([], [vorschlag["id"]], "nur bei automatisch"),
+        "beides": ([auto["id"]], [auto["id"]], "zugleich"),
+    }[fall]
+    with pytest.raises(ValueError, match=erwartet) as e:
+        runs.uebernehmen_lauf(rid, freig, abwahl)
+    assert getattr(e.value, "status", None) == 400
+    assert list(runs.lauf_dir(rid).glob("ergebnis_*")) == []
+
+
+def test_aeltere_ergebnisse_ohne_abwahl_bleiben_lesbar(lauf):
+    runs.uebernehmen_lauf(lauf, [])
+    e = runs.lauf_dir(lauf) / "ergebnis_001" / "ergebnis.json"
+    j = json.loads(e.read_text(encoding="utf-8"))
+    j.pop("abwahl")
+    e.write_text(json.dumps(j), encoding="utf-8")
+    assert runs.ergebnisse(lauf)[0]["abwahl"] == []
+
+
+@pytest.mark.parametrize("status, bereich, erwartet", [
+    ("uebernommen", "", "automatisch"), ("uebernommen", "ausserhalb", "automatisch"), ("pruefen", "", "pruefen"),
+    ("pruefen", "ausserhalb", "ausserhalb"), ("nicht_uebernommen", "ausserhalb", "ausserhalb"),
+    ("nicht_uebernommen", "", "nicht")])
+def test_kategorie_fuer_das_dashboard(status, bereich, erwartet):
+    assert runs.kategorie({"status": status, "bereich": bereich}) == erwartet
+
+
+def test_zusammenfassung_zaehlt_jede_aenderung_genau_einmal():
+    l = [{"status": "uebernommen"}, {"status": "uebernommen", "bereich": ""}, {"status": "pruefen"},
+         {"status": "nicht_uebernommen", "bereich": "ausserhalb"}, {"status": "nicht_uebernommen"}]   # Schema 1: ohne bereich
+    z = runs.zusammenfassung(l)
+    assert z == {"gesamt": 5, "automatisch": 2, "pruefen": 1, "ausserhalb": 1, "nicht": 1}
+    assert z["gesamt"] == z["automatisch"] + z["pruefen"] + z["ausserhalb"] + z["nicht"]
+
+
+def test_plan_speichert_legende_und_sprechblasen_als_zahl(lauf):
+    plan = runs.lade_plan(lauf)
+    assert isinstance(plan["legende_modus"], str) and plan["legende_modus"]
+    assert plan["sprechblasen"] == 0
