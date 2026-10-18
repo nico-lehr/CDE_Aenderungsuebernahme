@@ -474,3 +474,25 @@ def test_erkennung_schlaegt_nur_vor(tmp_path, monkeypatch, excel):
     daten = layouts.erstelle_vorschau(excel, None)
     assert daten["vorschlaege"] == ["test_typ"]
     assert layouts.status(layouts.finde("test_typ")) == "unbestaetigt"      # Vorschlag wendet nichts an
+
+
+# ---------------------------------------------------------------- CDE-Register (ADR 0006, Auftrag 003)
+def test_vorschau_zeigt_das_register_ohne_zellinhalte(tmp_path, monkeypatch):
+    from tests.test_register import GRUND, KENNWORT, excel_absaetze, register_mappe
+    schreibe_profile(tmp_path, monkeypatch, [])
+    xlsx = register_mappe(tmp_path / "reg.xlsx", excel_absaetze(GRUND))
+    daten = layouts.erstelle_vorschau(xlsx, None)
+    text = "\n".join(layouts.formatiere_vorschau(daten, None))
+    assert "CDE-Register: Sub-Section-Spalte F | Kennwort-Spalte I | Kopfzeile 6 | Daten ab Zeile 8" in text
+    assert KENNWORT not in json.dumps(daten, ensure_ascii=False) and "Pumpe" not in text
+
+
+def test_profil_register_braucht_section_spalte_und_keine_titel_spalte():
+    d = kopie()
+    d["blaetter"][1].update(modell="register", untergliederung_spalte="D")
+    assert "titel_spalte" in fehler_von(d)
+    del d["blaetter"][1]["titel_spalte"]
+    p = layouts.profil_aus_dict(d)
+    assert p.blaetter["CDE"].untergliederung_spalte == 4 and p.blaetter["CDE"].kanon()["untergliederung_spalte"] == "D"
+    del d["blaetter"][1]["section_spalte"]
+    assert "section_spalte" in fehler_von(d)

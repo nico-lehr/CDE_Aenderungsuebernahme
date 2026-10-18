@@ -51,6 +51,22 @@ def _zeige(daten: dict, luecken: list[dict] | None = None, gezeigt: set[str] | N
 
 
 _STATUS_NAMEN = {"neu": "neu", "entfaellt": "entfällt", "ignorieren": "ignoriert"}
+_LEGENDE_NAMEN = {"linie": "Linie entscheidet (unterstrichen = neu, durchgestrichen = entfällt)",
+                  "farbe": "Farbe (rot oder blau = neu, durchgestrichen = entfällt)",
+                  "alt": "alte Legende (blau = neu, rot = entfällt)"}
+
+
+def _gedeutet(klasse: str, modus: str, legende: dict) -> str:
+    """Bedeutung einer Farbgruppe in der GEWAEHLTEN Legende (ADR 0006), nicht in der eingestellten."""
+    if klasse == "-":
+        return "unverändert"
+    if modus not in ("linie", "farbe"):                        # alt: wie in legende.blau/rot/durchgestrichen
+        return _STATUS_NAMEN.get(legende.get(klasse, ""), "unverändert")
+    if klasse == "durchgestrichen":
+        return "entfällt"
+    if modus == "linie":
+        return "unverändert (es zählt nur die Linie)"
+    return "neu (ohne Durchstreichung)" if klasse in ("rot", "blau") else "unverändert"
 
 
 def _ist_farbig(hex_farbe: str, min_saettigung: float) -> bool:
@@ -67,11 +83,15 @@ def farben_bericht(pa) -> list[str]:
     Farben. Enthaelt NUR Zahlen, Farbcodes und feste Begriffe, nie ein Wort aus dem PDF (Regel 16)."""
     cfg = config.lade("farben")
     legende = cfg.get("legende", {})
-    z: list[str] = [f"Seiten: {pa.seiten}", "", "Farben im PDF (Zeichen = einzelne Buchstaben in dieser Farbe):"]
+    # ADR 0006: es zaehlt die Legende, die der Leser fuer DIESES PDF gewaehlt hat (bei modus auto je Dokument entschieden)
+    modus = str(getattr(pa, "legende_modus", "") or legende.get("modus", "alt"))
+    z: list[str] = [f"Seiten: {pa.seiten}", f"Legende: {_LEGENDE_NAMEN.get(modus, modus)}"
+                    + (f" ({pa.legende_grund})" if getattr(pa, "legende_grund", "") else ""),
+                    "", "Farben im PDF (Zeichen = einzelne Buchstaben in dieser Farbe):"]
     if not pa.farben:
         z.append("  keine Farben gefunden (nur Schwarz/Grau oder kein auslesbarer Text)")
     for f in pa.farben:
-        status = _STATUS_NAMEN.get(legende.get(f["klasse"], ""), "unverändert") if f["klasse"] != "-" else "unverändert"
+        status = _gedeutet(f["klasse"], modus, legende)
         z.append(f"  {f['farbe']}  {f['art']}: {f['zeichen']} Zeichen | Gruppe {f['klasse']} | gedeutet als {status}")
     zaehl = {"add": 0, "del": 0, "mod": 0, "keep": 0}
     for b in pa.blocks:

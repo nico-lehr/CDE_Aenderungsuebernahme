@@ -20,6 +20,28 @@ excel:
   lfd_kopfwoerter: [lfd, laufende, pos, position, index]               # Spaltenkoepfe, die eine laufende Nummer bedeuten
   kommentar_kopfwoerter: [kommentar, bemerkung, anmerkung, notiz, hinweis, status, prio, priorität, comment, remark, note]
   section_kopfwoerter: [nr, nummer, kapitel, section, abschnitt, gliederung, ziffer]
+  # ADR 0006 Punkt 5: CDE-Register (Kopfbereich, Kopfzeile, Beispielzeile, dann EINE Zeile je Absatz/Listenpunkt). Erkannt nur
+  # aus der Struktur (src/excel_model.py _register_erkennen), nie aus Spalten- oder Blattnamen. Profil: modell register.
+  register:
+    aktiv: true
+    min_zeilen: 6               # mindestens so viele Datenzeilen mit Gliederungswert in derselben Spalte ...
+    wiederholung_min: 1.5       # ... und im Mittel so viele Zeilen je Gliederungswert (die Nummer steht in JEDER Zeile)
+    section_muster: '^[1-9]\d{0,2}(?:\.\d{1,3}){0,6}$'   # "1.1" (Leerzeichen am Rand egal; "0" ist ein Platzhalter)
+    kapitel_muster: '^(?:part|teil)\s*(\d{1,2})$'        # "Part 1" (Gross/Klein egal)
+    kapitel_name: 'Part {n}'    # einheitlicher Name, wie der PDF-Leser ihn bildet (farben.yaml layout.section_kapitel_name)
+    untergliederung_muster: '^[A-Z]{1,2}$'               # Sub-Section A ... Z, AA, BB ...
+    untergliederung_min: 2      # Sub-Section-Spalte: mindestens so viele Buchstaben, darunter "A", mindestens zwei verschiedene ...
+    untergliederung_folge_min: 0.9   # ... und so viele Schritte in Folge (gleich oder weiter, je Section neu ab A)
+    kopf_min_zellen: 3          # Kopfzeile: mindestens so viele kurze Textkoepfe ...
+    kopf_max_zeichen: 40        # ... mit hoechstens so vielen Zeichen
+    kopf_suche_zeilen: 4        # die Kopfzeile steht hoechstens so weit ueber der ersten Datenzeile (dazwischen: Beispielzeilen)
+    kennwort_max_zeichen: 40    # Kennwort der Ueberschriftzeilen: ein kurzer Wert ...
+    kennwort_min_zeilen: 2      # ... in mindestens so vielen Zeilen, nur neben kurzem (titel_max_zeichen) oder fettem Text ...
+    kennwort_max_anteil: 0.8    # ... in hoechstens diesem Anteil der Datenzeilen (Konstanten stehen in fast allen Zeilen) ...
+    kennwort_min_fett: 0.5      # ... und mindestens so viele dieser Zeilen haben fetten Text (Ueberschriften)
+    # Listennummer + Polster (Tab, geschuetzte Leerzeichen, Leerzeichen) am Anfang des Texts; Listenpunkt <-> Text mit gleicher Nummer
+    listen_label: '^(?P<label>\d{1,3}[.)]|[a-z]{1,3}[.)]|[A-Z]{1,3}[.)]|[ivxlcdm]{1,6}[.)])(?P<polster>[\t    ]+)(?=\S)'
+    polster_standard: "\t"      # Polster einer neuen Listennummer, wenn keine Zeile mit gleicher Art Listennummer eines zeigt
 
 einfuegen:
   neuer_absatz: auto          # auto | zelle | zeile
@@ -57,7 +79,12 @@ planer:                       # Planen und Anwenden (src/planner.py, src/applier
                        fortsetzung_unklar, absatzgrenze_unklar, trennung_unklar, rand_unklar, hochzahl_markiert,
                        linienfarbe_unklar]
   # Nur Hinweis (keine Sperre): der Satz zum Code steht bei den Aenderungen des Absatzes
-  hinweis_codes: [link, unterstrichen, design_blau, ligatur]
+  hinweis_codes: [link, unterstrichen, design_blau, ligatur, farbe_ohne_linie, hinterlegt]
+  # ADR 0006 Punkt 6, Bereich der CDE: PDF-Absaetze vor dem ersten bzw. nach dem letzten sicheren Anker im Hauptblatt (Blatt mit
+  # den meisten Ankern) gehoeren nicht zur CDE (Deckblatt, Vorspann, Revisionstabelle, Anhang): Aenderung.bereich = ausserhalb,
+  # nicht uebernommen, kein offener Punkt, zaehlt in der Bilanz. register = nur wenn das Hauptblatt ein CDE-Register ist | immer | aus
+  umfang: register
+  umfang_min_anker: 5         # erst ab so vielen sicheren Ankern im Hauptblatt (sonst wie bisher)
   # Ohne Angabe des PDF-Lesers (PdfBlock.fortsetzung) raten, ob ein Absatz ueber den Seitenumbruch weitergeht: letzter Block
   # einer Seite ohne Satzende + erster Block der naechsten Seite = "moeglich" (verbunden nur, wenn A1 es bestaetigt; ganz
   # neuer Text danach -> fortsetzung_unklar, nie automatisch). Wird nur benutzt, wenn KEIN Block eine Angabe hat. Aus, seit der
