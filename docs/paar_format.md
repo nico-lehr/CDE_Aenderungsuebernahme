@@ -1,6 +1,6 @@
 # Paar-Format und Messbericht (Vertrag zwischen Daten-Bauer und Mess-Bauer)
 
-Autor: Nico Lehr · Stand: 16.10.2026 (Generator v2, Messung v2)
+Autor: Nico Lehr · Stand: 18.10.2026 (Generator v2 und v3 `word_markup`, Messung v2 + Auftrag 003)
 
 Ein **Paar** ist ein Beispiel mit bekannter Wahrheit: ein PDF mit Änderungen, die Excel **vorher** und die von Hand erstellte Excel **nachher**.
 Das Messwerkzeug (`python -m src.cli messen`) lässt das Tool auf PDF + vorher laufen und vergleicht das Ergebnis mit „nachher“.
@@ -29,8 +29,9 @@ data/messung/
 | `entwicklung` | 1–60 (writer) und 101–160 (gerade Seeds LibreOffice, ungerade writer) | erfundene Paare v2 | Entwicklung und Einstellen |
 | `ex_test` | nur 1001–1030 | derselbe Zufallsstrom wie der frühere Testkorpus v1 (gleiche Änderungen, gleiche Familien inkl. der dort offengelegten Familien `gedrehte_seite`, `gruene_markierung`) | offen als Entwicklung erklärt – nicht mehr ungesehen |
 | `test` | nur ≥ 2000 | reserviert (später mit neuen, nur dort vorkommenden Familien) | genau einmal messen; **jetzt nicht erzeugen** |
+| `nachbau_word` | 301–360 (erlaubt: < 1000) | Generator **v3** `word_markup`: Word-PDF mit Änderungsverfolgung + CDE-Register (siehe unten) | Entwicklung für Auftrag 003 (Legende `auto`, nachher `markiert`) |
 
-`python scripts/erzeuge_paare.py --korpus entwicklung|ex_test|test --seeds … [--erzeuger writer|libreoffice|wechselnd]` prüft die
+`python scripts/erzeuge_paare.py --korpus entwicklung|ex_test|test|nachbau_word --seeds … [--erzeuger writer|libreoffice|wechselnd]` prüft die
 Seed-Bereiche (Exit-Code 2 bei Verstoß). Die v1-Paare liegen in `data/paare/archiv/entwicklung_v1/` und `data/paare/archiv/test_v1/`.
 Pfade kommen aus `config/paths.yaml` (`paare_dir`, `messung_dir`), nie hartcodiert (Regel 28). Der Name `echt_…` ist nur für Nicos echte Beispiele, die **lokal** bleiben.
 
@@ -76,6 +77,11 @@ Das **Soll** wird immer aus `vorher.xlsx` ↔ `nachher.xlsx` abgeleitet (Zellver
 ```
 Zahlen verschiedener Generator-Versionen sind **nicht vergleichbar** (das Skript verweigert, v2-Paare in einen v1-Ordner zu legen).
 
+Seit Auftrag 003 nennt `KORPUS.json` außerdem, **wie das Tool den Korpus lesen und schreiben soll**:
+`"legende": "alt" | "auto" | "linie" | "farbe"` (ADR 0006) und `"nachher_format": "sauber" | "markiert"` (ADR 0005, Nachtrag).
+Fehlt die Angabe (alle Korpora v1/v2), gilt beim Lesen `legende: "alt"`, `nachher_format: "sauber"`. Das Skript schreibt beide Felder
+(`nachbau_word`: `auto` / `markiert`; sonst `alt` / `sauber`).
+
 ### Generator v2 (16.10.2026)
 * **Geschütztes Leerzeichen wie ein Mensch es tippt:** v1 setzte es auch hinter `+}`/`-}`; aus „{-100-} {+120+} kWh“ wurde vorher
   „100 ␣<NBSP>kWh“, nachher „120<NBSP>kWh“ – zwei Texte, die kein Mensch so schreibt und die das PDF nicht zeigt (3 Phantom-„stille
@@ -90,6 +96,84 @@ Zahlen verschiedener Generator-Versionen sind **nicht vergleichbar** (das Skript
   über ganze Zeilen), Mischformen wie beim eigenen Schreiber; je Paar zufällig Änderungsbalken am linken Rand. Nicht nachgebildet:
   PDF-Kommentare (Variante `annot` → farbig), CMYK (LibreOffice schreibt RGB), `/Rotate` (`gedrehte_seite` gibt es nur beim eigenen
   Schreiber), „Änderungen nachverfolgen“. Fehlt `soffice`, überspringen Skript und Tests die LibreOffice-Paare sauber.
+
+### Generator v3 `word_markup` (18.10.2026, Auftrag 003 – Korpus `nachbau_word`)
+Eigenes Modul `tests/fixtures/word_markup.py` (Zeichnen: `tests/fixtures/pdf_word.py`), Einstieg wie bisher:
+`erzeuge_paar(seed, "word_markup", ziel, "nachbau_word")` oder mit kleinerem Profil `{"basis": "word_markup", "name": "klein",
+"zeilen": (45, 60)}` (weitere Schalter: `leiste`, `zwei_autoren`, `alte_markierung`, `doppelbuchstaben`, `aenderungen`). Das Profil
+gehört nur zu `nachbau_word` (und umgekehrt), Erzeuger nur `writer`. Gleicher Seed ⇒ **bytegleiche** Dateien (feste ZIP-Zeitstempel).
+Nachgebaut sind die am echten Beispiel gemessenen **Formen** (Inhalte erfunden):
+* **PDF (Word-Markup):** 612 × 792 pt, Times 8,4 pt, Zeilenabstand 10 pt, Einzüge 55/82/109/137/164/191/218 (Label auf Ebene n, Text
+  ab n+1, hängender Einzug), rechter Rand ~395. Neu = Word-Rot `#d13438` + Unterstreichung (Rechteck 0,36 pt auf ~90 % der
+  Zeichenhöhe), entfällt = dieselbe Farbe + Durchstreichung (0,46 pt auf ~55 %), **zeichengenau** (nur `[` und `]`; `[40]` gestrichen
+  direkt vor `42,9`; einzelne Satzzeichen; Wörter; halbe Sätze; ganze Absätze/Listenpunkte). Geänderte Listennummern grün `#498205`
+  („c.a.“). Gelbe Hinterlegung (9,6 pt) hinter Platzhaltern `[…]`, schwarze Änderungsbalken (x = 27,3, Breite 0,53), graue Markup-Leiste
+  (x 415–612, y 95–696) mit Sprechblasen („hat formatiert:“/„Formatiert:“, „Kommentiert [XY1]:“, Helvetica 6,1 pt) und gestrichelten
+  Verbindungslinien (dash [0.14 0.14], 0,14 pt) samt Ankerpunkt – oder **nur inline** (ohne Leiste, ~25 % der Seeds). Kopf- und
+  Fußzeile auf jeder Seite (mit eigenen Änderungen, Seitenzahl „11 22 33 - n“), Vorspann (Deckblatt in Helvetica ganz neu,
+  Prüftabelle, gestrichene Revisionstabelle, gestrichene Bearbeiter-Hinweiskästen mit `*****`, ggf. Inhaltsverzeichnis), dann
+  „SECTION … – Titel“, „PART 1 …“, „1.1 TITEL“, „A.“, Listen 1./a./1)/a), … „END OF SECTION“. Zweite Autorfarbe Blau `#0078d4`.
+  Keine PDF-Annotationen. Absätze laufen über Seitenumbrüche.
+* **vorher.xlsx (CDE-Register):** Blätter Hinweise, Deckblatt, Unterschriften, Hauptblatt (Register/CDE/Anforderungen), verstecktes
+  Blatt Listen. Kopfbereich Zeilen 1–4 (Verbünde A1:A4 … H1:P4), Zählformeln U2:Z5, Spaltenköpfe 5/6 (G5:G6 …), Beispielzeile 7, Daten ab
+  Zeile 8 (300–550 Zeilen). Eine Zeile je Absatz/Listenpunkt: E Section („Part 1“, „1.1“, je Seed teils mit Leerzeichen am Ende),
+  F Sub-Section (A … Z, AA, BB …), G Text (Listenpunkt mit Label + Tab bzw. 13–19 geschützten Leerzeichen + Leerzeichen),
+  Überschriftzeilen fett mit Kennwort in I und ohne Status in H; B/C/D Konstanten, Markierungen früherer Runden in C/D (dunkelblau,
+  Zeilenumbruch, dunkelrot), zellenweise fette Grundschrift. Bedingte Formatierung und Datenprüfung in zerstückelten Bereichen,
+  Autofilter A6:AB…, Druckbereich, Drucktitel 5:6, `<sheetProtection formatCells="0"/>`, Zeichnung (Form + 1–2 Bilder, Anker Zeile 3/7).
+  Per ZIP-Nachbearbeitung: **sharedStrings** statt Inline-Strings (wie Excel), `customXml/` (2 Einträge samt Rels), `docMetadata/LabelInfo.xml`,
+  `xl/printerSettings/printerSettings1.bin`, `xl/calcChain.xml` – Content-Types und Rels stimmen, openpyxl und LibreOffice öffnen die Datei.
+* **nachher.xlsx (wie Nico):** geänderte Zelle G = PDF-Absatz inline – unverändert normal, entfällt `FF00B0F0` + durchgestrichen,
+  neu `FFFF0000`, **kein Trenner**, Grundschrift (Arial 11, ggf. fett) in jedem Lauf; gestrichener Absatz: Zeile bleibt, ganz hellblau
+  durchgestrichen; neuer Absatz/Listenpunkt/Sub-Section: neue Zeile direkt nach dem Vorgänger (B/C/D wie Nachbar, E/F aus der Gliederung,
+  G rot, Rest leer); Nummern-Änderung „c.“ → „a.“ als „c.“ alt + „a.“ neu. Einfarbige Zellen je Seed als Zellschrift oder als Rich Text mit
+  einem Lauf. Kopf-/Fuß-/Vorspann-Änderungen und Sprechblasen kommen nicht in die Excel. Weicht die Excel im Absatz anderswo vom PDF ab,
+  steht in nachher der PDF-Absatz (der Fall ist in erwartet.json „pruefen“ mit fertigem Vorschlag).
+
+**`erwartet.json` v3** (zusätzlich zu den Feldern oben): `generator_version: "3"`, `pdf_stil: "word_markup"`, `legende`, `nachher_format`,
+`hauptblatt` (Name), `abweichungen_ohne_aenderung` ([{blatt, zeile, spalte}] – Excel weicht ab, PDF ändert dort nichts: das Tool darf die
+Zelle nicht anfassen), `excel` ({datenstart, zeilen_vorher, zeilen_nachher, zusatzteile}), `pdf_info` ({seiten, leiste, sprechblasen,
+kommentare, formatiert, umbrueche_im_absatz}). Je Änderung zusätzlich:
+* `bereich`: `cde` oder `ausserhalb` (Kopf-/Fußzeile, Vorspann – „gehört nicht zur CDE“; dann `blatt`/`zeile`/`spalte` = 0),
+* `art`: feinere Kennung (`wort_ersetzt`, `zahl_ersetzt`, `eingefuegt`, `satz_eingefuegt`, `geloescht`, `satzteil_geloescht`,
+  `satzzeichen`, `klammern`, `platzhalter_ersetzt`, `listennummer`, `absatz_neu`, `subsection_neu`, `absatz_geloescht`, `kopf_fuss`, `vorspann`),
+* `soll_status` zusätzlich `ausserhalb` (kein offener Punkt, zählt aber in der Bilanz, ADR 0006 Punkt 6),
+* `nachher_zeile` (Zeile in nachher.xlsx), `absatz` (Kennung im Modell), bei `pruefen` `vorschlag` = fertige Zelle als Läufe
+  `[["normal"|"alt"|"neu", Text], …]` (= Zelle in nachher.xlsx).
+Typische Störer-Kennungen: `markup_leiste`/`nur_inline`, `sprechblase_formatiert`, `sprechblase_kommentar`, `kopf_fuss_aenderung`,
+`vorspann`, `bearbeiter_hinweise`, `inhaltsverzeichnis`, `seitenumbruch_im_absatz`, `listennummer_gruen`, `absatz_neu`, `absatz_geloescht`,
+`subsection_neu`, `subsection_doppelbuchstabe`, `klammer_zeichengenau`, `platzhalter_gelb`, `excel_abweichung`,
+`excel_abweichung_ohne_aenderung`, `alte_markierung_cd`, `zweite_autorfarbe`, `ueberschrift_aenderung`, `listenebenen`, `fette_zelle`.
+
+### Messung (Auftrag 003): Legende und Format je Korpus, Format-Treue, Rückbau-Messung
+* **Legende/Format je Korpus:** `messen` liest `legende` und `nachher_format` aus der `KORPUS.json` des Paar-Ordners (Vorrang: Aufruf
+  `--legende`, `--nachher-format` › KORPUS.json › Vorgabe des Korpus `entwicklung`/`ex_test`/`test` = alt/sauber, `nachbau_word` =
+  auto/markiert › Konfiguration wie sie ist, z. B. echte Paare unter `--ordner` ohne KORPUS.json). Sie gelten **nur während der Messung
+  eines Paars** (`messen.konfig_ueberschreibung`: `legende.modus`; `markiert` ⇒ `markierung.aenderungen: farbe`, `sauber` ⇒ `keine`),
+  danach gilt wieder die Konfiguration. Bericht und Konsole nennen beide (`bericht.legende`, `bericht.nachher_format`, je Paar `legende`,
+  `nachher_format`, `markiert`), dazu die vom Leser gewählte Legende (`legende_erkannt` je Paar, bei `auto` je Dokument entschieden;
+  `gesamt.legende_erkannt` als Häufigkeit) und ob er eine Markup-Leiste erkannt hat (`markup_leiste_erkannt`).
+  Die Formatklassen der Messung sind bewusst eine eigene, enge Definition (unabhängig vom Tool): neu = genau `markierung.neu_farbe`.
+* **Format-Treue** (nur `markiert`): Zellen werden mit **Formatklasse je Zeichen** gelesen – `alt` = durchgestrichen (jede Farbe),
+  `neu` = Neu-Farbe der Markierung (`markierung.neu_farbe`) ohne Strich, sonst `normal` (auch Markierungen früherer Runden). Die strenge
+  Vergleichsform einer Zelle enthält die Klassen: gleicher Text mit anderer Markierung ist eine andere Zelle (so wird auch ein nur
+  durchgestrichener Absatz zur Soll-Zelle). Wörter zählen je Ansicht (alt = normal + alt, neu = normal + neu); eine offene Änderung in
+  einer markierten Zelle „wartet“ wie bisher. Eine **automatisch geschriebene Zelle mit falschem Text oder falscher Formatklasse** ist ein
+  stiller Fehler (bei richtigem Text zusätzlich Art `format_falsch`). Kennzahl je Paar und gesamt: `format_treue_zellen_geprueft`
+  (Soll-Zellen der Haupt-Spalten, deren Text das Tool richtig geschrieben hat), `…_gleich`, `format_treue_zeichen`, `…_gleich`;
+  `gesamt.format_treue` = gleich ÷ geprüft. Kriterium Nr. 3 „Format-Treue“ (Ampel `ok`/`Hinweis`/`nicht gemessen`; der Exit-Code hängt
+  an den stillen Fehlern).
+* **PDF-blind und Listen-Polster:** Ein Polster aus geschützten Leerzeichen zwischen Listennummer und Text, das genau so schon in
+  vorher am Zellanfang vorkommt, wird in neuen Zeilen streng verglichen (ein Mensch übernimmt es von der Nachbarzeile).
+* **Bereiche bis zur letzten Excel-Zeile** (`R8:R1048576`) wachsen beim Einfügen nicht (Struktur-Prüfung).
+* **Rückbau-Messung** `python -m src.cli messen --nachher [--ordner PFAD] [--paar NAME] [--legende L]` für Paare mit nur
+  `aenderungen.pdf` + `nachher.xlsx` (ein vorher.xlsx wird ignoriert): vorher wird aus der Markierung der **letzten Runde** zurückgebaut
+  (`markierung.alt_farbe` + Strich → normaler Text, `markierung.neu_farbe` ohne Strich → weg; Zeilen, deren längste Zelle ganz neu ist und
+  die nichts Altes tragen, entfallen; alle anderen Zellen bleiben unangetastet), dann läuft das Tool (nachher-Format `markiert`), dann
+  wird Zelle für Zelle verglichen: `gleich`, `gleich_bis_leerraum` (gleiche sichtbare Zeichen mit gleicher Formatklasse),
+  `tool_fehlt_vorschlag_offen` (eine zugehörige Änderung steht auf „prüfen“), `tool_fehlt_gar_nicht`, `tool_extra` (Tool ändert eine
+  Zelle, die nachher nicht ändert), `verschieden`. Ausgabe nur Zahlen (je Kategorie, alle Zellen und Haupt-Spalten) und Schablonen
+  (Formen je Lauf wie `--schablonen`, höchstens 40 je Paar, Positivliste) in `messung_dir/NNN_<korpus>_rueckbau/` (append-only).
 
 ## Messbericht (`bericht.json`) – enthält NIE Text aus Dokumenten (Regel 16)
 ```json
