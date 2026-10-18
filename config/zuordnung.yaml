@@ -28,14 +28,14 @@ einfuegen:
 geloeschtes:
   inhalt: leeren              # leeren | zeile_entfernen
 markierung:
-  geaenderte_zellen: keine    # keine | kommentar | gelb
+  geaenderte_zellen: keine    # keine | kommentar | gelb (kommentar/gelb nur mit anwenden.schreiber = openpyxl)
   # ADR 0005: Aenderungen in der Excel wie im PDF markieren. farbe = neuer Inhalt rot, alter Inhalt blau + durchgestrichen
   # (Alt direkt vor Neu in derselben Zelle); keine = bisheriges Verhalten (alter Text wird ersetzt/geleert).
   aenderungen: farbe          # farbe | keine
   neu_farbe: FFFF0000         # Schriftfarbe fuer neuen Inhalt (ARGB); bestaetigt an Nicos echten Beispielen (ADR 0005, Nachtrag 18.10.)
   alt_farbe: FF00B0F0         # Schriftfarbe fuer alten Inhalt (Excel "Hellblau"), zusaetzlich durchgestrichen
   trenner: ""                 # zwischen Alt und Neu: nichts extra, Reihenfolge und Leerzeichen genau wie im PDF (Nico, 18.10.)
-  geloeschte_section: markieren   # markieren (Zeile bleibt, Inhalt blau + durchgestrichen) | zeile_entfernen
+  geloeschte_section: markieren   # markieren (Zeile bleibt, Inhalt blau + durchgestrichen) | zeile_entfernen (nur Schreiber openpyxl)
 
 planer:                       # Planen und Anwenden (src/planner.py, src/applier.py)
   # Zeichen, die beim Lesen eines PDF oft verfaelscht werden (Ligaturen, Ersatzzeichen): Neutext damit wird nie automatisch uebernommen
@@ -81,7 +81,10 @@ matcher:                      # Bewertung eines Treffers (src/matcher.py)
   rest_min_woerter: 5         # so viele Woerter des Excel-Absatzes muessen unabgedeckt sein, damit der Anfangs-Treffer zaehlt
   teil_min_woerter: 3         # ExaktIndex: Teilstueck eines laengeren Excel-Absatzes (Seitenumbruch) erst ab so vielen Woertern
 anwenden:                     # Schreiben in die Excel (src/applier.py)
-  markierung_farbe: FFF2CC    # Hintergrund, wenn markierung.geaenderte_zellen = gelb
+  # ADR 0007: patch = verlustfrei (Kopie des Original-ZIP, nur geaenderte Teile neu: Bilder, Formen, Kennzeichnung,
+  # Druckereinstellungen bleiben); openpyxl = frueheres Speichern (nur alte Tests/Notfaelle, kann Teile verlieren)
+  schreiber: patch            # patch | openpyxl
+  markierung_farbe: FFF2CC    # Hintergrund, wenn markierung.geaenderte_zellen = gelb (nur Schreiber openpyxl)
   kommentar_autor: CDE-Tool   # Autor der Zellkommentare, wenn markierung.geaenderte_zellen = kommentar
   gegenprobe_pflicht: true    # ADR 0004 Invariante: automatische Text-Aenderung ohne PDF-Absatz (plan.absaetze) -> "pruefen"
                               # (Code ohne_absatz). Neue Absaetze in einer Zelle und neue Zeilen sind ausgenommen.
@@ -100,7 +103,11 @@ normalform:                   # Vergleichsform "streng, aber fair" (src/gegenpro
   kein_leerzeichen_nach: "([{"
   listenzeichen: ["•", "·", "▪", "◦", "‣", "-", "*"]   # optionales Aufzaehlungszeichen am Absatzanfang
 
-neue_zeile:                   # Etappe 2 (src/zeilen.py): neue Zeile "wie ein Mensch" aus der Nachbarzeile gleichen Typs
-  konstanten_kopieren: true   # Spalten mit immer gleichem Wert (z. B. "Status offen") uebernehmen (Entscheidung Nico)
+neue_zeile:                   # neue Zeile "wie ein Mensch" aus der Vorlagezeile (Nachbarzeile gleichen Typs), Schreiber patch
+  # Spalten, deren Wert in der Vorlagezeile und mindestens zwei Nachbarzeilen gleich ist (z. B. "Status offen", Spezifikation,
+  # Revision, Datum), werden kopiert; gleich gebaute Formeln werden uebertragen; andere Spalten bleiben leer (mit Hinweis)
+  konstanten_kopieren: true   # (Entscheidung Nico)
 zeilen:
-  listen_summen_erweitern: true   # SUMME/ANZAHL ueber den ganzen Datenblock waechst mit neuen Zeilen mit (mit Hinweis)
+  # Bereiche (Formeln, Namen), die genau mit der Vorlagezeile enden, wachsen um eine neue Zeile direkt dahinter (mit Hinweis).
+  # Bedingte Formatierung, Datenpruefung, Autofilter und Druckbereich wachsen so immer (die neue Zeile sieht aus wie die Vorlage).
+  listen_summen_erweitern: true

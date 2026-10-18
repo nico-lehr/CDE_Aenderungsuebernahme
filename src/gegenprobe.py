@@ -234,3 +234,109 @@ def absaetze_aus_liste(daten: Any) -> list[Absatz] | None:
     if not isinstance(daten, list):
         return None
     return [Absatz.aus_dict(d) for d in daten]
+
+
+# ---------------------------------------------------------------- A3 mit Markierung (ADR 0005 Nachtrag, ADR 0007)
+# Mit markierung.aenderungen = farbe bleibt der alte Text stehen (blau + durchgestrichen) und der neue steht rot dahinter.
+# Geprueft wird je Absatz gegen das PDF: Alt-Ansicht (normal + alt) = alter Absatz, Neu-Ansicht (normal + neu) = Absatz laut
+# PDF fuer die angewendeten Aenderungen, Formatklasse je Zeichen = Soll, und kein Zeichen des Originals geht verloren.
+_N, _A, _U = "normal", "alt", "neu"
+
+
+def zustand_markiert_zeichen(laeufe: Iterable[Lauf], aktiv: set[str], trenner: str = "") -> list[tuple[str, str, bool]]:
+    """Soll eines Absatzes mit Markierung je Zeichen: (zeichen, klasse, optional). Wie markierung.zustand_markiert:
+    entfallende Laeufe angewendeter Aenderungen bleiben (alt), neue Laeufe sind neu, nicht angewendete neue fehlen."""
+    sichtbar: list[Lauf] = []
+    for l in laeufe:
+        if l.art == "a" and l.aenderung not in aktiv:
+            continue
+        if l.art == "s" and sichtbar and sichtbar[-1].art == "s":
+            if _RANG.get(l.text, 1) > _RANG.get(sichtbar[-1].text, 1):
+                sichtbar[-1] = l
+            continue
+        sichtbar.append(l)
+    while sichtbar and sichtbar[0].art == "s":
+        sichtbar.pop(0)
+    while sichtbar and sichtbar[-1].art == "s":
+        sichtbar.pop()
+    out: list[tuple[str, str, bool]] = []
+    vorige = ""
+    for l in sichtbar:
+        k = _A if (l.art == "d" and l.aenderung in aktiv) else (_U if l.art == "a" else _N)
+        if vorige == _A and k == _U:
+            out.extend((c, _N, False) for c in trenner)
+        out.extend((c, k, l.optional) for c in l.text)
+        vorige = k
+    return out
+
+
+def _klassen_gleich(soll: list[tuple[str, str, bool]], ist: list[tuple[str, str]], cfg: dict | None) -> bool:
+    """Gleiche Zeichen (Normalform, ohne Leerraum) mit gleicher Formatklasse; optionale Soll-Zeichen duerfen fehlen."""
+    ns, ms = normalform("".join(c for c, _, _ in soll), cfg)
+    ni, mi = normalform("".join(c for c, _ in ist), cfg)
+    a = [(c, soll[i][1], soll[i][2]) for c, i in zip(ns, ms) if c != " "]
+    b = [(c, ist[i][1]) for c, i in zip(ni, mi) if c != " "]
+    i = j = 0
+    while i < len(a) and j < len(b):
+        if a[i][0] == b[j][0] and a[i][1] == b[j][1]:
+            i += 1
+            j += 1
+        elif a[i][2]:
+            i += 1
+        else:
+            return False
+    while i < len(a) and a[i][2]:
+        i += 1
+    return i == len(a) and j == len(b)
+
+
+def pruefe_absatz_markiert(absatz: Absatz, zellen: dict[tuple[int, int], tuple[str, list[tuple[str, str, int, int, str]]]],
+                           angewendet: set[str], cfg: dict | None = None, trenner: str = "") -> str | None:
+    """A3 mit Markierung: Steht der Absatz nach dem Schreiben so in der Excel, wie das PDF es verlangt?
+
+    zellen: (zeile, spalte) -> (Originaltext in der Sicht des Excel-Modells, Zeichen der Zelle nach dem Schreiben als
+    (zeichen, klasse, pos, luecke, aenderung) -- siehe markierung.Markierung). Rueckgabe None = in Ordnung, sonst ein Code:
+    gegenprobe_zelle | gegenprobe_verlust (ein Zeichen des Originals fehlt) | gegenprobe_aussen (eigene Markierung ausserhalb
+    des Absatzes) | gegenprobe_alt | gegenprobe_text | gegenprobe_umbruch | gegenprobe_format."""
+    eigene = absatz.aenderungen
+    aktiv = set(angewendet) & eigene
+    ist: list[tuple[str, str]] = []
+    alt_umbrueche = 0
+    for k, (zeile, spalte, start, ende) in enumerate(absatz.zellen):
+        daten = zellen.get((zeile, spalte))
+        if daten is None:
+            return "gegenprobe_zelle"
+        vorher, zeichen = daten
+        if "".join(z[0] for z in zeichen if z[2] >= 0) != vorher or [z[2] for z in zeichen if z[2] >= 0] != list(range(len(vorher))):
+            return "gegenprobe_verlust"
+        if not 0 <= start <= ende <= len(vorher):
+            return "gegenprobe_aussen"
+        alt_umbrueche += vorher[start:ende].count("\n")
+        region: list[tuple[str, str]] = []
+        for ch, kl, pos, lu, aid in zeichen:
+            if pos >= 0:
+                drin = start <= pos < ende
+                if not drin and aid and aid in eigene and kl != _N and not ch.isspace():
+                    return "gegenprobe_aussen"
+            else:
+                drin = start < lu < ende or (lu in (start, ende) and bool(aid) and aid in eigene)
+                if not drin and aid and aid in eigene and not ch.isspace():
+                    return "gegenprobe_aussen"
+            if drin:
+                region.append((ch, kl))
+        if k:
+            ist.append((" ", _N))
+        ist.extend(region)
+    alt_ist = "".join(c for c, kl in ist if kl != _U)
+    neu_ist = "".join(c for c, kl in ist if kl != _A)
+    alt_soll, opt_alt = zustand_mit_optional(absatz.laeufe, set())
+    neu_soll, opt_neu = zustand_mit_optional(absatz.laeufe, aktiv)
+    if not gleich(alt_soll, alt_ist, opt_alt, cfg):
+        return "gegenprobe_alt"
+    if neu_ist.count("\n") > max(alt_umbrueche, neu_soll.count("\n")):
+        return "gegenprobe_umbruch"
+    if not gleich(neu_soll, neu_ist, opt_neu, cfg):
+        return "gegenprobe_text"
+    if not _klassen_gleich(zustand_markiert_zeichen(absatz.laeufe, aktiv, trenner), ist, cfg):
+        return "gegenprobe_format"
+    return None

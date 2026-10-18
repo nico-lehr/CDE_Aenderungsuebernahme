@@ -13,30 +13,44 @@ Grundsaetze
     veraendert hat. Sonst wird sie auf "pruefen" bzw. "nicht_uebernommen" zurueckgestuft (nie "uebernommen" ohne Wirkung).
   * Eine neue Section und ihre Folgeabsaetze (stehen in derselben Excel-Zeile) gelten als Gruppe: Status und Freigabe
     gelten fuer alle gemeinsam.
+  * Schreiber (ADR 0007, `anwenden.schreiber`): "patch" (Standard) schreibt verlustfrei mit src/xlsx_patch.py -- openpyxl
+    ist dann nur noch Lese- und Planungsmodell; "openpyxl" speichert die Mappe wie frueher (nur fuer alte Tests und
+    Notfaelle: Bilder, Formen, Kennzeichnung u. a. koennen dabei verloren gehen).
+  * Markierung (ADR 0005, `markierung.aenderungen: farbe`): alter Text bleibt blau durchgestrichen stehen, neuer steht rot
+    dahinter (markierung.markiere_ops). Jeder markierte Absatz wird VOR dem Schreiben gegen das PDF geprueft
+    (gegenprobe.pruefe_absatz_markiert); was nicht besteht, kommt nicht in die Datei ("pruefen", Wirkung "abweichung").
 """
 from __future__ import annotations
 
 import re
+import zipfile
 from collections import Counter
 from copy import copy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-from openpyxl.cell.rich_text import CellRichText
+from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.comments import Comment
+from openpyxl.formula.translate import Translator
 from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 
 from . import config
+from . import markierung as mk
 from .fehler import DateiVorhanden
 from .excel_model import ExcelModell, zahl_als_text
-from .gegenprobe import gleich, pruefe_absatz
+from .gegenprobe import gleich, pruefe_absatz, pruefe_absatz_markiert
 from .models import (MITTEL, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN, WIRKUNG_ABWEICHUNG, WIRKUNG_KEINE, WIRKUNG_OK,
                      Absatz, Aenderung, Operation)
 from .planner import neutext_probleme, zahl_aus_text
 from .textutil import norm
+from .xlsx_patch import NeueZeile, PatchFehler, ZellInhalt
+from .xlsx_patch import hindernisse as patch_hindernisse
+from .xlsx_patch import pruefe_treue
+from .xlsx_patch import schreibe as patch_schreiben
 
 
 @dataclass
@@ -332,6 +346,134 @@ def _verschiebe_verbunden(ws, ab: int, delta: int) -> None:
             ws.merged_cells.add(rng)
 
 
+# ---------------------------------------------------------------- Schreiber und Markierung (ADR 0005/0007, Auftrag 003)
+def _schreiber(anw: dict) -> str:
+    """anwenden.schreiber: patch (Standard, verlustfrei) | openpyxl (frueheres Speichern)."""
+    return "openpyxl" if str(anw.get("schreiber", "patch")) == "openpyxl" else "patch"
+
+
+def _sicht(xl: ExcelModell, blatt: str, zeile: int, spalte: int, zelle) -> str:
+    """Welche Sicht hatte das Excel-Modell (und damit der Plan) auf die Zelle? flach = ganzer Text, auch durchgestrichene
+    Laeufe (heutiges Modell); neu = Neu-Ansicht (durchgestrichene Laeufe zaehlen nicht, ADR 0006). Erkannt am Text."""
+    if zelle is None or not isinstance(zelle.value, CellRichText):
+        return mk.SICHT_FLACH
+    m = xl.text(blatt, zeile, spalte)
+    if m == str(zelle.value):
+        return mk.SICHT_FLACH
+    if m == mk.sicht_text(mk.stuecke_aus_zelle(zelle), mk.SICHT_NEU):
+        return mk.SICHT_NEU
+    return mk.SICHT_FLACH
+
+
+def _sichttext(zelle, sicht: str) -> str:
+    if zelle is not None and sicht == mk.SICHT_NEU:
+        return mk.sicht_text(mk.stuecke_aus_zelle(zelle), mk.SICHT_NEU)
+    return _text(zelle) if zelle is not None else ""
+
+
+def _zahl_zeichen(orig: str, neu: str | None, aid: str) -> list[tuple[str, str, int, int, str]]:
+    """Zahl-Zelle mit Markierung (nur Schriftfarbe, ADR 0005): fuer die Gegenprobe so, als stuende alt (durchgestrichen)
+    vor neu -- die Datei selbst hat nur den neuen Wert in roter Schrift (bzw. den alten Wert blau durchgestrichen)."""
+    out = [(c, mk.ALT, i, i, aid) for i, c in enumerate(orig)]
+    return out + [(c, mk.NEU, -1, len(orig), aid) for c in (neu or "")]
+
+
+def _merkmal(schrift: Any) -> tuple[bool, str]:
+    """(durchgestrichen, Farbe) einer openpyxl-Schrift -- das, woran man alt/neu in der Datei erkennt."""
+    if schrift is None:
+        return False, ""
+    c = getattr(schrift, "color", None)
+    farbe = ""
+    if c is not None:
+        wert = getattr(c, "value", "")
+        farbe = f"{getattr(c, 'type', '')}:{str(wert).upper()}:{getattr(c, 'tint', 0) or 0}"
+    return bool(getattr(schrift, "strike", False)), farbe
+
+
+def _ist_merkmale(zelle) -> list[tuple[str, tuple[bool, str]]]:
+    """Zeichen einer gespeicherten Zelle mit (durchgestrichen, Farbe)."""
+    v = zelle.value
+    if isinstance(v, CellRichText):
+        out: list[tuple[str, tuple[bool, str]]] = []
+        for b in v:
+            m = _merkmal(b.font if isinstance(b, TextBlock) else zelle.font)
+            out += [(c, m) for c in (b.text if isinstance(b, TextBlock) else str(b))]
+        return out
+    return [(c, _merkmal(zelle.font)) for c in _text(zelle)]
+
+
+def _soll_merkmale(stuecke: list[mk.Stueck], zellschrift: Any, cfg: dict) -> list[tuple[str, tuple[bool, str]]]:
+    k = mk.konfig(cfg)
+    out: list[tuple[str, tuple[bool, str]]] = []
+    for s in stuecke:
+        if s.behalten or s.format == mk.NORMAL:
+            m = _merkmal(s.basis if s.basis is not None else zellschrift)
+        elif s.format == mk.ALT:
+            m = (True, f"rgb:{str(k.get('alt_farbe', 'FF00B0F0')).upper()}:0")
+        else:
+            m = (False, f"rgb:{str(k.get('neu_farbe', 'FFFF0000')).upper()}:0")
+        out += [(c, m) for c in s.text]
+    return out
+
+
+def _formel_text(zelle) -> str | None:
+    v = zelle.value if zelle is not None else None
+    return v if isinstance(v, str) and v.startswith("=") and zelle.data_type == "f" else None
+
+
+def _konstanten(ws, vorlage: int, belegt: set[int]) -> tuple[dict[int, ZellInhalt], list[int]]:
+    """Konstanten einer neuen Zeile (neue_zeile.konstanten_kopieren): Spalten, deren Wert in der Vorlagezeile und in
+    mindestens zwei ihrer Nachbarzeilen (bis zwei darueber/darunter) gleich ist, werden kopiert; Formeln, die in den
+    Nachbarzeilen gleich gebaut sind (gleich nach dem Verschieben), werden in die neue Zeile uebertragen. Alles andere mit
+    Inhalt in der Vorlagezeile bleibt leer (zweite Rueckgabe)."""
+    kopie: dict[int, ZellInhalt] = {}
+    leer: list[int] = []
+    nachbarn = [r for r in (vorlage - 2, vorlage - 1, vorlage + 1, vorlage + 2) if r >= 1]
+    for c in range(1, ws.max_column + 1):
+        if c in belegt:
+            continue
+        z = ws._cells.get((vorlage, c))
+        if z is None or z.value is None or (isinstance(z.value, str) and not z.value.strip()):
+            continue
+        f = _formel_text(z)
+        gleich_n = 0
+        for r in nachbarn:
+            n = ws._cells.get((r, c))
+            if n is None or n.value is None:
+                continue
+            if f is not None:
+                nf = _formel_text(n)
+                try:
+                    gleich_n += nf is not None and Translator(nf, origin=n.coordinate).translate_formula(z.coordinate) == f
+                except Exception:                          # noqa: BLE001 -- nicht uebertragbar: zaehlt nicht als gleich
+                    pass
+            elif _formel_text(n) is None and n.value == z.value and type(n.value) is type(z.value):
+                gleich_n += 1
+        if gleich_n >= 2:
+            kopie[c] = (ZellInhalt(ws.title, 0, c, formel=f, formel_von=vorlage) if f is not None
+                        else ZellInhalt(ws.title, 0, c, kopie_von=vorlage))
+        else:
+            leer.append(c)
+    return kopie, leer
+
+
+def _gefaehrdet(quelle: Path) -> list[str]:
+    """Was openpyxl beim Speichern dieser Datei verliert (ADR 0007), in einfachen Worten."""
+    try:
+        with zipfile.ZipFile(quelle) as z:
+            namen = z.namelist()
+    except (zipfile.BadZipFile, OSError):
+        return []
+    out = []
+    if any(n.startswith(("xl/drawings/", "xl/media/")) for n in namen):
+        out.append("Bilder und Formen")
+    if any(n.startswith(("customXml/", "docMetadata/")) for n in namen):
+        out.append("die Vertraulichkeits-Kennzeichnung")
+    if any(n.startswith("xl/printerSettings/") for n in namen):
+        out.append("Druckereinstellungen")
+    return out
+
+
 def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Path,
                 freigaben: set[str] | None = None, cfg: dict | None = None,
                 xl: ExcelModell | None = None, abwahl: set[str] | None = None,
@@ -350,10 +492,17 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     A3: Nach dem Speichern muss jeder Absatz mit angewendeter Aenderung so in der Excel stehen, wie das PDF es verlangt,
     sonst "pruefen" (Wirkung "abweichung", Pruefcode gegenprobe_*). Invariante (nur mit `anwenden.gegenprobe_pflicht`):
     eine automatische Text-Operation, deren Aenderung in keinem Absatz vorkommt, wird nicht angewendet ("ohne_absatz").
+    Mit `markierung.aenderungen: farbe` wird A3 schon VOR dem Schreiben am fertigen Zellinhalt geprueft; was nicht besteht,
+    kommt nicht in die Datei (keine ungepruefte Automatik), der Status ist derselbe ("pruefen", Wirkung "abweichung").
+    Schreiber "patch" (ADR 0007): danach Pruefung der Datei (unberuehrte Teile bytegleich, openpyxl liest sie, jede Zelle
+    wie geplant); scheitert das, gibt es keine Ausgabedatei, sondern einen PatchFehler mit klarer Meldung.
     Eine vorhandene Zieldatei wird nie ueberschrieben (Regel 29): dann gibt es einen DateiVorhanden-Fehler (auch FileExistsError)."""
     cfg = cfg or config.lade("zuordnung")
     anw = cfg.get("anwenden") or config.lade("zuordnung")["anwenden"]
     farbe, autor = anw["markierung_farbe"], anw["kommentar_autor"]
+    patch = _schreiber(anw) == "patch"
+    farbig = patch and mk.aktiv(cfg)          # Markierung nur beim Patch-Schreiber; openpyxl = fruehere Reinigungs-Logik
+    trenner = str(mk.konfig(cfg).get("trenner", ""))
     freigaben = freigaben or set()
     quelle, ziel = Path(quelle), Path(ziel)
     if ziel.exists():                                           # Regel 29: Ergebnisse werden nie ueberschrieben
@@ -363,13 +512,25 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     if xl is None:
         xl = ExcelModell(quelle)                                # nur zum Lesen (Layout, Sections)
     wb = load_workbook(str(quelle), rich_text=True, keep_vba=(quelle.suffix.lower() == ".xlsm"))
+    sichten: dict[tuple[str, int, int], str] = {}
+
+    def sicht(blatt: str, zeile: int, spalte: int) -> str:
+        key = (blatt, zeile, spalte)
+        if key not in sichten:
+            sichten[key] = _sicht(xl, blatt, zeile, spalte, wb[blatt]._cells.get((zeile, spalte)))
+        return sichten[key]
+
+    def sichttext(blatt: str, zeile: int, spalte: int) -> str:
+        return _sichttext(wb[blatt]._cells.get((zeile, spalte)), sicht(blatt, zeile, spalte))
+
     # Originaltexte der Absatz-Zellen (fuer die Gegenprobe A3 nach dem Speichern); ohne neue Zellen anzulegen
     absatz_orig: dict[tuple[str, int, int], str] = {}
+    zwischen: dict[str, str] = {}                     # Leerraum zwischen Alt und Neu einer Aenderung laut PDF
     for ab in absaetze or []:
+        zwischen.update(mk.trenner_aus_laeufen(ab.laeufe))
         if ab.blatt in wb.sheetnames:
             for z, sp, _, _ in ab.zellen:
-                c = wb[ab.blatt]._cells.get((z, sp))
-                absatz_orig[(ab.blatt, z, sp)] = _text(c) if c is not None else ""
+                absatz_orig[(ab.blatt, z, sp)] = sichttext(ab.blatt, z, sp)
 
     # --- Welche Aenderungen werden angewendet? (neue Section + Folgeabsaetze gelten als Gruppe) ---------------
     gruppen = _folge_gruppen(aenderungen)
@@ -483,7 +644,12 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                 if zelle.data_type == "f":
                     entferne(ae, NICHT, "In der Zelle steht eine Formel; sie wird nie verändert.")
                     break
-                aktuell = _text(zelle)
+                if not farbig and sicht(op.blatt, op.zeile, op.spalte) == mk.SICHT_NEU:
+                    entferne(ae, PRUEFEN, "In der Zelle steht durchgestrichener Text früherer Runden; ohne farbige Markierung "
+                                          "kann er beim Eintragen nicht sicher erhalten werden.",
+                             "Bitte von Hand eintragen oder mit farbiger Markierung (markierung.aenderungen = farbe) arbeiten.")
+                    break
+                aktuell = sichttext(op.blatt, op.zeile, op.spalte)
                 if op.art != "zelle_leeren" and (op.ende > len(aktuell) or
                                                  (op.art == "ersetzen" and aktuell[op.start:op.ende] != op.erwartet)):
                     entferne(ae, NICHT, "Die Excel hat sich seit der Analyse geändert (Text an der Stelle stimmt nicht mehr).")
@@ -513,6 +679,8 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     aktiv = [a for a in aktiv if a.id in nach_id]
 
     # --- Zeile einfuegen: Risiken der Excel (Formeln, Formatierung, Filter, Links ...). Nie automatisch. -------
+    # Patch-Schreiber: nur, was xlsx_patch nicht sicher mitziehen kann (geteilte Formel ueber die Stelle, Tabellenobjekt ...);
+    # das ist ein festes Hindernis, auch nach Freigabe (die Datei wuerde sonst beschaedigt).
     risiko_cache: dict[tuple[str, int], list[str]] = {}
 
     def zeilen_risiken(ae: Aenderung) -> list[str]:
@@ -521,7 +689,8 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             if op.art == "zeile_einfuegen" and not op.abgedeckt:
                 pos = op.zeile if op.vor else op.zeile + 1
                 if (op.blatt, pos) not in risiko_cache:
-                    risiko_cache[(op.blatt, pos)] = xl.einfuege_hindernisse(op.blatt, pos)
+                    risiko_cache[(op.blatt, pos)] = (patch_hindernisse(quelle, op.blatt, pos) if patch
+                                                     else xl.einfuege_hindernisse(op.blatt, pos, schreiber="openpyxl"))
                 out += [r for r in risiko_cache[(op.blatt, pos)] if r not in out]
         return out
 
@@ -531,7 +700,10 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
         risiken = zeilen_risiken(ae)
         if not risiken:
             continue
-        if ae.bestaetigt:               # ein Mensch hat es freigegeben: eintragen, aber laut warnen
+        if patch:
+            entferne(ae, PRUEFEN, "Die neue Zeile kann nicht verlustfrei eingefügt werden; dabei würde in der Excel etwas "
+                                  "verrutschen oder brechen. Die Änderung wird nicht eingetragen.", *risiken)
+        elif ae.bestaetigt:               # ein Mensch hat es freigegeben: eintragen, aber laut warnen
             ergebnis.warnungen.append(f"Änderung {ae.id} ({ae.ziel}): Die Zeile wurde auf Freigabe eingefügt, obwohl "
                                       f"in der Excel etwas verrutschen oder brechen kann: {' '.join(risiken)} Bitte die Ergebnis-Excel prüfen.")
             _hinweise(ae, *risiken)
@@ -554,7 +726,7 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                 if o.art == "ersetzen":
                     o.abgedeckt = True
         else:
-            for aid in _ueberlappen(text_ops, _text(wb[key[0]].cell(key[1], key[2]))):
+            for aid in _ueberlappen(text_ops, sichttext(*key)):
                 if aid in nach_id:
                     entferne(nach_id[aid], NICHT, "Konflikt: überschneidet sich mit einer anderen Änderung in derselben Zelle.")
     aktiv = [a for a in aktiv if a.id in nach_id]
@@ -582,28 +754,176 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                          "Die Zelle ist eine Zahl. Wird dort Text eingetragen, geht das Zahlenformat verloren. Bitte von Hand entscheiden.")
     aktiv = [a for a in aktiv if a.id in nach_id]
 
-    geleerte: set[tuple[str, int, int]] = set()
-    zell_info: dict[tuple[str, int, int], dict] = {}
-    for (blatt, zeile, spalte), ops in je_zelle.items():
-        ops = [o for o in ops if o.aenderung in nach_id]
-        if not ops:
+    # --- Patch-Schreiber: was es dort nicht gibt (Kommentar/Gelb, Zeilen entfernen) -> "pruefen" mit klarer Meldung --------
+    modus = cfg["markierung"]["geaenderte_zellen"]
+    zeilen_weg = (str(mk.konfig(cfg).get("geloeschte_section", "markieren")) == "zeile_entfernen" if farbig
+                  else cfg["geloeschtes"]["inhalt"] == "zeile_entfernen")
+    if not patch and mk.aktiv(cfg):
+        ergebnis.warnungen.append("Die farbige Markierung (markierung.aenderungen = farbe) gibt es nur beim verlustfreien "
+                                  "Schreiben (anwenden.schreiber = patch). Mit openpyxl wurde der alte Text wie früher ersetzt.")
+    if patch and modus != "keine":
+        for ae in list(aktiv):
+            entferne(ae, PRUEFEN, f"Die Markierung „{modus}“ gibt es nur mit dem Schreiber „openpyxl“; die Änderung wird "
+                                  "nicht eingetragen.",
+                     "Für das verlustfreie Schreiben (ADR 0007) bitte markierung.geaenderte_zellen auf „keine“ stellen.")
+        ergebnis.warnungen.append(f"Die Einstellung markierung.geaenderte_zellen = „{modus}“ gibt es beim verlustfreien "
+                                  "Schreiben nicht. Es wurde nichts eingetragen; alle Änderungen stehen auf „prüfen“.")
+        aktiv = [a for a in aktiv if a.id in nach_id]
+    if patch and zeilen_weg:
+        for (blatt, zeile, spalte), ops in je_zelle.items():
+            ops = [o for o in ops if o.aenderung in nach_id]
+            lay = xl.layouts.get(blatt)
+            if not lay or not any(o.art == "zelle_leeren" for o in ops):
+                continue
+            cols = [c for c in (lay.section_spalte, lay.titel_spalte, lay.inhalt_spalte) if c]
+
+            def leer_nachher(c: int) -> bool:
+                eigene = [o for o in je_zelle.get((blatt, zeile, c), []) if o.aenderung in nach_id]
+                return not (_zelltext(sichttext(blatt, zeile, c), eigene) if eigene else sichttext(blatt, zeile, c)).strip()
+            if all(leer_nachher(c) for c in cols):
+                for aid in dict.fromkeys(o.aenderung for o in ops):
+                    if aid in nach_id:
+                        entferne(nach_id[aid], PRUEFEN, "Eine Zeile zu entfernen gibt es nur mit dem Schreiber „openpyxl“; "
+                                                        "die Änderung wird nicht eingetragen.",
+                                 "Beim verlustfreien Schreiben (ADR 0007) bleibt die Zeile stehen. Bitte von Hand entscheiden "
+                                 "oder die gestrichene Zeile markieren lassen (geloeschte_section = markieren).")
+        aktiv = [a for a in aktiv if a.id in nach_id]
+
+    # --- Inhalt jeder geaenderten Zelle planen (ohne zu schreiben) ------------------------------------
+    def baue_zellen() -> dict[tuple[str, int, int], dict]:
+        out: dict[tuple[str, int, int], dict] = {}
+        for (blatt, zeile, spalte), ops in je_zelle.items():
+            ops = [o for o in ops if o.aenderung in nach_id]
+            if not ops:
+                continue
+            zelle = wb[blatt].cell(zeile, spalte)
+            sv = sicht(blatt, zeile, spalte)
+            orig = _sichttext(zelle, sv)
+            neu = _zelltext(orig, ops)
+            zahl = zahl_aus_text(neu, zelle.number_format) if _ist_zahlzelle(zelle) else None
+            info: dict[str, Any] = {"orig": orig, "neu": neu, "ops": ops, "zahl": zahl, "sicht": sv,
+                                    "leeren": any(o.art == "zelle_leeren" for o in ops),
+                                    "aen": [nach_id[i] for i in dict.fromkeys(o.aenderung for o in ops)]}
+            if farbig and _ist_zahlzelle(zelle) and (zahl is not None or not neu.strip()):
+                # Zahl bleibt Zahl: nur die Schrift wird gefaerbt (neu = rot; geloescht = Wert bleibt, blau durchgestrichen)
+                aid = ops[0].aenderung
+                if zahl is None:
+                    info.update(farbe=mk.ALT, wert=zelle.value, zeichen=_zahl_zeichen(orig, None, aid), neu=orig)
+                else:
+                    t = zahl_als_text(zahl, zelle.number_format)
+                    info.update(farbe=mk.NEU, wert=zahl, zeichen=_zahl_zeichen(orig, t, aid), neu=t)
+            elif farbig:
+                vorher = [mk.Stueck(mk.NORMAL, orig)] if _ist_zahlzelle(zelle) else mk.stuecke_aus_zelle(zelle)
+                m = mk.markiere_ops(vorher, ops, sv, zwischen, cfg)
+                info.update(mark=m, zeichen=m.zeichen, neu=m.text, zellschrift=zelle.font)
+            out[(blatt, zeile, spalte)] = info
+        return out
+
+    # --- Gegenprobe A3 VOR dem Schreiben (nur mit Markierung): was nicht zum PDF passt, kommt nicht in die Datei -------
+    def vorpruefung(zell_info: dict) -> tuple[dict[str, str], set[str]]:
+        fehler: dict[str, str] = {}
+        gut: set[str] = set()
+        angewendet = set(nach_id)
+        for ab in absaetze or []:
+            if not ab.aenderungen & angewendet:
+                continue
+            daten: dict[tuple[int, int], tuple[str, list]] = {}
+            for z, sp, _, _ in ab.zellen:
+                info = zell_info.get((ab.blatt, z, sp))
+                if info is not None:
+                    daten[(z, sp)] = (info["orig"], info["zeichen"])
+                elif ab.blatt in wb.sheetnames:
+                    t = absatz_orig.get((ab.blatt, z, sp), "")
+                    daten[(z, sp)] = (t, [(c, mk.NORMAL, i, i, "") for i, c in enumerate(t)])
+            code = pruefe_absatz_markiert(ab, daten, angewendet, cfg, trenner)
+            for aid in sorted(ab.aenderungen & angewendet):
+                if code is None:
+                    gut.add(aid)
+                else:
+                    fehler.setdefault(aid, code)
+        for ae in aktiv:                    # neuer Absatz in einer bestehenden Zelle: eigene Zeile, Rest unveraendert
+            if ae.id not in nach_id or ae.id in mit_absatz or not _neuer_absatz_in_zelle(ae):
+                continue
+            soll = ae.soll_absatz or ae.neu
+            ok_ = True
+            for o in ae.ops:
+                info = zell_info.get((o.blatt, o.zeile, o.spalte))
+                if info is None or "zeichen" not in info:
+                    ok_ = False
+                    break
+                gesp = "".join(c for c, kl, _, _, _ in info["zeichen"] if kl != mk.ALT)
+                ohne = "".join(c for c, kl, p, _, aid in info["zeichen"] if kl != mk.ALT and not (p < 0 and aid == ae.id))
+                if not _als_eigene_zeile(gesp, ohne, soll, cfg):
+                    ok_ = False
+                    break
+            if ok_:
+                gut.add(ae.id)
+            else:
+                fehler.setdefault(ae.id, "gegenprobe_neuer_absatz")
+        return fehler, gut
+
+    zurueck: dict[str, str] = {}                   # vor dem Schreiben durchgefallen (nicht in der Datei)
+    a3_vorab: set[str] = set()
+    zell_info = baue_zellen()
+    if farbig:
+        # Idempotenz: eine Aenderung, deren Loeschungen schon durchgestrichen dastehen und die nichts Neues markiert oder
+        # einfuegt, steht schon so in der Excel (zweiter Lauf auf dem eigenen Ergebnis) -- sie wird nicht noch einmal eingetragen
+        neu_n: Counter = Counter()
+        alt_n: Counter = Counter()
+        for info in zell_info.values():
+            if "mark" in info:
+                neu_n.update(info["mark"].neu_markiert)
+                alt_n.update(info["mark"].schon_alt)
+        schon = [a for a in aktiv if a.id in nach_id and alt_n[a.id] and not neu_n[a.id]]
+        for ae in schon:
+            entferne(ae, NICHT, "Die Änderung steht schon so in der Excel (der gestrichene Text ist dort bereits "
+                                "durchgestrichen markiert).")
+            _code(ae, "schon_eingetragen")
+        if schon:
+            aktiv = [a for a in aktiv if a.id in nach_id]
+            zell_info = baue_zellen()
+    if farbig and absaetze is not None:
+        for _ in range(len(nach_id) + 1):
+            fehler_vorab, a3_vorab = vorpruefung(zell_info)
+            if not fehler_vorab:
+                break
+            for aid, code in fehler_vorab.items():
+                for k in sorted(kopplung.get(aid, {aid})):
+                    if k in nach_id and k not in zurueck:
+                        zurueck[k] = code if k == aid else "gegenprobe_gruppe"
+            for k in zurueck:
+                nach_id.pop(k, None)
+            zell_info = baue_zellen()
+    geleerte: set[tuple[str, int, int]] = {k for k, i in zell_info.items() if i["leeren"]}
+    for (blatt, zeile, spalte), info in zell_info.items():          # Schema 4: Ergebnis der Zielzelle fuer die Anzeige
+        if "zeichen" in info:
+            for ae in info["aen"]:
+                if not ae.stuecke:
+                    ae.stuecke = mk.klassen_stuecke(info["zeichen"])
+
+    # --- Zellen schreiben (openpyxl) bzw. sammeln (Patch) -----------------------------------------
+    zell_inhalte: list[ZellInhalt] = []
+    for (blatt, zeile, spalte), info in zell_info.items():
+        if patch:
+            if "mark" in info:
+                zell_inhalte.append(ZellInhalt(blatt, zeile, spalte, stuecke=info["mark"].stuecke,
+                                               text_praefix=mk.sicht_text(info["mark"].stuecke, mk.SICHT_NEU).startswith("=")))
+            elif "farbe" in info:
+                zell_inhalte.append(ZellInhalt(blatt, zeile, spalte, wert=info["wert"], farbe=info["farbe"]))
+            elif info["zahl"] is not None:
+                zell_inhalte.append(ZellInhalt(blatt, zeile, spalte, wert=info["zahl"]))
+            else:
+                zell_inhalte.append(ZellInhalt(blatt, zeile, spalte, wert=info["neu"] or None,
+                                               text_praefix=info["neu"].startswith("=")))
             continue
         zelle = wb[blatt].cell(zeile, spalte)
-        orig = _text(zelle)
-        neu = _zelltext(orig, ops)
-        if any(o.art == "zelle_leeren" for o in ops):
-            geleerte.add((blatt, zeile, spalte))
-        zahl = zahl_aus_text(neu, zelle.number_format) if _ist_zahlzelle(zelle) else None
-        if zahl is not None:
-            zelle.value = zahl                    # bleibt eine Zahl, das Zahlenformat der Zelle bleibt
+        if info["zahl"] is not None:
+            zelle.value = info["zahl"]                    # bleibt eine Zahl, das Zahlenformat der Zelle bleibt
         else:
-            _setze_wert(zelle, neu)
-        zell_info[(blatt, zeile, spalte)] = {"orig": orig, "neu": neu, "ops": ops,
-                                             "aen": [nach_id[i] for i in dict.fromkeys(o.aenderung for o in ops)]}
+            _setze_wert(zelle, info["neu"])
 
-    # --- Markierung der geaenderten Zellen (optional) -------------------------------------
-    modus = cfg["markierung"]["geaenderte_zellen"]
-    if modus != "keine":
+    # --- Markierung der geaenderten Zellen (optional, nur openpyxl) -------------------------------------
+    if modus != "keine" and not patch:
         for (blatt, zeile, spalte), info in zell_info.items():
             zelle = wb[blatt].cell(zeile, spalte)
             if modus == "gelb":
@@ -614,17 +934,20 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     # --- Zeilen einfuegen / loeschen ------------------------------------------------------
     einfuegungen: dict[tuple[str, int], list[Operation]] = {}
     for ae in aktiv:
+        if ae.id not in nach_id:
+            continue
         for op in ae.ops:
             if op.art == "zeile_einfuegen" and not op.abgedeckt:
                 pos = op.zeile if op.vor else op.zeile + 1
                 einfuegungen.setdefault((op.blatt, pos), []).append(op)
     loeschen: set[tuple[str, int]] = set()
-    if cfg["geloeschtes"]["inhalt"] == "zeile_entfernen":
+    if zeilen_weg and not patch:
         for (blatt, zeile, spalte) in geleerte:
             lay = xl.layouts.get(blatt)
             if not lay:
                 continue
             cols = [c for c in (lay.section_spalte, lay.titel_spalte, lay.inhalt_spalte) if c]
+
             if all(wb[blatt].cell(zeile, c).value in (None, "") for c in cols) and not wb[blatt].merged_cells.ranges:
                 risiken = xl.einfuege_risiken(blatt, zeile)
                 if risiken:                    # die leere Zeile bleibt stehen (nichts geht kaputt), dafuer ein Hinweis
@@ -635,61 +958,119 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                                               f"stehen), weil sonst in der Excel etwas verrutschen oder brechen könnte.")
                 else:
                     loeschen.add((blatt, zeile))
-    ereignisse = [("del", b, r) for b, r in loeschen] + [("ins", b, p) for (b, p) in einfuegungen]
-    ereignisse.sort(key=lambda e: (e[1], -e[2], 0 if e[0] == "del" else 1))
     abbildung: dict[str, list[tuple[str, int]]] = {}
-    for art, blatt, pos in ereignisse:
-        ws = wb[blatt]
-        if art == "del":
-            ws.delete_rows(pos, 1)
-            _verschiebe_hoehen(ws, pos + 1, -1)
-            _verschiebe_verbunden(ws, pos + 1, -1)
-            _links_nachziehen(ws)
-            abbildung.setdefault(blatt, []).append(("del", pos))
-        else:
-            ops = sorted(einfuegungen[(blatt, pos)], key=lambda o: o.seq)
-            n = len(ops)
-            ws.insert_rows(pos, n)
-            _verschiebe_hoehen(ws, pos, n)
-            _verschiebe_verbunden(ws, pos, n)
-            _links_nachziehen(ws)
-            abbildung.setdefault(blatt, []).append(("ins", pos, n))        # type: ignore[arg-type]
+    neue_zeilen_patch: list[NeueZeile] = []
+    nz_index: dict[int, int] = {}                     # id(Operation) -> Index in neue_zeilen_patch
+    konstanten_an = bool((cfg.get("neue_zeile") or {}).get("konstanten_kopieren", False))
+    if patch:
+        for (blatt, pos), ops in sorted(einfuegungen.items(), key=lambda e: (e[0][0], e[0][1])):
+            ws = wb[blatt]
             lay = xl.layouts.get(blatt)
             sek = lay.section_spalte if lay else None
-            for i, op in enumerate(ops):
-                neu_zeile = pos + i
-                stil = op.stil_von + (n if op.stil_von >= pos else 0)
-                anker = op.zeile + (n if op.zeile >= pos else 0)
-                for c in range(1, ws.max_column + 1):
-                    ws.cell(neu_zeile, c)._style = copy(ws.cell(stil, c)._style)
-                ws.row_dimensions[neu_zeile].height = ws.row_dimensions[stil].height
+            for op in sorted(ops, key=lambda o: o.seq):
+                stil = op.stil_von or op.zeile
+                zellen: dict[int, Any] = {}
                 for spalte, text in op.zellen.items():
-                    zelle = ws.cell(neu_zeile, spalte)
                     if spalte == sek and text.strip():
                         # RT-212: stehen die Section-Nummern als Zahl in der Excel, wird die neue auch eine Zahl
-                        vorlage = next((ws.cell(r, spalte) for r in (stil, anker)
-                                        if r != neu_zeile and _ist_zahlzelle(ws.cell(r, spalte))), None)
-                        if vorlage is not None:
-                            zahl = _section_zahl(text, vorlage.number_format)
+                        vorlage_r = next((r for r in (stil, op.zeile) if _ist_zahlzelle(ws.cell(r, spalte))), None)
+                        if vorlage_r is not None:
+                            zahl = _section_zahl(text, ws.cell(vorlage_r, spalte).number_format)
                             if zahl is not None:
-                                zelle.value = zahl
-                                zelle.number_format = vorlage.number_format
+                                zellen[spalte] = ZellInhalt(blatt, 0, spalte, wert=zahl, farbe=mk.NEU if farbig else "",
+                                                            stil_von=vorlage_r if vorlage_r != stil else 0)
                                 continue
                             _hinweise(alle_nach_id[op.aenderung], "Die Section-Nummern stehen in der Excel als Zahl. Die neue "
                                       "Nummer wurde als Text eingetragen, weil sie mit dem Zahlenformat anders aussehen würde.")
-                    _setze_wert(zelle, text)
-                if modus == "gelb":
-                    for spalte in op.zellen:
-                        ws.cell(neu_zeile, spalte).fill = PatternFill("solid", fgColor=farbe)
-                elif modus == "kommentar":
-                    a = nach_id[op.aenderung]
-                    _kommentar(ws.cell(neu_zeile, min(op.zellen)), f"PDF S.{a.seite}: neu eingefügt", autor)
+                    if farbig and text:
+                        zellen[spalte] = ZellInhalt(blatt, 0, spalte, stuecke=[mk.Stueck(mk.NEU, text)],
+                                                    text_praefix=text.startswith("="))
+                    else:
+                        zellen[spalte] = ZellInhalt(blatt, 0, spalte, wert=text or None, text_praefix=text.startswith("="))
+                if konstanten_an:
+                    kopie, leer = _konstanten(ws, stil, set(op.zellen))
+                    zellen.update(kopie)
+                    op.leer_spalten = leer
+                    if leer:
+                        _hinweise(alle_nach_id[op.aenderung],
+                                  "In der neuen Zeile bleiben die Spalten " + ", ".join(get_column_letter(c) for c in leer)
+                                  + " leer (sie sind in den Nachbarzeilen verschieden). Bitte von Hand ergänzen.")
+                    if any(z.formel for z in kopie.values()):
+                        op.formeln = {c: z.formel for c, z in kopie.items() if z.formel}
+                nz_index[id(op)] = len(neue_zeilen_patch)
+                neue_zeilen_patch.append(NeueZeile(blatt, pos - 1, stil, zellen))
+    else:
+        ereignisse = [("del", b, r) for b, r in loeschen] + [("ins", b, p) for (b, p) in einfuegungen]
+        ereignisse.sort(key=lambda e: (e[1], -e[2], 0 if e[0] == "del" else 1))
+        for art, blatt, pos in ereignisse:
+            ws = wb[blatt]
+            if art == "del":
+                ws.delete_rows(pos, 1)
+                _verschiebe_hoehen(ws, pos + 1, -1)
+                _verschiebe_verbunden(ws, pos + 1, -1)
+                _links_nachziehen(ws)
+                abbildung.setdefault(blatt, []).append(("del", pos))
+            else:
+                ops = sorted(einfuegungen[(blatt, pos)], key=lambda o: o.seq)
+                n = len(ops)
+                ws.insert_rows(pos, n)
+                _verschiebe_hoehen(ws, pos, n)
+                _verschiebe_verbunden(ws, pos, n)
+                _links_nachziehen(ws)
+                abbildung.setdefault(blatt, []).append(("ins", pos, n))        # type: ignore[arg-type]
+                lay = xl.layouts.get(blatt)
+                sek = lay.section_spalte if lay else None
+                for i, op in enumerate(ops):
+                    neu_zeile = pos + i
+                    stil = op.stil_von + (n if op.stil_von >= pos else 0)
+                    anker = op.zeile + (n if op.zeile >= pos else 0)
+                    for c in range(1, ws.max_column + 1):
+                        ws.cell(neu_zeile, c)._style = copy(ws.cell(stil, c)._style)
+                    ws.row_dimensions[neu_zeile].height = ws.row_dimensions[stil].height
+                    for spalte, text in op.zellen.items():
+                        zelle = ws.cell(neu_zeile, spalte)
+                        if spalte == sek and text.strip():
+                            # RT-212: stehen die Section-Nummern als Zahl in der Excel, wird die neue auch eine Zahl
+                            vorlage = next((ws.cell(r, spalte) for r in (stil, anker)
+                                            if r != neu_zeile and _ist_zahlzelle(ws.cell(r, spalte))), None)
+                            if vorlage is not None:
+                                zahl = _section_zahl(text, vorlage.number_format)
+                                if zahl is not None:
+                                    zelle.value = zahl
+                                    zelle.number_format = vorlage.number_format
+                                    continue
+                                _hinweise(alle_nach_id[op.aenderung], "Die Section-Nummern stehen in der Excel als Zahl. Die neue "
+                                          "Nummer wurde als Text eingetragen, weil sie mit dem Zahlenformat anders aussehen würde.")
+                        _setze_wert(zelle, text)
+                    if modus == "gelb":
+                        for spalte in op.zellen:
+                            ws.cell(neu_zeile, spalte).fill = PatternFill("solid", fgColor=farbe)
+                    elif modus == "kommentar":
+                        a = nach_id[op.aenderung]
+                        _kommentar(ws.cell(neu_zeile, min(op.zellen)), f"PDF S.{a.seite}: neu eingefügt", autor)
 
-    ziel.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(str(ziel))
+    # --- Schreiben ----------------------------------------------------------------------------------
+    perg = None
+    if patch:
+        perg = patch_schreiben(quelle, ziel, zell_inhalte, neue_zeilen_patch, cfg)
+        treue = pruefe_treue(quelle, ziel, perg.geaenderte_teile)
+        if treue:
+            ziel.unlink(missing_ok=True)
+            raise PatchFehler("Die Ergebnis-Excel wäre nicht verlustfrei geworden; es wurde keine Datei geschrieben. "
+                              "Gefunden: " + "; ".join(treue[:3]))
+        ergebnis.warnungen.extend(perg.warnungen)
+    else:
+        ziel.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(str(ziel))
+        verloren = _gefaehrdet(quelle)
+        if verloren:
+            ergebnis.warnungen.append("Die Excel wurde mit openpyxl gespeichert (anwenden.schreiber = openpyxl). Dabei können "
+                                      + ", ".join(verloren) + " verloren gehen. Bitte das Ergebnis mit dem Original vergleichen.")
 
     # --- Nachkontrolle: gespeicherte Datei neu lesen -----------------------------------------
     def neue_zeile(blatt: str, orig: int) -> int | None:
+        if perg is not None:
+            return perg.zeile(blatt, orig)
         z = orig
         for e in sorted(abbildung.get(blatt, []), key=lambda t: t[1]):
             if e[0] == "del":
@@ -708,50 +1089,59 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     abw: Counter = Counter()
     grund_abw: dict[str, str] = {}
 
-    kontrolle = load_workbook(str(ziel), rich_text=True, keep_vba=(quelle.suffix.lower() == ".xlsm"))
+    try:
+        kontrolle = load_workbook(str(ziel), rich_text=True, keep_vba=(quelle.suffix.lower() == ".xlsm"))
+    except Exception as e:                                   # noqa: BLE001 -- die Datei waere fuer den Nutzer unbrauchbar
+        if patch:
+            ziel.unlink(missing_ok=True)
+            raise PatchFehler("Die Ergebnis-Excel ließ sich nicht wieder öffnen; es wurde keine Datei geschrieben.") from e
+        raise
 
     # --- Gegenprobe A3 (ADR 0004): steht jeder betroffene Absatz so in der Excel, wie das PDF es verlangt? ----------
     durchgefallen: dict[str, str] = {}             # Aenderungs-ID -> Pruefcode
-    a3_bestanden: set[str] = set()                 # gegen das PDF geprueft und in Ordnung
+    a3_bestanden: set[str] = set(a3_vorab)         # gegen das PDF geprueft und in Ordnung
     angewendet = set(nach_id)
-    for ab in absaetze or []:
-        if not ab.aenderungen & angewendet:
-            continue
-        zellen: dict[tuple[int, int], tuple[str, str, list[Operation]]] = {}
-        if ab.blatt in kontrolle.sheetnames:
-            for z, sp, _, _ in ab.zellen:
-                nz = neue_zeile(ab.blatt, z)
-                gesp = "" if nz is None else _text(kontrolle[ab.blatt].cell(nz, sp))
-                zellen[(z, sp)] = _a3_zelle(absatz_orig.get((ab.blatt, z, sp), ""), gesp,
-                                            zell_info.get((ab.blatt, z, sp)), ab.blatt, z, sp)
-        code = pruefe_absatz(ab, zellen, angewendet, cfg)
-        for aid in sorted(ab.aenderungen & angewendet):
-            if code is None:
-                a3_bestanden.add(aid)
-            else:
-                durchgefallen.setdefault(aid, code)
-    # Neue Absaetze in einer bestehenden Zelle (ohne PDF-Absatz): als eigene Zeile genau der Text aus dem PDF, Rest unveraendert
-    if absaetze is not None:
-        for ae in aktiv:
-            if ae.id not in nach_id or ae.id in mit_absatz or not _neuer_absatz_in_zelle(ae):
+    if not farbig:
+        for ab in absaetze or []:
+            if not ab.aenderungen & angewendet:
                 continue
-            soll = ae.soll_absatz or ae.neu
-            gut = True
-            for o in ae.ops:
-                info = zell_info.get((o.blatt, o.zeile, o.spalte))
-                nz = neue_zeile(o.blatt, o.zeile)
-                if info is None or nz is None:
-                    gut = False
-                    break
-                gesp = _text(kontrolle[o.blatt].cell(nz, o.spalte))
-                ohne = _zelltext(info["orig"], [x for x in info["ops"] if x.aenderung != ae.id])
-                if not _als_eigene_zeile(gesp, ohne, soll, cfg):
-                    gut = False
-                    break
-            if gut:
-                a3_bestanden.add(ae.id)
-            else:
-                durchgefallen.setdefault(ae.id, "gegenprobe_neuer_absatz")
+            zellen: dict[tuple[int, int], tuple[str, str, list[Operation]]] = {}
+            if ab.blatt in kontrolle.sheetnames:
+                for z, sp, _, _ in ab.zellen:
+                    nz = neue_zeile(ab.blatt, z)
+                    gesp = "" if nz is None else _text(kontrolle[ab.blatt].cell(nz, sp))
+                    zellen[(z, sp)] = _a3_zelle(absatz_orig.get((ab.blatt, z, sp), ""), gesp,
+                                                zell_info.get((ab.blatt, z, sp)), ab.blatt, z, sp)
+            code = pruefe_absatz(ab, zellen, angewendet, cfg)
+            for aid in sorted(ab.aenderungen & angewendet):
+                if code is None:
+                    a3_bestanden.add(aid)
+                else:
+                    durchgefallen.setdefault(aid, code)
+        # Neue Absaetze in einer bestehenden Zelle (ohne PDF-Absatz): als eigene Zeile genau der Text aus dem PDF, Rest unveraendert
+        if absaetze is not None:
+            for ae in aktiv:
+                if ae.id not in nach_id or ae.id in mit_absatz or not _neuer_absatz_in_zelle(ae):
+                    continue
+                soll = ae.soll_absatz or ae.neu
+                gut = True
+                for o in ae.ops:
+                    info = zell_info.get((o.blatt, o.zeile, o.spalte))
+                    nz = neue_zeile(o.blatt, o.zeile)
+                    if info is None or nz is None:
+                        gut = False
+                        break
+                    gesp = _text(kontrolle[o.blatt].cell(nz, o.spalte))
+                    ohne = _zelltext(info["orig"], [x for x in info["ops"] if x.aenderung != ae.id])
+                    if not _als_eigene_zeile(gesp, ohne, soll, cfg):
+                        gut = False
+                        break
+                if gut:
+                    a3_bestanden.add(ae.id)
+                else:
+                    durchgefallen.setdefault(ae.id, "gegenprobe_neuer_absatz")
+    for aid, code in zurueck.items():
+        durchgefallen.setdefault(aid, code)
     for aid in list(durchgefallen):                     # gekoppelte Aenderungen gelten nur gemeinsam
         for k in kopplung.get(aid, ()):
             if k in nach_id and k not in durchgefallen:
@@ -760,8 +1150,17 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
 
     for (blatt, zeile, spalte), info in zell_info.items():
         z = neue_zeile(blatt, zeile)
-        tatsaechlich = "" if z is None else _text(kontrolle[blatt].cell(z, spalte))
-        zelle_stimmt = _ws(tatsaechlich) == _ws(info["neu"])
+        gz = None if z is None else kontrolle[blatt].cell(z, spalte)
+        tatsaechlich = "" if gz is None else _text(gz)
+        if gz is not None and "mark" in info:         # markiert: Zeichen UND Schrift (Strich, Farbe) je Zeichen wie geplant
+            zelle_stimmt = _ist_merkmale(gz) == _soll_merkmale(info["mark"].stuecke, info["zellschrift"], cfg)
+        elif gz is not None and "farbe" in info:
+            k = mk.konfig(cfg)
+            soll_m = ((True, f"rgb:{str(k.get('alt_farbe', 'FF00B0F0')).upper()}:0") if info["farbe"] == mk.ALT
+                      else (False, f"rgb:{str(k.get('neu_farbe', 'FFFF0000')).upper()}:0"))
+            zelle_stimmt = tatsaechlich == info["neu"] and _merkmal(gz.font) == soll_m
+        else:
+            zelle_stimmt = _ws(tatsaechlich) == _ws(info["neu"])
         for ae in info["aen"]:
             eigene = [o for o in info["ops"] if o.aenderung == ae.id]
             if not zelle_stimmt:
@@ -772,7 +1171,12 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                 abw[ae.id] += 1
                 grund_abw[ae.id] = "Der Text wurde mitten in ein Wort eingefügt (der Plan passt nicht zum Zellinhalt)."
             else:
-                if all(o.abgedeckt for o in eigene):          # Ersetzen in einer Zelle, die ohnehin geleert wurde
+                if "mark" in info:                            # markiert: wirkt, wenn dieser Lauf sichtbar etwas markiert hat
+                    nm = info["mark"].neu_markiert
+                    wirkt = (sum(nm.values()) if all(o.abgedeckt for o in eigene) else nm.get(ae.id, 0)) > 0
+                elif "zeichen" in info:                       # Zahl: nur die Schrift wird gefaerbt
+                    wirkt = True
+                elif all(o.abgedeckt for o in eigene):          # Ersetzen in einer Zelle, die ohnehin geleert wurde
                     wirkt = _ws(info["neu"]) != _ws(info["orig"])
                 else:
                     ohne = _zelltext(info["orig"], [o for o in info["ops"] if o.aenderung != ae.id])
@@ -785,10 +1189,11 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
         geloescht_davor = sum(1 for e in abbildung.get(blatt, []) if e[0] == "del" and e[1] < pos)
         basis = pos + vorher_eingefuegt - geloescht_davor
         for i, op in enumerate(sorted(ops, key=lambda o: o.seq)):
-            stimmt = bool(op.zellen) and all(_ws(_text(ws.cell(basis + i, c))) == _ws(t) for c, t in op.zellen.items())
+            r = perg.neue_zeilen[nz_index[id(op)]][1] if perg is not None else basis + i
+            stimmt = bool(op.zellen) and all(_ws(_text(ws.cell(r, c))) == _ws(t) for c, t in op.zellen.items())
             if stimmt:
                 ok[op.aenderung] += 1
-                neue_zeilen[op.aenderung] = (blatt, basis + i)
+                neue_zeilen[op.aenderung] = (blatt, r)
             else:
                 abw[op.aenderung] += 1
                 grund_abw[op.aenderung] = "Die neue Zeile in der gespeicherten Datei weicht vom Plan ab."
@@ -815,6 +1220,9 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                 keine[f.id] += 1
 
     for ae in aktiv:
+        if ae.id in zurueck:                            # vor dem Schreiben durchgefallen: Status setzt die Gegenprobe unten
+            ae.wirkung, ae.nachkontrolle = WIRKUNG_ABWEICHUNG, "abweichung"
+            continue
         if abw[ae.id] or (keine[ae.id] and ok[ae.id]):
             w = WIRKUNG_ABWEICHUNG
         elif ok[ae.id]:
@@ -839,7 +1247,7 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     # --- Gegenprobe A3: Ergebnis eintragen (nie "uebernommen/ok" fuer etwas, das nicht zum PDF passt) ---------------
     if durchgefallen:
         for aid, code in durchgefallen.items():
-            ae = nach_id[aid]
+            ae = alle_nach_id[aid]
             _code(ae, code)
             if ae.status == NICHT:                      # schon zurueckgestuft (z. B. ohne Wirkung): nie "uebernommen"
                 continue
@@ -850,6 +1258,8 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             _hinweise(ae, "Gegenprobe: Das Ergebnis in der Excel passt nicht zu dem, was das PDF verlangt. Bitte prüfen."
                       if code != "gegenprobe_gruppe" else
                       "Gegenprobe: Eine Änderung derselben Gruppe passt nicht zum PDF; die Gruppe gilt nur gemeinsam. Bitte prüfen.")
+            if aid in zurueck:
+                _hinweise(ae, "Die Änderung wurde deshalb nicht in die Ergebnis-Excel geschrieben.")
             ae.konfidenz, ae.wirkung, ae.nachkontrolle = NIEDRIG, WIRKUNG_ABWEICHUNG, "abweichung"
 
     # --- Hinweise: Inhalt in gestrichenen Sections ----------------------------------------

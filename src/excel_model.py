@@ -710,7 +710,7 @@ class ExcelModell:
         was beim automatischen Einfuegen wirklich im Weg steht, sagt `einfuege_hindernisse`."""
         return self._einfuege_risiken(blatt, zeile, entschaerft=False)
 
-    def einfuege_hindernisse(self, blatt: str, zeile: int) -> list[str]:
+    def einfuege_hindernisse(self, blatt: str, zeile: int, schreiber: str | None = None) -> list[str]:
         """Wie `einfuege_risiken`, aber leer, wenn beim EINFUEGEN einer Zeile an `zeile` nichts wirklich brechen kann.
 
         Kein Hindernis, weil der Applier es beim Einfuegen selbst mitzieht (applier._verschiebe_verbunden / _verschiebe_hoehen):
@@ -720,7 +720,19 @@ class ExcelModell:
         Zeile MITTEN in einer solchen Zeilenfolge landen wuerde (die Zeile davor und die Zeile dahinter gehoeren dazu), und alles,
         was `einfuege_risiken` sonst nennt (Formeln, bedingte Formatierung, Datenpruefung, Filter, Tabellen, benannte Bereiche,
         Hyperlinks, Bilder). Gibt es ein Hindernis, stehen die beiden Hinweise auf Unbedenkliches mit in der Liste
-        (der Mensch soll alles sehen). Fuer das Loeschen von Zeilen gilt weiter `einfuege_risiken`."""
+        (der Mensch soll alles sehen). Fuer das Loeschen von Zeilen gilt weiter `einfuege_risiken`.
+
+        Patch-Schreiber (ADR 0007, `anwenden.schreiber: patch`, Standard; `schreiber` ueberschreibt die Einstellung): der
+        Schreiber zieht Formeln, bedingte Formatierung, Datenpruefung, Filter, Druckbereich, Namen, verbundene Zellen darunter,
+        Hyperlinks, Seitenumbrueche und Zeichnungs-Anker selbst mit. Hindernis ist dann nur, was src/xlsx_patch.py nicht sicher
+        kann (`xlsx_patch.hindernisse`: geteilte Formel/Matrixformel ueber die Stelle, Tabellenobjekt, Pivot, INDIREKT/
+        BEREICH.VERSCHIEBEN, 3D-Bezug, externe Verknuepfung, verbundene Zellen durch die Stelle, mitten in ausgeblendete
+        Zeilen, Kommentare/Steuerelemente/Diagrammbezuege darunter)."""
+        if schreiber is None:
+            schreiber = str(config.lade("zuordnung").get("anwenden", {}).get("schreiber", "patch"))
+        if schreiber != "openpyxl":
+            from .xlsx_patch import hindernisse          # erst hier: das reine Lesen braucht das Schreib-Modul nicht
+            return hindernisse(self.pfad, blatt, zeile)
         return self._einfuege_risiken(blatt, zeile, entschaerft=True)
 
     def _einfuege_risiken(self, blatt: str, zeile: int, entschaerft: bool) -> list[str]:
