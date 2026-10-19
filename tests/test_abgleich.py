@@ -497,3 +497,72 @@ def test_excel_weicht_anderswo_ab_ergibt_fertigen_vorschlag(tmp_path):
     frei = tmp_path / "frei.xlsx"
     uebernehmen(plan.aenderungen, alt, frei, {a.id}, absaetze=plan.absaetze)
     assert zelle(frei, 2, 3) == "Die Pumpe arbeitet bis [-40]degrees C im Freien ohne Heizung."
+
+
+# ------------------------------------------------------------------------------------------------ Leerraum an Einfuegung/Streichung
+def _word_laeufe(tmp_path, zeilen):
+    """Ein Word-artiges Test-PDF (jede Zeile ein Eintrag, Umbruch zwischen den Zeilen; am Umbruch steht kein Leerzeichen im PDF)
+    -> Laeufe des ersten Absatzes, wie `plan.absaetze` sie traegt."""
+    from src.pdf_reader import analysiere_pdf
+    from tests._word_pdf import WordDok
+    d = WordDok()
+    d.absatz(zeilen)
+    block = analysiere_pdf(d.speichern(tmp_path / "w.pdf")).blocks[0]
+    return laeufe_aus_tokens(block.tokens)
+
+
+def _marke(laeufe, art):
+    """Alle Laeufe der Art `art` als ein Text."""
+    return "".join(l.text for l in laeufe if l.art == art)
+
+
+@pytest.mark.legende_neu
+@pytest.mark.parametrize("zeilen,art,markiert", [
+    # Einfuegung mit Leerzeichen VORN (Word markiert das Leerzeichen vor dem neuen Wort mit)
+    ([[("Die Anlage gilt", "k"), (" nachweislich", "n"), (" heute.", "k")]], "a", " nachweislich"),
+    # ... mit Leerzeichen HINTEN
+    ([[("Die Anlage gilt ", "k"), ("nachweislich ", "n"), ("heute.", "k")]], "a", "nachweislich "),
+    # Streichung mit Leerzeichen davor
+    ([[("Der Behaelter", "k"), (" erfolgen", "d"), (" halbjaehrlich.", "k")]], "d", " erfolgen"),
+    # am Zeilenumbruch fehlt das Leerzeichen im PDF: Einfuegung am Zeilenanfang -> das Leerzeichen davor gehoert ihr
+    ([[("Die Anlage gilt", "k")], [("nachweislich", "n"), (" heute.", "k")]], "a", " nachweislich"),
+    # ... Streichung am Zeilenanfang
+    ([[("Der Behaelter", "k")], [("erfolgen", "d"), (" halbjaehrlich.", "k")]], "d", " erfolgen"),
+    # ... Einfuegung am Zeilenende, davor ein sichtbares unmarkiertes Leerzeichen -> das Leerzeichen dahinter gehoert ihr
+    ([[("Die Anlage gilt ", "k"), ("nachweislich", "n")], [("heute.", "k")]], "a", "nachweislich "),
+    # ... Satz am Absatzende, erstes Wort am Zeilenanfang
+    ([[("Die Anlage gilt heute.", "k")], [("Neu ist dies.", "n")]], "a", " Neu ist dies."),
+], ids=["vorn", "hinten", "streichung", "umbruch_vorn", "umbruch_streichung", "umbruch_hinten", "umbruch_satz_ende"])
+def test_markierter_leerraum_gehoert_zur_einfuegung_bzw_streichung(tmp_path, zeilen, art, markiert):
+    l = _word_laeufe(tmp_path, zeilen)
+    assert _marke(l, art) == markiert
+    assert _marke(l, "d" if art == "a" else "a") == ""
+
+
+@pytest.mark.legende_neu
+def test_ersetzung_am_zeilenumbruch_markiert_keinen_leerraum(tmp_path):
+    """Wort ersetzt ("altneu", ohne Leerzeichen dazwischen) und das alte Wort steht am Zeilenanfang: Word markiert hier kein
+    Leerzeichen, auch wenn das Zeichen am Umbruch im PDF fehlt."""
+    l = _word_laeufe(tmp_path, [[("Der Behaelter", "k")], [("alt", "d"), ("neu", "n"), (" halbjaehrlich.", "k")]])
+    assert _marke(l, "d") == "alt" and _marke(l, "a") == "neu"
+    assert [(x.art, x.text) for x in l[:4]] == [("k", "Der"), ("s", " "), ("k", "Behaelter"), ("s", " ")]
+    # "alt" und "neu" mit einem unmarkierten Leerzeichen dazwischen, der Umbruch liegt dort: das Leerzeichen bleibt unmarkiert
+    l2 = _word_laeufe(tmp_path, [[("Der Behaelter ", "k"), ("alt", "d")], [("neu", "n"), (" halbjaehrlich.", "k")]])
+    assert _marke(l2, "d") == "alt" and _marke(l2, "a") == "neu"
+
+
+@pytest.mark.legende_neu
+def test_ersetzung_mit_leerzeichen_am_umbruch_streicht_es_mit(tmp_path):
+    """"alt " gestrichen und "neu " neu geschrieben, der Umbruch liegt dazwischen: das Leerzeichen hinter "alt" gehoert zur
+    Streichung (sonst haette die neue Fassung ein Leerzeichen zu viel)."""
+    l = _word_laeufe(tmp_path, [[("Der Behaelter ", "k"), ("alt", "d")], [("neu ", "n"), ("halbjaehrlich.", "k")]])
+    assert _marke(l, "d") == "alt " and _marke(l, "a") == "neu "
+    assert zustand(l, {"G1"}) == "Der Behaelter neu halbjaehrlich."
+
+
+@pytest.mark.legende_neu
+def test_mehrzeilige_einfuegung_bleibt_ein_markierter_lauf(tmp_path):
+    """Eine eingefuegte Wortgruppe ueber den Zeilenumbruch: das Leerzeichen am Umbruch gehoert zur Einfuegung (ein Lauf)."""
+    l = _word_laeufe(tmp_path, [[("Die Anlage gilt", "k"), (" ganz neue", "n")], [("Worte", "n"), (" heute.", "k")]])
+    assert _marke(l, "a") == " ganz neue Worte" and _marke(l, "d") == ""
+    assert zustand(l) == "Die Anlage gilt heute." and zustand(l, {"G1"}) == "Die Anlage gilt ganz neue Worte heute."

@@ -79,16 +79,86 @@ class _Aufbau:
     zaehl_token: list[list[int]]          # Token, die in dieser Gruppe als markierte Woerter zaehlen (jedes genau einmal)
 
 
+def _umbruch(a: PdfToken, b: PdfToken) -> bool:
+    """Steht zwischen den Woertern ein Zeilen- oder Seitenumbruch? Dort zeichnet das PDF keinen Leerraum, also sieht man
+    auch nicht, ob er markiert ist (ohne Hoehenangabe der Woerter: unbekannt = kein Umbruch)."""
+    if a.page != b.page:
+        return True
+    hoehe = max(a.bbox[3] - a.bbox[1], b.bbox[3] - b.bbox[1])
+    return hoehe > 0 and b.bbox[1] >= a.bbox[1] + 0.5 * hoehe
+
+
+def _umbruch_leerraum(roh: list[tuple[str, str, bool, int]], ist_trenner: list[bool], tokens: Sequence[PdfToken]) -> None:
+    """Word markiert das Leerzeichen an einer Einfuegung bzw. Streichung mit (` {+neu+}` oder `{+neu +}`). Am Zeilenumbruch
+    steht im PDF kein Leerzeichen, das PDF zeigt dort nichts Markiertes. Fuer jede Gruppe aus nur d- oder nur a-Laeufen gilt
+    deshalb: ein Trenner im Inneren der Gruppe gehoert ihr (d vor a: zur Streichung); eine Einfuegung bzw. Streichung hat
+    genau ein markiertes Leerzeichen -- sichtbar markiert ist keins, dann nimmt sie das unsichtbare am Umbruch, davor
+    sonst dahinter. Sichtbar nicht markierter Leerraum bleibt unmarkiert (Ersetzung "altneu"). Aendert nur die Art der
+    Trenner in `roh`; der Text bleibt gleich."""
+    n = len(roh)
+    k = 0
+    while k < n:
+        if roh[k][0] not in ("d", "a"):
+            k += 1
+            continue
+        letzter = j = k
+        while j < n and roh[j][0] != "k":
+            if roh[j][0] in ("d", "a"):
+                letzter = j
+            j += 1
+        _umbruch_gruppe(roh, ist_trenner, tokens, k, letzter)
+        k = j
+
+
+def _umbruch_gruppe(roh: list[tuple[str, str, bool, int]], ist_trenner: list[bool], tokens: Sequence[PdfToken],
+                    k: int, letzter: int) -> None:
+    worte = [x for x in range(k, letzter + 1) if roh[x][0] in ("d", "a") and not ist_trenner[x]]
+    if not worte:
+        return
+
+    def umbruch(x: int) -> bool:
+        i = roh[x][3]
+        return i + 1 < len(tokens) and _umbruch(tokens[i], tokens[i + 1])
+
+    def markiere(x: int, art: str) -> None:
+        i = roh[x][3]
+        roh[x] = (art, roh[x][1], roh[x][2], i if tokens[i].status != KEEP else i + 1)
+
+    wort_markiert = ist_trenner[letzter]            # "alt neu " mit sichtbar markiertem Leerzeichen hinter dem neuen Wort
+    for x in range(k, letzter + 1):                                   # Trenner im Inneren der Gruppe
+        if roh[x][0] == "s" and ist_trenner[x] and umbruch(x):
+            vor = next(roh[y][0] for y in range(x - 1, k - 1, -1) if roh[y][0] in ("d", "a"))
+            nach = next((roh[y][0] for y in range(x + 1, letzter + 1) if roh[y][0] in ("d", "a")), None)
+            # zwischen gestrichenem und neuem Wort nur, wenn Word das Leerzeichen hinter dem neuen Wort sichtbar mitmarkiert
+            # ("alt " -> "neu "); sonst steht dort ein gemeinsamer, unmarkierter Leerraum
+            if nach == vor or ((vor, nach) == ("d", "a") and wort_markiert):
+                markiere(x, vor)
+    arten = {roh[x][0] for x in worte}
+    if len(arten) != 1 or ist_trenner[k] or ist_trenner[letzter]:     # Ersetzung, oder das PDF zeigt die Markierung schon
+        return
+    art = next(iter(arten))
+    links = k - 1 if k > 0 and ist_trenner[k - 1] and roh[k - 1][0] == "s" else None
+    rechts = letzter + 1 if letzter + 1 < len(roh) and ist_trenner[letzter + 1] and roh[letzter + 1][0] == "s" else None
+    if links is not None and umbruch(links):
+        markiere(links, art)
+    elif (links is not None or k == 0) and rechts is not None and umbruch(rechts):
+        markiere(rechts, art)
+
+
 def _aufbau(tokens: Sequence[PdfToken], praefix: str = "G") -> _Aufbau:
     roh: list[tuple[str, str, bool, int]] = []
+    ist_trenner: list[bool] = []                  # parallel zu roh: Lauf ist der Trenner hinter einem Wort
     for i, t in enumerate(tokens):
         for art, text, opt in _mit_trennstrich(t, _wort_teile(t)):
             roh.append((art, text, opt, i))
+            ist_trenner.append(False)
         if i + 1 < len(tokens) and t.trenner != "":
             # markierter Leerraum (PdfToken.trenner_art "d"/"a", ADR 0006): gehoert nur zur alten bzw. neuen Fassung und ist ein
             # d- bzw. a-Lauf; er zaehlt zum markierten Nachbarwort (links, sonst rechts)
             art = getattr(t, "trenner_art", "") or "s"
             roh.append((art, t.trenner or " ", False, i if art == "s" or t.status != KEEP else i + 1))
+            ist_trenner.append(True)
+    _umbruch_leerraum(roh, ist_trenner, tokens)
     # Gruppen: maximale Folge von d/a-Laeufen (Trenner dazwischen unterbrechen nicht, ein k-Lauf schon)
     gruppe_von: list[int] = []
     gruppen: list[list[int]] = []
