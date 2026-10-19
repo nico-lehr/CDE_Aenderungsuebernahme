@@ -59,6 +59,8 @@ Das **Soll** wird immer aus `vorher.xlsx` ↔ `nachher.xlsx` abgeleitet (Zellver
 ```
 - `typ`: `text_ersetzt | text_eingefuegt | text_geloescht | absatz_neu | absatz_geloescht | section_neu | section_geloescht` (wie `Aenderung.typ`).
 - `blatt` = Nummer des Blatts (1 = erstes), `zeile`/`spalte` beziehen sich auf `vorher.xlsx`; bei neuen Zeilen ist `zeile` die Zeile, **nach** der eingefügt wird.
+  (Auch im Messbericht ist `fehler[].zeile` die Zeile in vorher. Seit Welle 3 stehen daneben `zeile_nachher` und `zeile_ergebnis` – dort
+  liegen Soll und Ist nach eingefügten Zeilen wirklich –, `neue_zeile` und `stille_arten`. Im bericht.md: „Z167 (N168/E168, neu)“.)
 - `soll_status`: was ein sauberes Tool tun sollte: `uebernommen` (eindeutig, automatisch), `pruefen` (absichtlich mehrdeutig) oder `nicht_uebernommen` (absichtlich nicht machbar, z. B. Tabelle).
 - `luecken`: was das Tool als Lücke **melden muss** (`models.LUECKEN_ARTEN`).
 - Der Generator schreibt die Wahrheit aus seinem **logischen Modell**, nie aus dem PDF-Leser.
@@ -128,7 +130,14 @@ Nachgebaut sind die am echten Beispiel gemessenen **Formen** (Inhalte erfunden):
   durchgestrichen; neuer Absatz/Listenpunkt/Sub-Section: neue Zeile direkt nach dem Vorgänger (B/C/D wie Nachbar, E/F aus der Gliederung,
   G rot, Rest leer); Nummern-Änderung „c.“ → „a.“ als „c.“ alt + „a.“ neu. Einfarbige Zellen je Seed als Zellschrift oder als Rich Text mit
   einem Lauf. Kopf-/Fuß-/Vorspann-Änderungen und Sprechblasen kommen nicht in die Excel. Weicht die Excel im Absatz anderswo vom PDF ab,
-  steht in nachher der PDF-Absatz (der Fall ist in erwartet.json „pruefen“ mit fertigem Vorschlag).
+  **bleibt die Excel-eigene Abweichung stehen** und nur die PDF-Änderung wird markiert eingetragen (Nico, 19.10.; in erwartet.json
+  „pruefen“ mit fertigem Vorschlag = Zelle in nachher). Neue Zeilen: nur die Textspalte rot, B/C/D aus der Zeile davor (ihr Spec-Block),
+  E/F normal, alle Spalten rechts der Textspalte leer.
+* **Mehrere Specs** (Störer `mehrere_specs`, gerade Seeds; Schalter `mehrere_specs`, Größe `fremd_zeilen`): das Register enthält 2–3
+  weitere Specs als zusammenhängende Blöcke vor UND nach der Ziel-Spec (= Spec des PDF), je mit eigener Spec-Nr. in Spalte B (Schreibweise
+  uneinheitlich: „11_22_33“, „11_22_33 “, „11 22 33“), eigener Revision, eigenem Datum und eigener Gliederung 1.1 …; ein Teil ihrer Sätze
+  steht genau so oder fast so auch in der Ziel-Spec (`dubletten_fremde_spec`). Soll: nur Zeilen der Ziel-Spec ändern sich, neue Zeilen
+  innerhalb ihres Blocks. erwartet.json: `specs` = [{rolle ziel|fremd, spez, revision, zeilen_vorher [von, bis], zeilen_nachher [von, bis]}].
 
 **`erwartet.json` v3** (zusätzlich zu den Feldern oben): `generator_version: "3"`, `pdf_stil: "word_markup"`, `legende`, `nachher_format`,
 `hauptblatt` (Name), `abweichungen_ohne_aenderung` ([{blatt, zeile, spalte}] – Excel weicht ab, PDF ändert dort nichts: das Tool darf die
@@ -166,6 +175,12 @@ Typische Störer-Kennungen: `markup_leiste`/`nur_inline`, `sprechblase_formatier
 * **PDF-blind und Listen-Polster:** Ein Polster aus geschützten Leerzeichen zwischen Listennummer und Text, das genau so schon in
   vorher am Zellanfang vorkommt, wird in neuen Zeilen streng verglichen (ein Mensch übernimmt es von der Nachbarzeile).
 * **Bereiche bis zur letzten Excel-Zeile** (`R8:R1048576`) wachsen beim Einfügen nicht (Struktur-Prüfung).
+* **Fremde Spec** (Welle 3): Die Messung liest die Spec-Nummern („11 22 33“) der ersten Seiten des PDF und sucht die erste Spalte, deren Wert
+  in allen laut Soll geänderten Zeilen diese Nummer ist (Schreibweise vereinheitlicht). Blöcke von mindestens 3 aufeinanderfolgenden Zeilen mit
+  einer anderen Nummer dort sind fremde Specs – abgeleitet nur aus vorher/nachher/PDF, also auch für echte Paare. Jede Änderung des Tools in
+  einer fremden Spec ist Kollateralschaden und stiller Fehler (Art `fremde_spec`); Kennzahlen `fremde_spec_zeilen`, `fremde_spec_beruehrt`,
+  `gesamt.paare_mit_fremder_spec`, Kriterium Nr. 6 „Fremde Spec berührt“ (Rückbau: `tool_extra_fremde_spec`).
+* **`keine_wirkung`** zählt nur noch, wenn das Soll die Zelle wirklich ändert (sonst ist „nichts getan“ richtig).
 * **Rückbau-Messung** `python -m src.cli messen --nachher [--ordner PFAD] [--paar NAME] [--legende L]` für Paare mit nur
   `aenderungen.pdf` + `nachher.xlsx` (ein vorher.xlsx wird ignoriert): vorher wird aus der Markierung der **letzten Runde** zurückgebaut
   (`markierung.alt_farbe` + Strich → normaler Text, `markierung.neu_farbe` ohne Strich → weg; Zeilen, deren längste Zelle ganz neu ist und

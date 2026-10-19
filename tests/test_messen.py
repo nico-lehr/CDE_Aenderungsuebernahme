@@ -1665,3 +1665,10 @@ def test_bereich_bis_zur_letzten_excel_zeile_waechst_nicht():
     assert messen._zeile_abb(abb, 1048576, 10) == 1048576
     assert messen._zeile_abb(abb, 15, 10) == 18
     assert messen._bereich_abb("R8:R1048576", abb, 10) == (18, 11, 18, 1048576)
+
+
+def test_bedingte_formatierung_vergleicht_bezuege_relativ_zum_bereich():
+    """Excel zieht relative Bezuege einer bedingten Formatierung beim Einfuegen mit -- das ist keine Strukturaenderung."""
+    assert messen._relativ("LEN(F62)>2", (62, 6)) == messen._relativ("LEN(F63)>2", (63, 6))
+    assert messen._relativ("LEN(F62)>2", (62, 6)) != messen._relativ("LEN(F64)>2", (63, 6))
+    assert messen._relativ("$A$1+B2", (1, 1)) == "$A$1+C[1]R[1]" and messen._relativ('R5="Offen"', (5, 18)) == 'C[0]R[0]="Offen"'
