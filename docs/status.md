@@ -1,6 +1,43 @@
 # Status – was geht, was nicht, was fehlt
 
-Autor: Nico Lehr · Stand: 15.10.2026 · Version 0.2.0 · **Alle Zahlen stammen von erfundenen Beispielen.** Sie sind kein Versprechen für echte Dokumente.
+Autor: Nico Lehr · Stand: 19.10.2026 · **Version 0.3.0** (Auftrag 003) · Alle Zahlen stammen von erfundenen Nachbauten oder von zwei echten Beispielpaaren, die nur gemessen und nie gespeichert wurden.
+
+## Stand Auftrag 003 (19.10.2026) – „Word-PDFs, CDE wie Nico, einfaches Dashboard“
+
+**Was neu ist (ADR 0005 Nachtrag, 0006, 0007; `docs/so_gehts.md`):**
+- **Word-Änderungsverfolgung lesen:** Linie entscheidet (durchgestrichen = entfällt, farbig unterstrichen = neu, jede Farbe). Markup-Leiste mit Sprechblasen, Verbindungslinien, Änderungsbalken,
+  Kopf-/Fußzeilen und Vorspann stören nicht mehr; markierte Leerzeichen, geänderte Listennummern („c.a.“) und hochgestellte Einheiten („mm²“) werden richtig gelesen.
+- **CDE als Register:** Aufbau wird aus der Struktur erkannt (Kopfzeile, Beispielzeile, Section, Sub-Section, Text mit Listennummer). **Mehrere Specs in einer CDE:** nur die Zeilen der Spec des PDFs werden bearbeitet
+  (Spec aus Titel-/Fußzeile; bei Unklarheit nichts automatisch, im Dashboard Auswahl). Änderungen aus Vorspann/Revisionstabelle sind „nicht in der CDE“ und kein offener Punkt.
+- **Schreiben wie Nico:** alt = hellblau (00B0F0) + durchgestrichen, neu = rot, kein zusätzlicher Trenner, Grundschrift bleibt, ältere Markierungen bleiben. Die Datei wird **verlustfrei** geschrieben
+  (`src/xlsx_patch.py`): Logos, Formen, Vertraulichkeits-Kennzeichnung, Druckeinstellungen bleiben, nur die geänderten Zellen ändern sich. Neue Zeilen: nur die Textspalte rot, Spezifikation/Revision/Datum aus dem Block der Spec.
+- **Dashboard in 3 Schritten** (Dateien → Prüfen → Fertig), Karten wie bei „Überarbeiten“ in Word, Abwahl automatischer Einträge, Spec-Auswahl.
+
+**Messung (erfundene Nachbauten in der Struktur der echten Dateien):**
+
+| Kennzahl | Ziel | `nachbau_word` (60, Entwicklung) | `nachbau_test` (30, **ungesehen**, einmal gemessen) |
+|---|---|---|---|
+| Stille Fehler | 0 (ungesehen ≤ 1) | 12 (Start: über 2000) | **3** |
+| Automatisch richtig, Zellen / je Änderung | 100 % | 99,8 % / 99,4 % | 99,9 % / 99,9 % |
+| Format-Treue (Farbe, Strich je Zeichen) | 100 % | 100 % | 100 % |
+| Vorschläge exakt nach Freigabe | ≥ 95 % | 87,8 % | 90,8 % |
+| Abdeckung ohne Nachfrage, Haupt-Spalten | ≥ 70 % | 85,9 % | 84,9 % |
+| Fremde Spec berührt / Idempotenz | 0 / alle | 0 / 60 von 60 | 0 / 30 von 30 |
+| Lese-Lücke | ≤ 2 % | 4,1 % | 3,6 % |
+| Restarbeit je 100 Änderungen | berichten | 29,3 | 29,2 |
+
+**Zwei echte Beispielpaare** (nur Zahlen; Rückbau des Vorher-Stands aus Nicos fertiger CDE, dann Tool, dann Zellvergleich): Beispiel B: 51 von 60 geänderten Zellen exakt wie Nico (bis auf die Lage von Leerzeichen),
+der Rest sind Abweichungen von Nicos Vorlage selbst bzw. Rückbau-Effekte; offene Prüfpunkte im Haupttext 2–6 je Dokument (vorher über 40); Beispiel A: 9 gleich, dazu 8 fertige Vorschläge zum Abhaken
+(Excel weicht vom alten PDF-Text ab). Datei-Treue geprüft (Teile bytegleich, LibreOffice öffnet). Laufzeit etwa 10 Sekunden je Dokument.
+
+**Ehrlich lesen:** Ungesehen = 3 stille Fehler (Ziel ≤ 1) und 1 Kollateralzelle: Die Fehler liegen bei den für den Test neu gebauten Sonderfällen (Silbentrennung am Zeilenende, Nummernwechsel über Seitenumbruch).
+Lese-Lücke und Vorschlagsgenauigkeit liegen unter dem Ziel. Der ungesehene Korpus ist erfunden; echte Dokumente bleiben der eigentliche Test: Jede automatisch eingetragene Änderung am Anfang stichprobenartig prüfen.
+
+**Bekannte Grenzen:** Tabellen, zwei Spalten, Scans im PDF werden nur erkannt und gemeldet; Word-Autorfarbe „Schwarz“ (RT-313), Hyperlink ohne Link-Kommentar (RT-305), einseitige PDFs ohne Kopfzeilen-Wiederholung (RT-306) als strikte xfail dokumentiert.
+Ollama (Zweitmeinung) ist noch nicht angeschlossen. Kommentare/Gelb-Markierung und Zeilen-Löschen gibt es nur im alten openpyxl-Modus.
+
+---
+(Älterer Stand, Version 0.2.0 und Auftrag 002 Etappe 1, siehe unten.)
 
 ## In einem Satz
 

@@ -1,6 +1,6 @@
 # CDE-Änderungsübernahme
 
-Autor: **Nico Lehr** · Stand: 16.10.2026 · Version 0.2.0 + Auftrag 002 Etappe 1 (nur mit erfundenen Daten getestet; Zahlen siehe `docs/status.md`)
+Autor: **Nico Lehr** · Stand: 19.10.2026 · Version 0.3.0 (Auftrag 003: Word-PDFs, CDE wie Nico, mehrere Specs, einfaches Dashboard; nur mit erfundenen Daten getestet; Zahlen siehe `docs/status.md`, Bedienung `docs/so_gehts.md`)
 
 Seitenprojekt, **getrennt von der Masterarbeit (bess-pipeline)**. Läuft lokal, ohne Internet, ohne KI-Dienst, ohne API-Key.
 
