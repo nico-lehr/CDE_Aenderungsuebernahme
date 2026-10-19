@@ -825,7 +825,7 @@ def test_markiert_wie_das_pdf_auch_bei_unsauberen_operationen(tmp_path):
     (Leerraum, Klammern, Schreibvarianten). Markiert wird trotzdem genau, was das PDF markiert; Excel-eigene Zeichen
     (doppelter Leerraum, U+2011) bleiben unveraendert. Woerter und Zahlen erfunden."""
     faelle = [  # Excel, PDF-Kurzschrift, Operationen (start, ende, text) wie im Ist, Soll
-        ("nach  NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", [(4, 6, " ZUSATZ-EN ")], "nach {+ZUSATZ-EN+} NORM 4711."),
+        ("nach  NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", [(4, 6, " ZUSATZ-EN ")], "nach  {+ZUSATZ-EN+} NORM 4711."),
         ("nach NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", [(4, 5, " ZUSATZ-EN ")], "nach {+ZUSATZ-EN+} NORM 4711."),
         ("Feuchte: [0 bis 100] Prozent", "Feuchte: {-[-}|0 bis 100|{-]-} Prozent", [(8, 10, " "), (19, 21, " ")],
          "Feuchte: {-[-}0 bis 100{-]-} Prozent"),

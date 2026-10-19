@@ -577,15 +577,26 @@ def projiziere(texte: list[str], laeufe: Iterable[Lauf], aktiv: set[str],
         elif lo < hi and zelle_von[lo] < 0:
             p = lo                                 # Zellgrenze: der neue Text gehoert ans Ende der Zelle davor
         else:
-            p = lo + 1 if lo < hi and r_text[lo].isspace() else lo
+            # Leerraum auf beiden Seiten: der neue Text kommt HINTER den ganzen Excel-Leerraum, vor das naechste behaltene
+            # Zeichen ("3)" + viele NBSP + "Allgemeine" -> "3)<NBSP...> {+Weitere +}Allgemeine"), nie mitten hinein
+            p = lo
+            while p < hi and r_text[p].isspace():
+                p += 1
         if x_ is None or any(c.isspace() for c in r_text[lo:p]):
             vor = ""                               # Excel hat den Leerraum davor schon
         if y_ is None or any(c.isspace() for c in r_text[p:hi]):
             nach = ""
         a_ = soll[b0][3]
-        einf.setdefault(p, []).append([(c, NORMAL, a_) for c in vor] + [(soll[s][0], NEU, soll[s][3] or a_)
-                                                                      for s in range(b0, b1 + 1)]
-                                      + [(c, NORMAL, a_) for c in nach])
+        blk = [(soll[s][0], NEU, soll[s][3] or a_) for s in range(b0, b1 + 1)]
+        # markierter Leerraum am Rand des neuen Textes (LESEN: Teil des a-Laufs) ist rot -- ausser die Excel hat dort schon
+        # Leerraum (oder er steht ohnehin unmarkiert davor/dahinter): ein vorhandenes Leerzeichen wird nie gedoppelt
+        while blk and blk[0][0].isspace() and (vor or (p > 0 and r_text[p - 1].isspace())):
+            blk.pop(0)
+        while blk and blk[-1][0].isspace() and (nach or (p < n and r_text[p].isspace())):
+            blk.pop()
+        if not blk:
+            continue
+        einf.setdefault(p, []).append([(c, NORMAL, a_) for c in vor] + blk + [(c, NORMAL, a_) for c in nach])
 
     def ort(p: int) -> tuple[int, int]:
         for z, (a, e) in enumerate(grenzen):
