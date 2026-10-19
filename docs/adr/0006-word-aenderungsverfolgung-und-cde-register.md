@@ -53,3 +53,12 @@ Zellen mit Markierung werden über ihre **Neu-Ansicht** gelesen (durchgestrichen
   alles „prüfen“). Nur eine Spec in der Mappe ⇒ Verhalten wie zuvor.
 - **Plan:** `Plan.spec = {"erkannt", "quelle" (vorgabe | pdf | einzige), "zeilen": [von, bis], "kandidaten", "pdf"}` (nur Nummern und
   Zeilen, keine Inhalte); die Übergabe an `plan.json` und Dashboard/CLI bindet der Orchestrator an.
+
+## Nachtrag 19.10.2026 – Leerzeichen an Einfügung/Streichung (Auftrag 003, Welle 3)
+Word markiert das Leerzeichen an einer Einfügung oder Streichung mit (` {+neu+}` oder `{+neu +}`). Sichtbar markierter Leerraum wird
+vom Leser als `trenner_art` geliefert und im Abgleich ein eigener d-/a-Lauf. **Am Zeilen- oder Seitenumbruch** zeichnet das PDF
+kein Leerzeichen, dort ist nichts Markiertes zu sehen (`abgleich._umbruch_leerraum`): Bei einer Gruppe aus nur d- oder nur a-Läufen
+ohne sichtbar markiertes Leerzeichen gehört ihr das unsichtbare am Umbruch (davor, sonst dahinter, wenn davor ein sichtbares
+unmarkiertes steht); Trenner am Umbruch im Inneren einer Gruppe gehören ihr. Ersetzungen („altneu“) bekommen kein markiertes
+Leerzeichen; zwischen „alt“ und „neu“ nur, wenn das Leerzeichen hinter „neu“ sichtbar markiert ist. Der Text ändert sich dadurch nie,
+nur die Zuordnung des Leerzeichens zu alter bzw. neuer Fassung.
