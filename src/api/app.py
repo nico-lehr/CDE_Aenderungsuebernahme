@@ -121,6 +121,8 @@ def unerwartet(e: Exception):
 def kopfzeilen(antwort):
     antwort.headers.setdefault("X-Content-Type-Options", "nosniff")
     antwort.headers.setdefault("Referrer-Policy", "no-referrer")
+    # nur eigene Quellen (Frontend hat keine Inline-Skripte, keine externen Ressourcen)
+    antwort.headers.setdefault("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'")
     return antwort
 
 

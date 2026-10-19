@@ -854,8 +854,8 @@ def test_markiert_wie_das_pdf_auch_bei_unsauberen_operationen(tmp_path):
         ("Feuchte: [0 bis 100] Prozent", "Feuchte: {-[-}|0 bis 100|{-]-} Prozent", [(8, 10, " "), (19, 21, " ")],
          "Feuchte: {-[-}0 bis 100{-]-} Prozent"),
         ("und NORM 4712. Danach", "und {-NORM-} {-4712-}|. Danach", [(3, 13, "")], "und {-NORM 4712-}. Danach"),
-        ("Teil 60364‑6 mit Pumpe alt.", "Teil 60364-6 mit Pumpe {-alt-}|{+neu+}|.", [(5, 26, "60364-6 mit Pumpe neu")],
-         "Teil 60364‑6 mit Pumpe {-alt-}{+neu+}."),
+        ("Teil 11223‑6 mit Pumpe alt.", "Teil 11223-6 mit Pumpe {-alt-}|{+neu+}|.", [(5, 26, "11223-6 mit Pumpe neu")],
+         "Teil 11223‑6 mit Pumpe {-alt-}{+neu+}."),
         ("Temperatur [20] Grad", "Temperatur {-[20]-}|{+21+} Grad", [(11, 16, "21 ")], "Temperatur {-[20]-}{+21+} Grad"),
     ]
     p = _register(tmp_path, [f[0] for f in faelle])

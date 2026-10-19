@@ -350,7 +350,7 @@ MUSTER = [
     ("nach  NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", "nach  {+ZUSATZ-EN+} NORM 4711."),
     ("Feuchte: [0 bis 100] Prozent", "Feuchte: {-[-}|0 bis 100|{-]-} Prozent", "Feuchte: {-[-}0 bis 100{-]-} Prozent"),
     ("und NORM 4712. Danach", "und {-NORM-} {-4712-}|. Danach", "und {-NORM 4712-}. Danach"),
-    ("Teil 60364‑6 mit Pumpe alt.", "Teil 60364-6 mit Pumpe {-alt-}|{+neu+}|.", "Teil 60364‑6 mit Pumpe {-alt-}{+neu+}."),
+    ("Teil 11223‑6 mit Pumpe alt.", "Teil 11223-6 mit Pumpe {-alt-}|{+neu+}|.", "Teil 11223‑6 mit Pumpe {-alt-}{+neu+}."),
     ("Temperatur [20] Grad", "Temperatur {-[20]-}|{+21+} Grad", "Temperatur {-[20]-}{+21+} Grad"),
 ]
 
@@ -513,8 +513,8 @@ def test_operationen_ohne_projektion_markieren_keinen_rand_leerraum():
     fall = [("nach  NORM 4711.", ("e", 4, 6, " ZUSATZ-EN ", "A1"), "nach {+ZUSATZ-EN+} NORM 4711."),
             ("Feuchte: [0 bis 100] Prozent", ("e", 8, 10, " ", "A1"), "Feuchte: {-[-}0 bis 100] Prozent"),
             ("und NORM 4712. Danach", ("e", 3, 13, "", "A1"), "und {-NORM 4712-}. Danach"),
-            ("Teil 60364‑6 mit Pumpe alt.", ("e", 5, 26, "60364-6 mit Pumpe neu", "A1"),
-             "Teil 60364‑6 mit Pumpe {-alt-}{+neu+}."),
+            ("Teil 11223‑6 mit Pumpe alt.", ("e", 5, 26, "11223-6 mit Pumpe neu", "A1"),
+             "Teil 11223‑6 mit Pumpe {-alt-}{+neu+}."),
             ("Wert und Rest", ("e", 0, 4, "Werte", "A1"), "{-Wert-}{+Werte+} und Rest"),        # ganzes Wort wie im PDF
             ("a  b", ("e", 1, 3, " ", "A1"), "a  b")]                                       # reiner Leerraum: nie markiert
     for text, spec, soll in fall:
@@ -525,7 +525,7 @@ def test_zufall_projektion_excel_bleibt_pdf_markierung_genau():
     """Zufaellige Absaetze mit Excel-eigenen Schreibweisen (doppelter Leerraum, U+2011, geschuetztes Leerzeichen): jedes
     Excel-Zeichen bleibt, markiert ist genau der Text der PDF-Laeufe, kein Leerraum am Rand einer Markierung, A3 besteht."""
     rnd = random.Random(23)
-    woerter = ["Ventil", "Pumpe", "Druck", "60364-6", "Anlage", "[20]", "Zebrafink", "Wert:", "Prüfung"]
+    woerter = ["Ventil", "Pumpe", "Druck", "11223-6", "Anlage", "[20]", "Zebrafink", "Wert:", "Prüfung"]
     for _ in range(400):
         laeufe: list[Lauf] = []
         for i in range(rnd.randint(1, 8)):

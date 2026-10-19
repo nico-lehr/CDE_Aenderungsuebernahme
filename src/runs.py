@@ -67,7 +67,7 @@ def runs_dir() -> Path:
 
 
 def lauf_dir(run_id: str) -> Path:
-    if not _ID.match(run_id):
+    if not _ID.fullmatch(run_id):
         raise NutzerFehler("Ungültige Lauf-ID.", 404)
     d = runs_dir() / run_id
     if not d.is_dir():
@@ -528,7 +528,7 @@ def _eintrag(d: Path) -> dict[str, Any]:
 def liste(mit_archiv: bool = False) -> list[dict[str, Any]]:
     out = []
     for d in sorted(runs_dir().iterdir(), reverse=True):
-        if not (d.is_dir() and _ID.match(d.name) and (d / "lauf.json").exists()):
+        if not (d.is_dir() and _ID.fullmatch(d.name) and (d / "lauf.json").exists()):
             continue
         if not mit_archiv and (d / "archiviert.json").exists():
             continue

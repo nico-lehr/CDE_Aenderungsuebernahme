@@ -439,7 +439,7 @@ def _gemeinsam(alt: str, neu: str, cache: dict[str, str], cfg: dict | None) -> t
 def _soll_zeichen(laeufe: Iterable[Lauf], aktiv: set[str], trenner: str = "") -> list[list[Any]]:
     """Soll eines PDF-Absatzes je Zeichen: [zeichen, klasse, optional, aenderung] (wie zustand_markiert).
     Ein Trenner (Leerraum zwischen zwei Woertern) ist im PDF nicht markiert und bleibt normal -- ausser er liegt zwischen
-    zwei Zeichen derselben markierten Klasse ("{-IEC 62305-}", "{+neuer Text+}"): dann gehoert er zur Markierung."""
+    zwei Zeichen derselben markierten Klasse ("{-ISO 44556-}", "{+neuer Text+}"): dann gehoert er zur Markierung."""
     sichtbar: list[Lauf] = []
     for l in laeufe:
         if l.art == "a" and l.aenderung not in aktiv:

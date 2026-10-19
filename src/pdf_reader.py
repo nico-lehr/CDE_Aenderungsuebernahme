@@ -1541,7 +1541,7 @@ def _leerraum_kleben(tokens: list[PdfToken], infos: list[_Info], st: list[str], 
     Luecke) gehoert NUR zur alten bzw. neuen Fassung. Stuende er in der anderen Fassung zwischen zwei Textstuecken
     (eingefuegtes Leerzeichen, links und rechts davon alter Text; gestrichenes Leerzeichen, links und rechts neuer Text),
     werden die beiden Woerter zu EINEM Wort mit dem Leerraum als Zeichen-Lauf zusammengelegt:
-    "60364-|UNE-HD" + eingefuegtes Leerzeichen + "60364-|6" -> old "60364-6", new "UNE-HD 60364-6". Sonst (z. B. ganze
+    "11223-|XYZ-HD" + eingefuegtes Leerzeichen + "11223-|6" -> old "11223-6", new "XYZ-HD 11223-6". Sonst (z. B. ganze
     gestrichene Wortgruppe) bleiben die Woerter getrennt (Wortzahl der Bilanz); der Leerraum steht dann in der anderen
     Fassung neben anderem Leerraum (die Normalform legt ihn zusammen), und das linke Wort traegt `trenner_art` "d"/"a"
     (intern, fuer d/a-Laeufe statt "s"). Nie ueber eine Luecke so breit wie ein haengender Einzug (Tabulator)."""

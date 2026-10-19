@@ -199,9 +199,9 @@ def _anfang(text: str, n: int) -> str:
 
 
 @pytest.mark.parametrize("stuecke,alt,neu", [
-    # Nachbau der echten Folge: "IEC" U+202F "60364" U+2011 gestrichen, "UNE-HD" + Leerzeichen + "60364-" neu, "6" normal
-    ([("Norm ", "k"), ("IEC 60364‑", "d"), ("UNE-HD", "n"), (" ", "n"), ("60364-", "n"), ("6", "k")],
-     "Norm IEC 60364‑6", "Norm UNE-HD 60364-6"),
+    # Nachbau der echten Folge: "ISO" U+202F "11223" U+2011 gestrichen, "XYZ-HD" + Leerzeichen + "11223-" neu, "6" normal
+    ([("Norm ", "k"), ("ISO 11223‑", "d"), ("XYZ-HD", "n"), (" ", "n"), ("11223-", "n"), ("6", "k")],
+     "Norm ISO 11223‑6", "Norm XYZ-HD 11223-6"),
     ([("Norm ", "k"), ("ABC 123‑", "d"), ("XY-Z 123-", "n"), ("4", "k")], "Norm ABC 123‑4", "Norm XY-Z 123-4"),
     ([("Pumpe", "k"), (" neu", "n"), ("x", "k")], "Pumpex", "Pumpe neux"),                 # Leerzeichen am Anfang
     ([("Pumpe ", "k"), ("neue ", "n"), ("Becken", "k")], "Pumpe Becken", "Pumpe neue Becken"),   # ... am Ende
