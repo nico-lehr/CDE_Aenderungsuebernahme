@@ -667,3 +667,75 @@ def test_messen_erkennt_fremde_specs_und_zaehlt_beruehrung(paar_specs, monkeypat
     b = messen.fasse_zusammen([dict(r2, name="x")], "nachbau_word", "3", False)
     k = next(x for x in b["kriterien"] if x["name"] == "Fremde Spec berührt")
     assert k["ampel"] == "NICHT ok" and b["gesamt"]["paare_mit_fremder_spec"] == 1
+
+
+# ====================================================================== Korpus nachbau_test (ungesehen, Seeds >= 2000) und seine Stoerer
+def test_nachbau_test_seeds_und_weichen_ohne_je_einen_test_seed_zu_erzeugen(tmp_path):
+    """Regel 11: nachbau_test nur ab Seed 2000. Hier wird nie ein Seed >= 2000 erzeugt -- nur geprueft, dass sie erlaubt waeren."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("erzeuge_paare", ROOT / "scripts" / "erzeuge_paare.py")
+    skript = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(skript)
+    assert skript.pruefe_seeds("nachbau_test", [2001, 2030]) is None
+    assert skript.pruefe_seeds("nachbau_test", [301]) and skript.pruefe_seeds("nachbau_test", [1999])
+    assert skript.pruefe_seeds("nachbau_word", [2001]) and skript.pruefe_seeds("nachbau_word", [360]) is None
+    for seed in (5, 301, 1999):
+        with pytest.raises(ValueError):
+            erzeuge_paar(seed, "word_markup", tmp_path / "t", "nachbau_test")
+    with pytest.raises(ValueError):                                   # die Familien gibt es nicht ueber erzeuge_paar
+        erzeuge_paar(371, {**KLEIN, "nur_test": True}, tmp_path / "w", "nachbau_word")
+    assert not (tmp_path / "t").exists() and not (tmp_path / "w").exists()
+    assert generator.korpus_einstellungen("nachbau_test") == {"legende": "auto", "nachher_format": "markiert"}
+    assert generator.version_fuer("nachbau_test") == "3" and "nachbau_test" in messen.KORPORA
+    assert messen.KORPUS_VORGABE["nachbau_test"] == {"legende": "auto", "nachher_format": "markiert"}
+    assert set(wm.NUR_TEST_FAMILIEN) == {"silbentrennung_zeilenende", "listenpunkt_umbruch_nummer"}
+
+
+def test_nachbau_word_hat_die_nur_test_familien_nie(tmp_path):
+    for seed in (SEED + 5, SEED + 6):
+        p = erzeuge_paar(seed, KLEIN, tmp_path / "nachbau_word", "nachbau_word")
+        e = json.loads((p / "erwartet.json").read_text(encoding="utf-8"))
+        assert not set(e["stoerer"]) & (set(wm.NUR_TEST_FAMILIEN) | {"sprechblase_mehrzeilig"})
+        ctx = wm.baue_kontext(seed, KLEIN)
+        assert not any(a.trennen or a.umbruch_erzwingen or a.blase_lang for a in ctx.absaetze)
+
+
+FAM_CFG = {**KLEIN, "zeilen": (60, 90), "nur_test": True, "leiste": True}
+
+
+def test_familie_silbentrennung_am_zeilenende(tmp_path):
+    # nur_test ueber word_markup direkt (Entwicklungs-Seed, nur fuer diesen Test des Generators), nie ueber erzeuge_paar
+    p = wm.erzeuge(SEED + 7, tmp_path / "fam", "nachbau_word", FAM_CFG, name="fam")
+    e = json.loads((p / "erwartet.json").read_text(encoding="utf-8"))
+    assert "silbentrennung_zeilenende" in e["stoerer"]
+    ctx = wm.baue_kontext(SEED + 7, FAM_CFG)
+    mit = [a for a in ctx.absaetze if a.trennen]
+    assert mit and all(a.blase_lang and a.edits for a in mit)
+    wb = load_workbook(p / "nachher.xlsx", rich_text=True)[e["hauptblatt"]]
+    vb = load_workbook(p / "vorher.xlsx")[e["hauptblatt"]]
+    pos = {a["absatz"]: (a["zeile"], a["nachher_zeile"]) for a in e["aenderungen"] if a["bereich"] == "cde"}
+    for a in mit:
+        wort = next(iter(a.trennen))
+        zv, zn = pos[a.id]
+        assert wort in str(vb.cell(zv, 7).value) and "-" not in wort                     # die Excel kennt das Wort ungetrennt
+        assert _ansicht(_laeufe(wb.cell(zn, 7)), "alt") == vb.cell(zv, 7).value
+    with pdfplumber.open(p / "aenderungen.pdf") as pdf:
+        text = "\n".join((pg.extract_text() or "") for pg in pdf.pages)
+    for a in mit:
+        wort, k = next(iter(a.trennen.items()))
+        assert re.search(re.escape(wort[:k]) + r"-[^\n]*\n(?:[^\n]*\s)?" + re.escape(wort[k:]), text), wort      # Trennung im PDF
+    assert e["pdf_info"]["kommentare"] >= 1 and "sprechblase_mehrzeilig" in e["stoerer"]
+
+
+def test_familie_listenpunkt_ueber_den_seitenumbruch_mit_nummernwechsel():
+    gefunden = []
+    for seed in range(SEED + 8, SEED + 16):
+        ctx = wm.baue_kontext(seed, FAM_CFG)
+        wm.rendere_pdf(ctx)
+        gefunden = [a for a in ctx.absaetze if a.umbruch_erzwingen and a.seite_ende > a.seite and a.label_alt != a.label_neu]
+        if gefunden:
+            break
+    assert gefunden, "kein Listenpunkt ueber den Seitenumbruch in 8 Seeds"
+    a = gefunden[0]
+    assert "listenpunkt_umbruch_nummer" in a.stoerer and any(x.art == "satz_eingefuegt" for x in a.edits)
+    assert len(wm._zeilen_von(a.text, a.ebene)[0]) >= 3                           # mehr als zwei Zeilen: Aenderungen auf der Folgeseite

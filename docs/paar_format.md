@@ -29,6 +29,7 @@ data/messung/
 | `entwicklung` | 1–60 (writer) und 101–160 (gerade Seeds LibreOffice, ungerade writer) | erfundene Paare v2 | Entwicklung und Einstellen |
 | `ex_test` | nur 1001–1030 | derselbe Zufallsstrom wie der frühere Testkorpus v1 (gleiche Änderungen, gleiche Familien inkl. der dort offengelegten Familien `gedrehte_seite`, `gruene_markierung`) | offen als Entwicklung erklärt – nicht mehr ungesehen |
 | `test` | nur ≥ 2000 | reserviert (später mit neuen, nur dort vorkommenden Familien) | genau einmal messen; **jetzt nicht erzeugen** |
+| `nachbau_test` | nur 2001–2030 (≥ 2000) | Generator **v3** wie `nachbau_word`, aber **ungesehen**: eigene Störer-Familien, die nur hier vorkommen (`silbentrennung_zeilenende`, `listenpunkt_umbruch_nummer`, dazu `sprechblase_mehrzeilig`) | genau einmal messen (`messen --korpus nachbau_test`); nie zum Einstellen; Seeds < 2000 verweigert das Skript (Exit-Code 2) |
 | `nachbau_word` | 301–360 (erlaubt: < 1000) | Generator **v3** `word_markup`: Word-PDF mit Änderungsverfolgung + CDE-Register (siehe unten) | Entwicklung für Auftrag 003 (Legende `auto`, nachher `markiert`) |
 
 `python scripts/erzeuge_paare.py --korpus entwicklung|ex_test|test|nachbau_word --seeds … [--erzeuger writer|libreoffice|wechselnd]` prüft die

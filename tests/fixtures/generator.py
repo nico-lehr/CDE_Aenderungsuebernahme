@@ -48,12 +48,13 @@ TEST_SEED_MIN = 2000        # reservierter, ungesehener Testkorpus "test": nur S
 KORPORA = ("entwicklung", "ex_test", "test")
 ERZEUGER = ("writer", "libreoffice")
 # Generator v3 (18.10.2026, ADR 0006): Word-PDF mit Aenderungsverfolgung + CDE-Register, eigenes Modul word_markup.py
-KORPORA_V3 = ("nachbau_word",)          # nur Seeds < 1000 (Regel 11); Standard-Seeds 301-360
+KORPORA_V3 = ("nachbau_word", "nachbau_test")   # nachbau_word: Seeds < 1000 (Standard 301-360); nachbau_test: nur Seeds >= 2000
 ALLE_KORPORA = KORPORA + KORPORA_V3
 PROFILE_V3 = ("word_markup",)
 # Wie das Tool einen Korpus lesen und schreiben soll (KORPUS.json; fehlt die Angabe, gilt der Standard der Korpora v1/v2)
 KORPUS_STANDARD = {"legende": "alt", "nachher_format": "sauber"}
-KORPUS_EINSTELLUNGEN = {"nachbau_word": {"legende": "auto", "nachher_format": "markiert"}}
+KORPUS_EINSTELLUNGEN = {"nachbau_word": {"legende": "auto", "nachher_format": "markiert"},
+                        "nachbau_test": {"legende": "auto", "nachher_format": "markiert"}}
 
 
 def version_fuer(korpus: str) -> str:
@@ -1112,9 +1113,9 @@ def pruefe_korpus_seed(korpus: str, seed: int) -> None:
     test: nur Seeds >= 2000."""
     if korpus not in ALLE_KORPORA:
         raise ValueError(f"korpus muss einer von {', '.join(ALLE_KORPORA)} sein")
-    if korpus in ("entwicklung", *KORPORA_V3) and seed >= SEED_GRENZE:
+    if korpus in ("entwicklung", "nachbau_word") and seed >= SEED_GRENZE:
         raise ValueError(f"Entwicklungs-Seeds muessen unter {SEED_GRENZE} liegen (Regel 11)")
-    if korpus == "test" and seed < TEST_SEED_MIN:
+    if korpus in ("test", "nachbau_test") and seed < TEST_SEED_MIN:
         raise ValueError(f"Test-Seeds muessen ab {TEST_SEED_MIN} liegen (Regel 11)")
 
 
@@ -1135,13 +1136,15 @@ def erzeuge_paar(seed: int, profil: str | dict = "standard", ziel: Path | str = 
     pruefe_korpus_seed(korpus, seed)
     if _ist_v3(profil) or korpus in KORPORA_V3:
         if not (_ist_v3(profil) and korpus in KORPORA_V3):
-            raise ValueError("Profil word_markup gehoert zum Korpus nachbau_word (Generator v3) und umgekehrt")
+            raise ValueError("Profil word_markup gehoert zu den Korpora nachbau_word/nachbau_test (Generator v3) und umgekehrt")
         if erzeuger != "writer":
             raise ValueError("Generator v3 (word_markup) zeichnet das PDF selbst: nur erzeuger='writer'")
         from . import word_markup
         if isinstance(profil, str):
             return word_markup.erzeuge(seed, ziel, korpus)
         cfg = {k: v for k, v in profil.items() if k not in ("basis", "name")}
+        if "nur_test" in cfg:                     # die NUR_TEST-Familien kommen nur ueber den Korpus nachbau_test (Regel 11)
+            raise ValueError("nur_test darf nicht ueber erzeuge_paar gesetzt werden (Familien nur im Korpus nachbau_test)")
         return word_markup.erzeuge(seed, ziel, korpus, cfg, str(profil.get("name", "word_markup")))
     if erzeuger not in ERZEUGER:
         raise ValueError(f"erzeuger muss einer von {', '.join(ERZEUGER)} sein")

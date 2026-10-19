@@ -80,13 +80,15 @@ RESTARBEIT_TEILE = ("pruefen", "nicht_uebernommen", "leere_zellen_neue_zeilen", 
 RESTARBEIT_RICHTWERT = 12        # docs/ziel_v2.md: berichten, Richtwert hoechstens 12 je 100 Aenderungen
 ABLEITBAR_ZIEL = 0.85            # docs/ziel_v2.md (Etappe 2): Abdeckung ableitbarer Zellen mindestens 85 % (bis dahin nur Hinweis)
 ERZEUGER_KENNUNGEN = ("writer", "libreoffice")
-KORPORA = ("entwicklung", "ex_test", "test", "nachbau_word")
+KORPORA = ("entwicklung", "ex_test", "test", "nachbau_word", "nachbau_test")
+UNGESEHEN = ("test", "nachbau_test")      # reservierte Endmess-Korpora (Regel 11): nie zum Einstellen, genau einmal messen
 # Legende und nachher-Format je Korpus (KORPUS.json, Auftrag 003): fehlt die Angabe, gilt der Standard der Korpora v1/v2
 LEGENDEN = ("alt", "auto", "linie", "farbe")
 NACHHER_FORMATE = ("sauber", "markiert")
 KORPUS_STANDARD = {"legende": "alt", "nachher_format": "sauber"}
 KORPUS_VORGABE = {"entwicklung": KORPUS_STANDARD, "ex_test": KORPUS_STANDARD, "test": KORPUS_STANDARD,
-                  "nachbau_word": {"legende": "auto", "nachher_format": "markiert"}}
+                  "nachbau_word": {"legende": "auto", "nachher_format": "markiert"},
+                  "nachbau_test": {"legende": "auto", "nachher_format": "markiert"}}
 # Rueckbau-Messung (messen --nachher): Kategorien je Zelle
 RUECKBAU_KATEGORIEN = ("gleich", "gleich_bis_leerraum", "tool_fehlt_vorschlag_offen", "tool_fehlt_gar_nicht", "tool_extra",
                        "verschieden")
@@ -3331,8 +3333,8 @@ def _konsole(b: dict[str, Any], ziel: Path, vorschlaege: bool) -> None:
         d = v["kennzahlen"].get("stille_fehler")
         if d and d["delta"] and d["delta"] > 0:
             print(f"ACHTUNG Stop-Regel: Die stillen Fehler sind gestiegen ({d['vorher']} -> {d['jetzt']}).")
-    if b["korpus"] == "test":
-        print("Hinweis (Regel 11): Den Test-Korpus nie zum Einstellen des Tools benutzen.")
+    if b["korpus"] in UNGESEHEN:
+        print(f"Hinweis (Regel 11): Den Korpus {b['korpus']} nie zum Einstellen des Tools benutzen (genau einmal messen).")
     if b["korpus"] == "ex_test":
         print("Hinweis: ex_test ist der frühere Testkorpus (Seeds 1001–1030). Er ist offen als Entwicklungskorpus erklärt "
               "und nicht mehr ungesehen.")
@@ -3680,8 +3682,8 @@ def main(argv: list[str] | None = None) -> int:
     if not kandidaten:
         print("Es wurden keine Paare gefunden. Jedes Paar ist ein Ordner mit aenderungen.pdf, vorher.xlsx und nachher.xlsx.")
         return 2
-    if a.korpus == "test":
-        print("Hinweis (Regel 11): Der Test-Korpus wird nur zur Endmessung benutzt, nie zum Einstellen.")
+    if a.korpus in UNGESEHEN:
+        print(f"Hinweis (Regel 11): Der Korpus {a.korpus} wird nur zur Endmessung benutzt, nie zum Einstellen.")
     elif a.korpus == "ex_test":
         print("Hinweis: ex_test = früherer Testkorpus (Seeds 1001–1030), offen als Entwicklung erklärt.")
     alt_ordner = None
