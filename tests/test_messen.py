@@ -1672,3 +1672,40 @@ def test_bedingte_formatierung_vergleicht_bezuege_relativ_zum_bereich():
     assert messen._relativ("LEN(F62)>2", (62, 6)) == messen._relativ("LEN(F63)>2", (63, 6))
     assert messen._relativ("LEN(F62)>2", (62, 6)) != messen._relativ("LEN(F64)>2", (63, 6))
     assert messen._relativ("$A$1+B2", (1, 1)) == "$A$1+C[1]R[1]" and messen._relativ('R5="Offen"', (5, 18)) == 'C[0]R[0]="Offen"'
+
+
+# ---- Ende eines Bereichs an der Vorlagezeile: darf um direkt dahinter eingefuegte Zeilen wachsen (Blattmitte) -----------------------
+def test_bereich_endet_an_der_vorlagezeile_darf_bis_zur_letzten_neuen_zeile_reichen(tmp_path):
+    """Excel "kopierte Zeile einfuegen": Datenpruefung, bedingte Formatierung und Autofilter, die genau an der Zeile vor der
+    Einfuegestelle (Zeile 5) enden, wachsen mit (D2:D7) ODER bleiben (D2:D5) -- beides kein Befund. Verkuerzen (D2:D4), halbes
+    Wachsen (D2:D6), zu langes Wachsen (D2:D9) und ein verschobener Anfang (D3:D7) bleiben Befunde."""
+    art = lambda b, k: b["struktur_nach_art"][k]                                     # noqa: E731
+    for ende, erwartet in (("D2:D7", 0), ("D2:D5", 0), ("D2:D6", 1), ("D2:D4", 1), ("D3:D7", 1), ("D2:D9", 1)):
+        b = _befund(tmp_path, VZ, EINGEFUEGT, v_dv="D2:D5", e_dv=ende)
+        assert art(b, "validierung") == erwartet, ("dv", ende, b)
+        b = _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_bedingt("D2:D5"), e_extra=_bedingt(ende))
+        assert art(b, "bedingte_formatierung") == erwartet, ("cf", ende, b)
+    for ende, erwartet in (("A1:D7", 0), ("A1:D5", 0), ("A1:D6", 1), ("A1:D4", 1), ("A2:D7", 1)):
+        b = _befund(tmp_path, VZ, EINGEFUEGT, v_extra=_filter("A1:D5"), e_extra=_filter(ende))
+        assert art(b, "autofilter") == erwartet, ("filter", ende, b)
+
+
+def test_bereich_wachsen_je_bereich_einzeln_und_nur_direkt_hinter_dem_ende(tmp_path):
+    """Zwei Bereiche: der eine endet an der Vorlagezeile (darf wachsen), der andere weiter oben (darf es NICHT)."""
+    zwei = lambda a, b: (lambda ws: (_bedingt(a)(ws), _bedingt(b)(ws)))              # noqa: E731
+    gut = _befund(tmp_path, VZ, EINGEFUEGT, v_extra=zwei("D2:D3", "E2:E5"), e_extra=zwei("D2:D3", "E2:E7"))
+    assert gut["struktur_nach_art"]["bedingte_formatierung"] == 0
+    schlecht = _befund(tmp_path, VZ, EINGEFUEGT, v_extra=zwei("D2:D3", "E2:E5"), e_extra=zwei("D2:D5", "E2:E5"))
+    assert schlecht["struktur_nach_art"]["bedingte_formatierung"] == 1              # D2:D3 -> D2:D5 ist kein Wachsen an neuen Zeilen
+
+
+def test_ende_abb_und_tolerant_diff_unit():
+    abb = {r: (r if r <= 5 else r + 2) for r in range(1, 9)}
+    assert messen._ende_abb(abb, []) is None
+    ende = messen._ende_abb(abb, [6, 7])
+    assert ende[5] == 7 and ende[4] == 4 and ende[6] == 8                          # nur die Zeile direkt vor den neuen Zeilen waechst
+    assert messen._ende_abb({1: 1}, [9]) is None
+    assert messen._tolerant_diff(["a", "b"], ["a", "c"], {"a", "c"}) == 0
+    assert messen._tolerant_diff(["a", "b"], ["a", "c"], {"a", "b"}) == 0
+    assert messen._tolerant_diff(["a", "b"], ["a", "c"], {"a", "x"}) == 1
+    assert messen._tolerant_diff(["a", None], None, {"a", "zusaetzlich"}) == 0       # nicht abbildbar: keine Vermutung ueber Extras
