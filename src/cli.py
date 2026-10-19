@@ -3,7 +3,8 @@
 analyse  : nur auswerten und die Bilanz anzeigen (schreibt nichts in die Excel)
 lauf     : auswerten und alle sicheren Aenderungen eintragen
            (mit --alle-vorschlaege werden auch Vorschlaege ("pruefen") uebernommen;
-            mit --abwahl A0003,A0007 werden diese automatischen Aenderungen NICHT eingetragen)
+            mit --abwahl A0003,A0007 werden diese automatischen Aenderungen NICHT eingetragen;
+            mit --spec NAME gilt die Spec NAME der CDE, sonst wird sie aus dem PDF erkannt)
 messen   : Messwerkzeug fuer Paare (PDF + Excel vorher + nachher), siehe src/messen.py
 steckbrief: Steckbrief eines Paars (nur Zahlen, Farbcodes und Formen, kein Text), siehe src/steckbrief.py und docs/anleitung_steckbrief.md
 farben   : zeigt, welche Farben im PDF vorkommen und wie sie gedeutet werden (nur Zahlen und Farbcodes, keine Woerter)
@@ -159,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--alle-vorschlaege", action="store_true")
     p.add_argument("--abwahl", default="", metavar="ID,ID",
                    help="nur bei 'lauf': automatische Änderungen, die NICHT eingetragen werden (IDs mit Komma getrennt)")
+    p.add_argument("--spec", default=None, metavar="NAME",
+                   help="Spec der CDE, zu der das PDF gehört (z. B. \"11 22 33\"); sonst wird sie aus dem PDF erkannt")
     a = p.parse_args(argv)
     abwahl = [x.strip() for x in a.abwahl.split(",") if x.strip()]
     from pathlib import Path
@@ -169,10 +172,17 @@ def main(argv: list[str] | None = None) -> int:
     run_id = None
     analysiert = False
     try:
+        spec = runs.pruefe_spec(a.spec)                        # vor dem Anlegen des Laufs: nur Zeichen und Laenge
         run_id = runs.neuer_lauf(a.pdf, a.excel)
-        daten = runs.analysiere(run_id)
+        daten = runs.analysiere(run_id, spec=spec)
         analysiert = True
         print("Lauf:", run_id)
+        sp = daten.get("spec")
+        if isinstance(sp, dict) and len(sp.get("kandidaten") or []) > 1:
+            z = sp.get("zeilen")
+            print("Spec: " + (f"{sp['erkannt']} (Zeilen {z[0]}–{z[1]})" if sp.get("erkannt") else
+                              f"nicht eindeutig, die CDE enthält {len(sp['kandidaten'])} Specs ({', '.join(sp['kandidaten'])}); "
+                              "bitte mit --spec wählen"))
         if a.befehl == "analyse":
             print(f"Gespeichert: Die Analyse liegt als Lauf in {runs.lauf_dir(run_id)}. "
                   "In die Excel wird bei „analyse“ nichts geschrieben.")

@@ -206,9 +206,41 @@ def _info(d: Path) -> dict[str, Any]:
     return info
 
 
-def analysiere(run_id: str, profil: str | None = None) -> dict[str, Any]:
+_SPEC_ERLAUBT = re.compile(r"^[0-9A-Za-z][0-9A-Za-z _.\-]{0,39}$")
+
+
+def pruefe_spec(spec: str | None) -> str | None:
+    """Spec, die der Nutzer vorgibt (Spezifikationsnummer, z. B. "11 22 33"): nur Ziffern, Buchstaben, Leerzeichen, Punkt,
+    Unterstrich und Bindestrich, hoechstens 40 Zeichen. Leer = keine Vorgabe (None). Kein Freitext."""
+    if spec is None:
+        return None
+    if not isinstance(spec, str):
+        raise NutzerFehler("Die Spec muss ein Text sein.", 400)
+    spec = " ".join(spec.split())
+    if not spec:
+        return None
+    if not _SPEC_ERLAUBT.match(spec):
+        raise NutzerFehler("Die Spec darf nur Ziffern, Buchstaben, Leerzeichen, Punkt, Unterstrich und Bindestrich enthalten "
+                           "(höchstens 40 Zeichen).", 400)
+    return spec
+
+
+def specs_der_cde(xl: ExcelModell) -> list[dict[str, Any]]:
+    """Specs, die die CDE liefert: Name (einheitliche Schreibweise), Zahl der Zeilen, erste und letzte Zeile.
+    Leer, wenn die Excel keine Spalte mit Spezifikationsnummern hat."""
+    je: dict[str, list[int]] = {}
+    for blatt in xl.layouts:
+        for sp, zeilen in xl.specs(blatt).items():
+            je.setdefault(sp, []).extend(zeilen)
+    return [{"name": sp, "zeilen": len(z), "von": min(z), "bis": max(z)} for sp, z in sorted(je.items()) if z]
+
+
+def analysiere(run_id: str, profil: str | None = None, spec: str | None = None) -> dict[str, Any]:
     """Analysiert einen Lauf. `profil` = Name eines Layout-Profils (src/layouts.py): wird nur angenommen, wenn es
-    aktiv ist und zu seinem aktuellen Inhalt eine bestaetigte Vorschau gibt (neue Profile gehen nie direkt live)."""
+    aktiv ist und zu seinem aktuellen Inhalt eine bestaetigte Vorschau gibt (neue Profile gehen nie direkt live).
+    `spec` = Spezifikationsnummer, die der Nutzer vorgibt (sonst wird sie aus dem PDF erkannt; wichtig bei einer CDE mit
+    mehreren Specs). Eine unbekannte Spec ist kein Fehler: der Plan warnt und traegt nichts automatisch ein."""
+    spec = pruefe_spec(spec)
     d = lauf_dir(run_id)
     if (d / "plan.json").exists():                   # Regel 29: eine vorhandene Analyse wird nie ersetzt
         raise LaufFehler("Dieser Lauf wurde schon analysiert. Eine Analyse wird nicht überschrieben. "
@@ -232,7 +264,7 @@ def analysiere(run_id: str, profil: str | None = None) -> dict[str, Any]:
         if excel.suffix.lower() not in (".xlsx", ".xlsm") or isinstance(e.__cause__, zipfile.BadZipFile):
             raise NutzerFehler(str(e), 400) from e
         raise
-    plan = plane(pa, xl)
+    plan = plane(pa, xl, spec=spec)
     bil = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
     if (d / "plan.json").exists():                   # gleichzeitige Analyse desselben Laufs: die erste gewinnt
         raise LaufFehler("Dieser Lauf wurde schon analysiert. Eine Analyse wird nicht überschrieben. "
@@ -248,9 +280,36 @@ def analysiere(run_id: str, profil: str | None = None) -> dict[str, Any]:
         # Schema 4, nur Info fuer "Details fuer Fachleute": erkannte Legende und Zahl der Sprechblasen (kein Text daraus)
         "legende_modus": str(getattr(pa, "legende_modus", "") or ""),
         "sprechblasen": len(getattr(pa, "randnotizen", None) or []),
+        # Spec-Filter (Welle 3): Spec des PDFs in der CDE ({erkannt, quelle, zeilen, kandidaten, pdf}; None = keine Spec-Spalte)
+        # und alle Specs der CDE (Name, Zeilenzahl, von, bis). Nur Nummern und Zeilen, kein Dokumenttext.
+        "spec": plan.spec, "specs": specs_der_cde(xl),
     }
     _schreibe_json_atomar(d / "plan.json", daten)
     return daten
+
+
+def neu_analysieren(run_id: str, spec: str | None) -> tuple[str, dict[str, Any]]:
+    """Neuer Lauf mit denselben Eingabedateien, aber einer anderen Spec (Regel 29: der bisherige Lauf bleibt unberuehrt,
+    nichts wird ueberschrieben). Gibt (neue Lauf-ID, Plan) zurueck. Scheitert die Analyse, bleibt der neue Lauf mit seinen
+    Eingaben stehen; die ID steht dann in `LaufFehler.run_id`/`NeuAnalyseFehler`."""
+    spec = pruefe_spec(spec)
+    d = lauf_dir(run_id)
+    info = _info(d)
+    quelle_pdf, quelle_excel = d / "eingabe" / info["pdf"], d / "eingabe" / info["excel"]
+    if not (quelle_pdf.is_file() and quelle_excel.is_file()):
+        raise LaufFehler("Die Dateien dieses Laufs sind nicht mehr vorhanden. Bitte PDF und Excel neu ablegen.", 409)
+    profil = None
+    try:
+        p = _lese_json(d / "plan.json").get("profil")
+        profil = str(p["name"]) if isinstance(p, dict) and p.get("name") else None
+    except (LaufFehler, OSError, KeyError, TypeError):
+        profil = None
+    neu = neuer_lauf(quelle_pdf, quelle_excel, info["pdf"], info["excel"])
+    try:
+        return neu, analysiere(neu, profil, spec)
+    except Exception as e:
+        e.run_id = neu                                # type: ignore[attr-defined]   # der Aufrufer markiert den Fehler im neuen Lauf
+        raise
 
 
 def markiere_analyse_fehler(run_id: str, meldung: str) -> None:
@@ -295,6 +354,8 @@ def lade_plan(run_id: str) -> dict[str, Any]:
     d = lauf_dir(run_id)
     _info(d)                                         # kaputte lauf.json -> "beschaedigt", wie in der Liste
     daten = _lese_plan(d)                            # fehlt plan.json, gibt es KEINE Neuanalyse mehr
+    daten.setdefault("spec", None)                   # Plaene vor dem Spec-Filter kennen weder Spec noch Spec-Liste
+    daten.setdefault("specs", [])
     daten["ergebnisse"] = _ergebnisse_in(d)
     daten["archiviert"] = (d / "archiviert.json").exists()
     return daten
@@ -421,7 +482,7 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None, abwahl: li
         warn = list(plan.get("warnungen", [])) + res.warnungen
         xinfo = {"pdf_name": info["pdf"], "excel_name": info["excel"], "ergebnis_name": ziel.name}
         schreibe_xlsx(ordner / "aenderungsprotokoll.xlsx", xinfo, aenderungen, bil, plan.get("layout", []), warn,
-                      plan.get("farben", []), plan.get("luecken", []))
+                      plan.get("farben", []), plan.get("luecken", []), plan.get("spec"))
         _schreibe_json_atomar(ordner / "ergebnis.json", {   # zuletzt: erst damit zaehlt das Ergebnis
             "run_id": run_id, "erstellt": datetime.now().isoformat(timespec="seconds"), "ergebnis_name": ziel.name,
             "freigaben": sorted(freig), "abwahl": sorted(abw), "bilanz": bil, "warnungen": warn,
@@ -458,6 +519,8 @@ def _eintrag(d: Path) -> dict[str, Any]:
             eintrag["meldung"] = e.meldung
         return eintrag
     eintrag["bilanz"] = plan["bilanz"]
+    sp = plan.get("spec")
+    eintrag["spec"] = sp.get("erkannt") if isinstance(sp, dict) and len(sp.get("kandidaten") or []) > 1 else None
     eintrag["status"] = "uebernommen" if eintrag["ergebnisse"] else "analysiert"
     return eintrag
 

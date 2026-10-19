@@ -113,9 +113,18 @@ def schreibe_json(pfad: Path, daten: dict[str, Any]) -> None:
     pfad.write_text(json.dumps(daten, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
+def _spec_zeilen(spec: dict[str, Any] | None) -> list[tuple[str, Any]]:
+    """Zeile(n) fuers Protokoll: welche Spec der CDE bearbeitet wurde (nur bei einer CDE mit mehreren Specs)."""
+    if not isinstance(spec, dict) or len(spec.get("kandidaten") or []) < 2:
+        return []
+    z = spec.get("zeilen")
+    wert = (f"{spec['erkannt']}" + (f" (Zeilen {z[0]}–{z[1]})" if z else "")) if spec.get("erkannt") else "nicht eindeutig – nichts automatisch eingetragen"
+    return [("Spec dieses Abgleichs", wert)]
+
+
 def schreibe_xlsx(pfad: Path, info: dict[str, Any], aenderungen: list[Aenderung], bil: dict[str, Any],
                   layout: list[dict], warnungen: list[str], farben: list[dict] | None = None,
-                  luecken: list[dict[str, Any]] | None = None) -> None:
+                  luecken: list[dict[str, Any]] | None = None, spec: dict[str, Any] | None = None) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "Bilanz"
@@ -125,6 +134,7 @@ def schreibe_xlsx(pfad: Path, info: dict[str, Any], aenderungen: list[Aenderung]
     zeilen = [
         ("PDF mit Änderungen", info.get("pdf_name", "")), ("Excel (Original, unverändert)", info.get("excel_name", "")),
         ("Ergebnis-Excel", info.get("ergebnis_name", "(noch nicht erstellt)")),
+        *_spec_zeilen(spec),
         ("", ""),
         ("Erkannte Änderungen", bil["aenderungen"]),
         ("übernommen", bil["uebernommen"]), ("zu prüfen (Vorschlag, wartet auf Freigabe)", bil["pruefen"]),
