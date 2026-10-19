@@ -1963,26 +1963,72 @@ def _spalten_versteckt(ws: Any, grenze: int) -> set[int]:
     return out
 
 
-def _validierungen(ws: Any, abb: dict[int, int | None] | None) -> tuple[set, int]:
-    """Datenvalidierungen als Menge; mit `abb` werden die Zeilen auf das Ergebnis abgebildet. -> (Menge, nicht abbildbare)"""
+def _validierungen_liste(ws: Any, abb: dict[int, int | None] | None, ende: dict[int, int | None] | None = None) -> list:
+    """Datenvalidierungen als Liste (None = nicht abbildbar); `ende` bildet nur die LETZTE Zeile eines Bereichs ab (siehe `_ende_abb`)."""
     from openpyxl.worksheet.cell_range import CellRange
-    out: set = set()
-    offen = 0
+    out: list = []
     for dv in ws.data_validations.dataValidation:
         bereiche = []
         ok = True
         for rng in str(dv.sqref).split():
             cr = CellRange(rng)
-            lo, hi = (cr.min_row, cr.max_row) if abb is None else (abb.get(cr.min_row), abb.get(cr.max_row))
+            if abb is None:
+                lo, hi = cr.min_row, cr.max_row
+            else:
+                lo, hi = abb.get(cr.min_row), (ende if ende is not None else abb).get(cr.max_row)
             if lo is None or hi is None:
                 ok = False
                 break
             bereiche.append((cr.min_col, lo, cr.max_col, hi))
-        if not ok:
-            offen += 1
+        out.append((dv.type, dv.operator, dv.formula1, dv.formula2, bool(dv.allow_blank), tuple(sorted(bereiche))) if ok else None)
+    return out
+
+
+def _validierungen(ws: Any, abb: dict[int, int | None] | None) -> tuple[set, int]:
+    """Datenvalidierungen als Menge; mit `abb` werden die Zeilen auf das Ergebnis abgebildet. -> (Menge, nicht abbildbare)"""
+    liste = _validierungen_liste(ws, abb)
+    return {x for x in liste if x is not None}, sum(1 for x in liste if x is None)
+
+
+def _ende_abb(abb: dict[int, int | None], neue_nr: list[int]) -> dict[int, int | None] | None:
+    """Abbildung nur fuer das ENDE von Bereichen (Datenpruefung, bedingte Formatierung, Autofilter): endet ein Bereich an einer Zeile,
+    hinter der im Ergebnis neue Zeilen eingefuegt wurden, darf er bis zur letzten dieser direkt folgenden neuen Zeilen reichen (wie
+    "kopierte Zeile einfuegen" in Excel) ODER beim alten Ende bleiben -- beides ist richtig. Anfaenge bleiben unveraendert; ein
+    verkuerzter Bereich oder ein verschobener Anfang ist weiter ein Befund. None = keine neuen Zeilen."""
+    neu = set(neue_nr)
+    if not neu:
+        return None
+    ende = dict(abb)
+    gewachsen = False
+    for r, x in abb.items():
+        if x is None:
             continue
-        out.add((dv.type, dv.operator, dv.formula1, dv.formula2, bool(dv.allow_blank), tuple(sorted(bereiche))))
-    return out, offen
+        k = 0
+        while x + k + 1 in neu:
+            k += 1
+        if k:
+            ende[r] = x + k
+            gewachsen = True
+    return ende if gewachsen else None
+
+
+def _tolerant_diff(erw_a: list, erw_g: list | None, da: set) -> int:
+    """Unterschiede zwischen erwarteten Elementen und vorhandenen (`da`): je Element zaehlt Variante a (altes Ende) ODER g (Ende bis
+    zur letzten neuen Zeile). Nicht abbildbare Elemente (None) werden nicht vermutet: dann zaehlen nur fehlende Eintraege."""
+    erw_g = erw_g if erw_g is not None else erw_a
+    offen = any(a is None for a in erw_a)
+    rest = set(da)
+    fehlt = 0
+    for a, g in dict.fromkeys(zip(erw_a, erw_g)):             # wie bisher als Menge: gleiche Eintraege nur einmal
+        if a is None:
+            continue
+        if a in rest:
+            rest.discard(a)
+        elif g in rest:
+            rest.discard(g)
+        else:
+            fehlt += 1
+    return max(fehlt, 0 if offen else len(rest))              # wie `_menge_diff`: eine geaenderte Regel zaehlt einmal
 
 
 def _zeile_abb(abb: dict[int, int | None], r: int, vmax: int) -> int | None:
@@ -1998,7 +2044,7 @@ def _zeile_abb(abb: dict[int, int | None], r: int, vmax: int) -> int | None:
     return None
 
 
-def _bereich_abb(rng: str, abb: dict[int, int | None] | None, vmax: int) -> tuple | None:
+def _bereich_abb(rng: str, abb: dict[int, int | None] | None, vmax: int, ende: dict[int, int | None] | None = None) -> tuple | None:
     """'A2:C9' -> (Spalte von, Zeile von, Spalte bis, Zeile bis). Mit `abb` werden die Zeilen auf das Ergebnis abgebildet.
     None = nicht abbildbar (Zeile entfernt oder nicht eindeutig). Ganze Spalten/Zeilen und Unlesbares bleiben unveraendert."""
     try:
@@ -2007,7 +2053,7 @@ def _bereich_abb(rng: str, abb: dict[int, int | None] | None, vmax: int) -> tupl
         return ("roh", str(rng))
     if abb is None or r1 is None or r2 is None:
         return (c1, r1, c2, r2)
-    lo, hi = _zeile_abb(abb, r1, vmax), _zeile_abb(abb, r2, vmax)
+    lo, hi = _zeile_abb(abb, r1, vmax), _zeile_abb(abb if ende is None else ende, r2, vmax)
     return None if lo is None or hi is None else (c1, lo, c2, hi)
 
 
@@ -2035,9 +2081,9 @@ def _relativ(formel: str, anker: tuple[int, int] | None) -> str:
     return _ZELLBEZUG.sub(ers, formel)
 
 
-def _bedingte_formatierung(ws: Any, abb: dict[int, int | None] | None, vmax: int) -> tuple[set, int]:
-    out: set = set()
-    offen = 0
+def _bedingte_formatierung_liste(ws: Any, abb: dict[int, int | None] | None, vmax: int,
+                                 ende: dict[int, int | None] | None = None) -> list:
+    out: list = []
     for cf in ws.conditional_formatting:
         try:
             c1, r1, _c2, _r2 = range_boundaries(str(cf.sqref).split()[0].replace("$", ""))
@@ -2048,12 +2094,14 @@ def _bedingte_formatierung(ws: Any, abb: dict[int, int | None] | None, vmax: int
             (str(r.type), str(r.operator), tuple(_relativ(str(f), anker) for f in (r.formula or [])), str(r.text), str(r.rank),
              str(r.percent), str(r.bottom), str(r.aboveAverage), str(r.stopIfTrue)) for r in cf.rules))
         for rng in str(cf.sqref).split():
-            b = _bereich_abb(rng, abb, vmax)
-            if b is None:
-                offen += 1
-            else:
-                out.add((b, regeln))
-    return out, offen
+            b = _bereich_abb(rng, abb, vmax, ende)
+            out.append(None if b is None else (b, regeln))
+    return out
+
+
+def _bedingte_formatierung(ws: Any, abb: dict[int, int | None] | None, vmax: int) -> tuple[set, int]:
+    liste = _bedingte_formatierung_liste(ws, abb, vmax)
+    return {x for x in liste if x is not None}, sum(1 for x in liste if x is None)
 
 
 def _hyperlinks(ws: Any, abb: dict[int, int | None] | None, vmax: int) -> tuple[set, int]:
@@ -2083,12 +2131,12 @@ def _tabellen(ws: Any, abb: dict[int, int | None] | None, vmax: int) -> tuple[se
     return out, offen
 
 
-def _autofilter(ws: Any, abb: dict[int, int | None] | None, vmax: int) -> tuple[Any, bool]:
+def _autofilter(ws: Any, abb: dict[int, int | None] | None, vmax: int, ende: dict[int, int | None] | None = None) -> tuple[Any, bool]:
     """-> (Bereich und Zahl der Filterspalten oder None, nicht abbildbar)"""
     ref = ws.auto_filter.ref
     if not ref:
         return None, False
-    b = _bereich_abb(ref, abb, vmax)
+    b = _bereich_abb(ref, abb, vmax, ende)
     return (None, True) if b is None else ((b, len(ws.auto_filter.filterColumn)), False)
 
 
@@ -2243,29 +2291,26 @@ def _struktur_befund(vorher: Path, ergebnis: Path, diffs: list[Diff]) -> dict[st
                     erwartet.add((rng.min_col, lo, rng.max_col, hi))
             da = {(rng.min_col, rng.min_row, rng.max_col, rng.max_row) for rng in e.merged_cells.ranges}
             n["verbunden"] += max(len(erwartet - da), 0 if offen_m else len(da - erwartet))
-            # Neue Zeilen am Blattende: ein Bereich, der bis zur letzten Zeile reichte, darf sie einschliessen (wie das Soll und wie
-            # Excel beim Weiterschreiben unter einer Liste) ODER beim alten Ende bleiben (Excel beim Einfuegen) -- beides ist richtig.
-            abbs_alt = [abb]
-            hinten = [x for x in d.neue_nr if abb.get(vmax) is not None and x > abb[vmax]]
-            if hinten:
-                abb_ende = dict(abb)
-                abb_ende[vmax] = max(hinten)
-                abbs_alt.append(abb_ende)
+            # Neue Zeilen direkt hinter dem Ende eines Bereichs (Blattende wie Blattmitte): ein Bereich, der an der Vorlagezeile
+            # endet, darf bis zur letzten direkt folgenden neuen Zeile reichen ODER beim alten Ende bleiben (siehe `_ende_abb`).
+            # Anfaenge bleiben unveraendert; Verkuerzen und Verschieben des Starts ist weiter ein Befund.
+            ende = _ende_abb(abb, d.neue_nr)
             # Datenvalidierung
-            dv_da, _ = _validierungen(e, None)
-            n["validierung"] += min(max(len(erw - dv_da), 0 if offen else len(dv_da - erw))
-                                    for erw, offen in (_validierungen(v, a_) for a_ in abbs_alt))
+            dv_da = {x for x in _validierungen_liste(e, None) if x is not None}
+            n["validierung"] += _tolerant_diff(_validierungen_liste(v, abb), _validierungen_liste(v, abb, ende) if ende else None, dv_da)
             # bedingte Formatierung, Hyperlinks, Excel-Tabellen
-            cf_da = _bedingte_formatierung(e, None, vmax)[0]
-            n["bedingte_formatierung"] += min(_menge_diff(cv, cf_da, cv_offen)
-                                              for cv, cv_offen in (_bedingte_formatierung(v, a_, vmax) for a_ in abbs_alt))
+            cf_da = {x for x in _bedingte_formatierung_liste(e, None, vmax) if x is not None}
+            n["bedingte_formatierung"] += _tolerant_diff(
+                _bedingte_formatierung_liste(v, abb, vmax),
+                _bedingte_formatierung_liste(v, abb, vmax, ende) if ende else None, cf_da)
             lv, lv_offen = _hyperlinks(v, abb, vmax)
             n["hyperlink"] += _menge_diff(lv, _hyperlinks(e, None, vmax)[0], lv_offen)
             tv, tv_offen = _tabellen(v, abb, vmax)
             n["tabelle"] += _menge_diff(tv, _tabellen(e, None, vmax)[0], tv_offen)
             # Autofilter
             ae_, _ = _autofilter(e, None, vmax)
-            n["autofilter"] += min(int((not av_offen) and av != ae_) for av, av_offen in (_autofilter(v, a_, vmax) for a_ in abbs_alt))
+            varianten = [(av, av_offen) for av, av_offen in (_autofilter(v, abb, vmax), *([_autofilter(v, abb, vmax, ende)] if ende else []))]
+            n["autofilter"] += min(int((not av_offen) and av != ae_) for av, av_offen in varianten)
             # Kommentare (an veraenderten Zellen und in neuen Zeilen darf das Tool welche anlegen oder ergaenzen)
             ev_kommentare = {(r, c): _kommentar_text(z) for (r, c), z in v._cells.items() if _kommentar_text(z) is not None}
             ee_kommentare = {(r, c): _kommentar_text(z) for (r, c), z in e._cells.items() if _kommentar_text(z) is not None}
