@@ -517,13 +517,16 @@ def _konstanten(ws, vorlage: int, anker: int, belegt: set[int], lay: Any, nz_cfg
                 if n >= anteil * len(block):
                     passend = [r for r in block if _formel_text(ws._cells.get((r, c))) is None
                                and _wert_norm(ws._cells.get((r, c))) == w]
-                    roh: dict[str, int] = {}               # die haeufigste Schreibweise (z. B. ohne Leerzeichen am Ende)
+                    # WOERTLICH kopieren (auch Leerzeichen am Ende): gezaehlt wird nur ueber die Normalform. Hat die Vorlagezeile
+                    # den Wert (gleiche Normalform), gilt ihre Schreibweise; sonst die haeufigste Schreibweise der Spec.
+                    roh: dict[str, int] = {}
                     for r in passend:
                         k = repr(ws._cells[(r, c)].value)
                         roh[k] = roh.get(k, 0) + 1
                     best = max(roh.values())
-                    quelle = min((r for r in passend if roh[repr(ws._cells[(r, c)].value)] == best),
-                                 key=lambda r: (abs(r - vorlage), r))
+                    quelle = vorlage if vorlage in passend else min(
+                        (r for r in passend if roh[repr(ws._cells[(r, c)].value)] == best),
+                        key=lambda r: (abs(r - vorlage), r))
                     kopie[c] = ZellInhalt(ws.title, 0, c, kopie_von=quelle)
                     continue
         if _wert_norm(z) is not None or f is not None:

@@ -448,6 +448,33 @@ def test_projektion_einfuegung_hinter_den_ganzen_excel_leerraum():
                        "3){+a+}" + nb + " Allgemeine Regeln.")
 
 
+def test_projektion_ersetzte_listennummer_mit_polster_und_einfuegung():
+    """Nachauftrag: die Listennummer selbst wird ersetzt und das PDF fuegt Text dahinter ein. Die neue Nummer steht direkt
+    hinter der alten, der neue Text HINTER dem Polster (geschuetzte Leerzeichen bzw. Tab), nicht an der Nummer."""
+    k, sp = (lambda t: Lauf("k", t)), Lauf("s", " ")
+    a, d = (lambda t: Lauf("a", t, "A1")), (lambda t: Lauf("d", t, "A1"))
+    nb = "\xa0" * 12
+    for excel, laeufe, soll in [
+        ("d." + nb + " Ausführung des Ventils.", [d("d."), sp, a("f."), a(" "), a("Besondere"), a(" "), k("Ausführung"), sp,
+                                                  k("des"), sp, k("Ventils.")],
+         "{-d.-}{+f.+}" + nb + " {+Besondere +}Ausführung des Ventils."),
+        ("3.\tAllgemeine Regeln.", [d("3."), sp, a("4. Weitere "), k("Allgemeine"), sp, k("Regeln.")],
+         "{-3.-}{+4.+}\t{+Weitere +}Allgemeine Regeln."),
+    ]:
+        proj = projiziere([excel], laeufe, {"A1"})
+        assert proj is not None
+        m = markiere_ops([Stueck(NORMAL, excel)], [], bereiche=[(0, len(excel), proj[0])])
+        assert _kurz(m.stuecke) == soll
+        assert "".join(z[0] for z in m.zeichen if z[2] >= 0) == excel
+        ab = Absatz("P1", "CDE", [(2, 3, 0, len(excel))], laeufe)
+        assert pruefe_absatz_markiert(ab, {(2, 3): (excel, m.zeichen)}, {"A1"}) is None
+    # nur ein einzelnes Leerzeichen hinter der Nummer ist kein Polster: der Text bleibt an der Nummer
+    excel = "3. Allgemeine Regeln."
+    proj = projiziere([excel], [d("3."), sp, a("4. Weitere "), k("Allgemeine"), sp, k("Regeln.")], {"A1"})
+    m = markiere_ops([Stueck(NORMAL, excel)], [], bereiche=[(0, len(excel), proj[0])])
+    assert _kurz(m.stuecke) == "{-3.-} {+4. Weitere +}Allgemeine Regeln."
+
+
 def test_projektion_markierter_leerraum_aus_dem_pdf():
     """Welle 3, Punkt 3: LESEN liefert markierten Leerraum als Teil der d/a-Laeufe. Er wird genau so markiert: ein
     gestrichenes Leerzeichen ist das vorhandene Excel-Leerzeichen (hellblau + Strich), ein eingefuegtes ist rot -- ein
