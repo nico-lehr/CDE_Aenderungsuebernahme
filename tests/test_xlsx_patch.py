@@ -731,3 +731,14 @@ def test_laufende_summe_waechst_nicht_summenzeile_schon(tmp_path):
     assert [ws.cell(r, 5).value for r in range(2, 8)] == [f"=SUM($D$2:D{r})" for r in range(2, 8)]
     assert ws["D9"].value == "=SUM(D2:D7)" and wb["Andere"]["A1"].value == f"=SUM({BLATT}!D2:D7)"
     assert any("umfassen jetzt auch die neue Zeile" in w for w in erg.warnungen)
+
+
+def test_bereich_waechst_bei_mehreren_neuen_zeilen_nacheinander_ganz_oder_gar_nicht():
+    """Ein Bereich, der an der Vorlagezeile endet, waechst bei vier neuen Zeilen direkt dahinter um 4 (alle Vorlagen im
+    Bereich) oder gar nicht -- nie um 3."""
+    from src.xlsx_patch import _Verschiebung, _sqref_verschieben
+    alle = _Verschiebung([(547, 547)] * 4 + [(100, 100)], True)
+    assert _sqref_verschieben("H537:H547 J7:N547", alle) == "H538:H552 J7:N552"        # +1 (Zeile 100) +4
+    gemischt = _Verschiebung([(547, 547), (547, 547), (547, 400), (547, 547), (100, 100)], True)
+    assert _sqref_verschieben("H537:H547", gemischt) == "H538:H548"                    # nur die Verschiebung, nie +3
+    assert _sqref_verschieben("H350:H547", gemischt) == "H351:H552"                    # alle Vorlagen im Bereich: +4

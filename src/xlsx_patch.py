@@ -214,7 +214,10 @@ class _Verschiebung:
         auch, wenn er genau mit der Vorlagezeile endet und die neue Zeile direkt dahinter kommt (Liste, die weiterlaeuft)."""
         a, b = self.zeile(r0), self.zeile(r1)
         if wachsen and r0 < r1:
-            extra = sum(1 for n, v in self.paare if n == r1 and r0 <= v <= r1)
+            # Alles oder nichts: kommen mehrere neue Zeilen nacheinander direkt hinter das Ende, waechst der Bereich nur, wenn
+            # ALLE ihre Vorlage im Bereich haben (sonst haette er danach eine Luecke bzw. endete mitten in der Gruppe)
+            hinter = [v for n, v in self.paare if n == r1]
+            extra = len(hinter) if hinter and all(r0 <= v <= r1 for v in hinter) else 0
             if extra:
                 b += extra
                 self.gewachsen += 1
