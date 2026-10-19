@@ -98,6 +98,20 @@
       </div>
     </div>
 
+    <!-- Spec: nur sichtbar, wenn die CDE mehrere Specs enthält -->
+    <section class="spec-zone" id="spec-zone" aria-label="Spec dieses PDFs" hidden>
+      <div class="spec-zeile" id="spec-zeile">
+        <p class="spec-text" id="spec-text"></p>
+        <button class="btn btn-secondary btn-small" id="btn-spec-andere" type="button" aria-expanded="false" aria-controls="spec-wahl">Andere Spec wählen</button>
+      </div>
+      <div class="spec-wahl" id="spec-wahl" hidden>
+        <h2 id="spec-titel" tabindex="-1">Welche Spec gehört zu diesem PDF?</h2>
+        <p class="hint" id="spec-frage">Deine CDE enthält mehrere Specs. Wähle die, zu der dieses PDF gehört. Es werden nur deren Zeilen bearbeitet, die anderen bleiben unverändert.</p>
+        <ul class="spec-liste" id="spec-liste" aria-labelledby="spec-titel"></ul>
+        <p class="hint">Das startet einen neuen Abgleich mit denselben Dateien. Der jetzige bleibt unter „Zuletzt“ erhalten.</p>
+      </div>
+    </section>
+
     <section class="bereich" id="bereich-bitte" aria-labelledby="titel-bitte">
       <div class="bereich-kopf">
         <div class="titel-zeile">

@@ -341,3 +341,27 @@ def test_upload_mit_unbestaetigtem_profil_wird_abgelehnt(client, tmp_path):
                         content_type="multipart/form-data")
     assert r.status_code == 409 and r.is_json
     assert r.get_json()["status"] == "fehlgeschlagen" and "fehler" in r.get_json()
+
+
+def test_plan_ohne_spec_felder_bleibt_lesbar_und_specs_ist_leer(client, tmp_path):
+    """Plaene aus der Zeit vor dem Spec-Filter haben weder `spec` noch `specs`: Standardwerte, keine Auswahl im Dashboard."""
+    rid = _neuer_lauf(client, tmp_path)
+    pj = runs.lauf_dir(rid) / "plan.json"
+    j = json.loads(pj.read_text(encoding="utf-8"))
+    j.pop("spec", None)
+    j.pop("specs", None)
+    pj.write_text(json.dumps(j), encoding="utf-8")
+    g = client.get(f"/api/lauf/{rid}").get_json()
+    assert g["spec"] is None and g["specs"] == []
+    assert client.get(f"/api/lauf/{rid}/specs").get_json() == {"specs": [], "spec": None}
+    assert client.get("/api/lauf").get_json()[0]["spec"] is None
+    assert client.post(f"/api/lauf/{rid}/uebernehmen", json={}).status_code == 200
+
+
+def test_cde_ohne_spec_spalte_hat_keine_specs_und_neu_analysieren_legt_neuen_lauf_an(client, tmp_path):
+    plan = _hochladen(client, erzeuge(tmp_path / "fx")).get_json()
+    assert plan["specs"] == [] and plan["spec"] is None
+    r = client.post(f"/api/lauf/{plan['run_id']}/neu-analysieren", json={"spec": "11 22 33"})
+    assert r.status_code == 200 and r.get_json()["run_id"] != plan["run_id"]       # Warnung statt Fehler
+    assert any("keine Spalte mit Spezifikationsnummern" in w for w in r.get_json()["warnungen"])
+    assert len(client.get("/api/lauf").get_json()) == 2
