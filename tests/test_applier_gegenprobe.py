@@ -616,21 +616,69 @@ def test_markiert_neue_zeile_rot_mit_konstanten_und_leeren_spalten(tmp_path):
     z = ws["C4"]
     assert ansichten(z)[1] == "Neuer Absatz dazwischen." and [s.format for s in ansichten(z)[2]] == [NEU]
     assert all(b.font.b and b.font.rFont == "Arial" for b in z.value)            # Grundschrift der Vorlagezeile
-    assert ws["D4"].value == "SPEC-7" and ws["F4"].value == "offen"               # Konstanten kopiert
-    assert ws["E4"].value is None and ws["B4"].value is None and op.leer_spalten == [2, 5]
-    assert any("Spalten B, E leer" in h for h in ae.hinweise)
+    # rechts der Textspalte wird nichts kopiert (Neuregelung Nico): alles leer, mit Hinweis; die Nummer ist nicht rot
+    assert all(ws.cell(4, c).value is None for c in (2, 4, 5, 6)) and op.leer_spalten == [4, 5, 6]
+    assert any("Spalten D, E, F leer" in h for h in ae.hinweise)
+    assert ws["A4"].value == "2.1" and (ws["A4"].font.color is None or ws["A4"].font.color.rgb != "FFFF0000")
     assert ws.row_dimensions[4].height == 28 and ws["C5"].value == "Dritter Absatz mit genug Text."
     assert not [w for w in res.warnungen if "Gegenprobe" in w]
 
 
+def _mehrere_specs(tmp_path):
+    """CDE mit zwei Spezifikationen (erfunden): Nr. | Spezifikation | Revision | Datum | Section | Sub | Text | Status | Notiz.
+    SPEC-A: Zeilen 2-6 (Revision 1x abweichend = 80 %), SPEC-B: Zeilen 7-18 (Revision 1x abweichend = 92 %); die Spec steht einmal mit Leerzeichen am Ende da."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CDE"
+    ws.append(["Nr.", "Spezifikation", "Revision", "Datum", "Section", "Sub-Section", "Anforderungstext", "Status", "Bemerkung"])
+    for spec, rev, n in (("SPEC-A", "R1", 5), ("SPEC-B", "R2", 12)):
+        for i in range(1, n + 1):
+            ws.append([None, spec if i != 4 else spec + " ", rev if i != 3 else "R0", "2026-01-05", f"{i}.1", "A",
+                       f"Absatz {i} der {spec} mit Zebrafink.", "offen", f"Notiz {i}"])
+    p = tmp_path / "specs.xlsx"
+    wb.save(str(p))
+    return p
+
+
 @pytest.mark.markierung_an
-def test_markiert_neue_section_nummer_als_zahl_rot(tmp_path):
+def test_markiert_neue_zeile_konstanten_nur_links_und_aus_derselben_spec(tmp_path):
+    p = _mehrere_specs(tmp_path)
+    ops = [Operation("zeile_einfuegen", "CDE", 9, zellen={5: "3.2", 7: "Neuer Absatz mit Ventil."}, stil_von=9,
+                     aenderung="A1"),
+           Operation("zeile_einfuegen", "CDE", 7, zellen={5: "0.9", 7: "Ganz vorn in B."}, stil_von=6, vor=True,
+                     aenderung="A2"),
+           Operation("zeile_einfuegen", "CDE", 3, zellen={5: "1.2", 7: "Neu in A."}, stil_von=3, aenderung="A3")]
+    aes = [_ae(f"A{i}", [op], typ="absatz_neu") for i, op in enumerate(ops, 1)]
+    uebernehmen(aes, p, tmp_path / "out.xlsx", absaetze=[])
+    for ae in aes:
+        assert (ae.status, ae.wirkung) == (UEBERNOMMEN, WIRKUNG_OK), (ae.id, ae.grund, ae.hinweise)
+    ws = load_workbook(str(tmp_path / "out.xlsx"), rich_text=True)["CDE"]
+    werte = {r: [ws.cell(r, c).value for c in range(1, 10)] for r in range(1, ws.max_row + 1)}
+    b = next(r for r, w in werte.items() if w[6] is not None and "Ventil" in str(ws.cell(r, 7).value))
+    # Spec, Revision (der haeufigste Wert der Spec, nicht der abweichende der Vorlagezeile) und Datum kopiert, rechts leer
+    assert werte[b][1:4] == ["SPEC-B", "R2", "2026-01-05"] and werte[b][7:] == [None, None] and werte[b][0] is None
+    assert ws.cell(b, 5).value == "3.2" and (ws.cell(b, 5).font.color is None or ws.cell(b, 5).font.color.rgb != "FFFF0000")
+    assert [s.format for s in ansichten(ws.cell(b, 7))[2]] == [NEU]
+    assert ops[0].leer_spalten == [8, 9]
+    # Vorlagezeile aus SPEC-A angeboten, eingefuegt am Anfang von SPEC-B: die Kennungen kommen aus SPEC-B
+    v = next(r for r in werte if "Ganz vorn" in str(ws.cell(r, 7).value))
+    assert werte[v][1:4] == ["SPEC-B", "R2", "2026-01-05"]
+    # in SPEC-A ist die Revision nicht einheitlich genug (80 % < 90 %): sie bleibt leer, mit Hinweis
+    a = next(r for r in werte if "Neu in A" in str(ws.cell(r, 7).value))
+    assert werte[a][1:4] == ["SPEC-A", None, "2026-01-05"] and ops[2].leer_spalten == [3, 8, 9]
+    assert any("Spalten C, H, I leer" in h for h in aes[2].hinweise)
+
+
+@pytest.mark.markierung_an
+def test_markiert_neue_section_nummer_als_zahl_im_stil_der_vorlage(tmp_path):
     p = _zahl_excel(tmp_path, [(2.1, "0.0"), (2.2, "0.0"), (3, "0")])
     ae = _neue_section("2.3", 3)
     uebernehmen([ae], p, tmp_path / "out.xlsx")
-    c = load_workbook(str(tmp_path / "out.xlsx"))["CDE"].cell(4, 1)
+    ws = load_workbook(str(tmp_path / "out.xlsx"), rich_text=True)["CDE"]
+    c = ws.cell(4, 1)
     assert isinstance(c.value, float) and abs(c.value - 2.3) < 1e-9 and c.number_format == "0.0"
-    assert c.font.color is not None and c.font.color.rgb == "FFFF0000"
+    assert c.font.color is None or c.font.color.rgb != "FFFF0000"              # nur der Text ist rot
+    assert [s.format for s in ansichten(ws.cell(4, 3))[2]] == [NEU]
     assert (ae.status, ae.wirkung) == (UEBERNOMMEN, WIRKUNG_OK)
 
 
@@ -777,7 +825,7 @@ def test_markiert_wie_das_pdf_auch_bei_unsauberen_operationen(tmp_path):
     (Leerraum, Klammern, Schreibvarianten). Markiert wird trotzdem genau, was das PDF markiert; Excel-eigene Zeichen
     (doppelter Leerraum, U+2011) bleiben unveraendert. Woerter und Zahlen erfunden."""
     faelle = [  # Excel, PDF-Kurzschrift, Operationen (start, ende, text) wie im Ist, Soll
-        ("nach  NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", [(4, 6, " ZUSATZ-EN ")], "nach {+ZUSATZ-EN+} NORM 4711."),
+        ("nach  NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", [(4, 6, " ZUSATZ-EN ")], "nach  {+ZUSATZ-EN+} NORM 4711."),
         ("nach NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", [(4, 5, " ZUSATZ-EN ")], "nach {+ZUSATZ-EN+} NORM 4711."),
         ("Feuchte: [0 bis 100] Prozent", "Feuchte: {-[-}|0 bis 100|{-]-} Prozent", [(8, 10, " "), (19, 21, " ")],
          "Feuchte: {-[-}0 bis 100{-]-} Prozent"),

@@ -346,7 +346,8 @@ from src.markierung import projiziere                                     # noqa
 # (Excel-Text, PDF-Absatz in Kurzschrift, Soll mit {-alt-} / {+neu+})
 MUSTER = [
     ("nach NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711."),
-    ("nach  NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711."),      # doppelter Leerraum
+    # doppelter Leerraum: der neue Text kommt hinter den ganzen Excel-Leerraum (Welle 3, Punkt 2)
+    ("nach  NORM 4711.", "nach {+ZUSATZ-EN+} NORM 4711.", "nach  {+ZUSATZ-EN+} NORM 4711."),
     ("Feuchte: [0 bis 100] Prozent", "Feuchte: {-[-}|0 bis 100|{-]-} Prozent", "Feuchte: {-[-}0 bis 100{-]-} Prozent"),
     ("und NORM 4712. Danach", "und {-NORM-} {-4712-}|. Danach", "und {-NORM 4712-}. Danach"),
     ("Teil 60364‑6 mit Pumpe alt.", "Teil 60364-6 mit Pumpe {-alt-}|{+neu+}|.", "Teil 60364‑6 mit Pumpe {-alt-}{+neu+}."),
@@ -396,6 +397,88 @@ def test_projektion_neben_operationen_in_derselben_zelle():
     with pytest.raises(ValueError):                                         # Operation mitten im projizierten Bereich
         markiere_ops([Stueck(NORMAL, t)], [Operation("ersetzen", "CDE", 2, 3, 3, 5, "x", aenderung="A3")],
                      bereiche=[(0, 16, proj[0])])
+
+
+def _pruefe_projektion(excel: str, laeufe: list[Lauf], soll: str) -> None:
+    proj = projiziere([excel], laeufe, {"A1"})
+    assert proj is not None, excel
+    m = markiere_ops([Stueck(NORMAL, excel)], [], bereiche=[(0, len(excel), proj[0])])
+    assert _kurz(m.stuecke) == soll, excel
+    assert "".join(z[0] for z in m.zeichen if z[2] >= 0) == excel              # jedes Excel-Zeichen steht unveraendert da
+    ab = Absatz("P1", "CDE", [(2, 3, 0, len(excel))], laeufe)
+    assert pruefe_absatz_markiert(ab, {(2, 3): (excel, m.zeichen)}, {"A1"}) is None
+
+
+def test_a3_markiert_ignoriert_aeltere_unsichtbare_markierungen():
+    """Welle 3, Punkt 4: eine Zelle mit durchgestrichenem Text einer frueheren Runde (in der Neu-Ansicht unsichtbar). A3
+    vergleicht nur, was zur Neu-Ansicht gehoert -- das alte Gestrichene darf kein gegenprobe_alt ausloesen."""
+    vorher = [Stueck(NORMAL, "Die "), Stueck(ALT, "alte "), Stueck(NORMAL, "Pumpe läuft "), Stueck(ALT, "sehr "),
+              Stueck(NORMAL, "leise.")]
+    t = sicht_text(vorher, SICHT_NEU)
+    assert t == "Die Pumpe läuft leise."
+    s = t.index("leise")
+    laeufe = _lauf("Die Pumpe läuft {-leise-}|{+laut+}|.")
+    m = markiere_ops(vorher, _ops(("e", s, s + 5, "laut", "A1")), sicht=SICHT_NEU)
+    assert [z for z in m.zeichen if z[2] < 0 and not z[4]]                  # die alten Zeichen stehen mit in der Liste
+    ab = Absatz("P1", "CDE", [(2, 3, 0, len(t))], laeufe)
+    assert pruefe_absatz_markiert(ab, {(2, 3): (t, m.zeichen)}, {"A1"}) is None
+    proj = projiziere([t], laeufe, {"A1"})
+    m2 = markiere_ops(vorher, [], sicht=SICHT_NEU, bereiche=[(0, len(t), proj[0])])
+    assert pruefe_absatz_markiert(ab, {(2, 3): (t, m2.zeichen)}, {"A1"}) is None
+    # ein eigener Fehler faellt weiter auf: der neue Text fehlt
+    m3 = markiere_ops(vorher, _ops(("e", s, s + 5, "", "A1")), sicht=SICHT_NEU)
+    assert pruefe_absatz_markiert(ab, {(2, 3): (t, m3.zeichen)}, {"A1"}) == "gegenprobe_text"
+
+
+def test_projektion_einfuegung_hinter_den_ganzen_excel_leerraum():
+    """Welle 3, Punkt 2: Listennummer + viele geschuetzte Leerzeichen; das PDF fuegt am Absatzanfang ein. Der neue Text kommt
+    hinter den ganzen Excel-Leerraum (vor das naechste behaltene Zeichen) -- ausser das PDF fuegt ausdruecklich vor dem
+    Trenner ein (der neue Text klebt am Zeichen davor)."""
+    nb = "\xa0" * 17
+    excel = "3)" + nb + " Allgemeine Regeln."
+    k, a, sp = (lambda t: Lauf("k", t)), (lambda t: Lauf("a", t, "A1")), Lauf("s", " ")
+    # markierter Leerraum hinter dem neuen Wort (Teil des a-Laufs)
+    _pruefe_projektion(excel, [k("3)"), sp, a("Weitere "), k("Allgemeine"), sp, k("Regeln.")],
+                       "3)" + nb + " {+Weitere +}Allgemeine Regeln.")
+    # unmarkierter Trenner auf beiden Seiten: er bleibt normal, nichts wird mitten in den Excel-Leerraum gesetzt
+    _pruefe_projektion(excel, [k("3)"), sp, a("Weitere"), sp, k("Allgemeine"), sp, k("Regeln.")],
+                       "3)" + nb + " {+Weitere+} Allgemeine Regeln.")
+    # das PDF fuegt ausdruecklich VOR dem Trenner ein
+    _pruefe_projektion(excel, [k("3)"), a("a"), sp, k("Allgemeine"), sp, k("Regeln.")],
+                       "3){+a+}" + nb + " Allgemeine Regeln.")
+
+
+def test_projektion_markierter_leerraum_aus_dem_pdf():
+    """Welle 3, Punkt 3: LESEN liefert markierten Leerraum als Teil der d/a-Laeufe. Er wird genau so markiert: ein
+    gestrichenes Leerzeichen ist das vorhandene Excel-Leerzeichen (hellblau + Strich), ein eingefuegtes ist rot -- ein
+    vorhandenes Excel-Leerzeichen wird nie gedoppelt. Unmarkierter Leerraum bleibt unmarkiert. Woerter erfunden."""
+    k, sp = (lambda t: Lauf("k", t)), Lauf("s", " ")
+    a, d = (lambda t: Lauf("a", t, "A1")), (lambda t: Lauf("d", t, "A1"))
+    faelle = [
+        ("Für Rückschlagventile gilt das.", [k("Für"), sp, a("zusätzlich "), k("Rückschlagventile"), sp, k("gilt"), sp,
+                                              k("das.")], "Für {+zusätzlich +}Rückschlagventile gilt das."),
+        ("Ersatzdichtungen für Lager.", [k("Ersatzdichtungen"), d(" für"), sp, k("Lager.")],
+         "Ersatzdichtungen{- für-} Lager."),
+        ("Förderhöhe: [40] m.", [k("Förderhöhe:"), d(" [40] m.")], "Förderhöhe:{- [40] m.-}"),
+        ("Das Rohr wird gespült.", [k("Das"), sp, k("Rohr"), sp, k("wird"), sp, k("gespült."),
+                                    a(" Die Leistungsaufnahme der Pumpe ist zu messen.")],
+         "Das Rohr wird gespült.{+ Die Leistungsaufnahme der Pumpe ist zu messen.+}"),
+        # nie doppeln: Excel hat den Leerraum schon (davor bzw. dahinter), der markierte Rand-Leerraum faellt weg
+        ("Für Rückschlagventile.", [k("Für"), sp, a(" zusätzlich"), sp, k("Rückschlagventile.")],
+         "Für {+zusätzlich+} Rückschlagventile."),
+        ("Das Rohr wird gespült. ", [k("Das"), sp, k("Rohr"), sp, k("wird"), sp, k("gespült."), a(" Neu ist das.")],
+         "Das Rohr wird gespült.{+ Neu ist das.+} "),
+        # unmarkierter Leerraum bleibt unmarkiert
+        ("Für Rückschlagventile.", [k("Für"), sp, a("zusätzlich"), sp, k("Rückschlagventile.")],
+         "Für {+zusätzlich+} Rückschlagventile."),
+        # markierter Trenner als eigener d/a-Lauf (trenner_art des linken Worts): dasselbe Ergebnis
+        ("Für Rückschlagventile gilt.", [k("Für"), sp, a("zusätzlich"), a(" "), k("Rückschlagventile"), sp, k("gilt.")],
+         "Für {+zusätzlich +}Rückschlagventile gilt."),
+        ("Ersatzdichtungen für Lager.", [k("Ersatzdichtungen"), d(" "), d("für"), sp, k("Lager.")],
+         "Ersatzdichtungen{- für-} Lager."),
+    ]
+    for excel, laeufe, soll in faelle:
+        _pruefe_projektion(excel, laeufe, soll)
 
 
 def test_operationen_ohne_projektion_markieren_keinen_rand_leerraum():

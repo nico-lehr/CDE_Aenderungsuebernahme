@@ -421,40 +421,114 @@ def _formel_text(zelle) -> str | None:
     return v if isinstance(v, str) and v.startswith("=") and zelle.data_type == "f" else None
 
 
-def _konstanten(ws, vorlage: int, belegt: set[int]) -> tuple[dict[int, ZellInhalt], list[int]]:
-    """Konstanten einer neuen Zeile (neue_zeile.konstanten_kopieren): Spalten, deren Wert in der Vorlagezeile und in
-    mindestens zwei ihrer Nachbarzeilen (bis zwei darueber/darunter) gleich ist, werden kopiert; Formeln, die in den
-    Nachbarzeilen gleich gebaut sind (gleich nach dem Verschieben), werden in die neue Zeile uebertragen. Alles andere mit
-    Inhalt in der Vorlagezeile bleibt leer (zweite Rueckgabe)."""
+def _wert_norm(z) -> tuple[str, str] | None:
+    """Vergleichswert einer Zelle fuer die Konstanten neuer Zeilen: Text ohne Leerraum-Unterschiede, sonst Typ und Wert."""
+    v = z.value if z is not None else None
+    if v is None:
+        return None
+    if isinstance(v, str):
+        t = " ".join(v.split())
+        return ("s", t) if t else None
+    return (type(v).__name__, str(v))
+
+
+def _formel_gleich_gebaut(ws, z, f: str, zeilen: list[int]) -> int:
+    """Wie viele der Zeilen haben in dieser Spalte eine Formel, die (verschoben) genau wie f gebaut ist?"""
+    n = 0
+    for r in zeilen:
+        nf = _formel_text(ws._cells.get((r, z.column)))
+        if nf is None:
+            continue
+        try:
+            n += Translator(nf, origin=f"{get_column_letter(z.column)}{r}").translate_formula(z.coordinate) == f
+        except Exception:                                  # noqa: BLE001 -- nicht uebertragbar: zaehlt nicht als gleich
+            pass
+    return n
+
+
+def _spec_block(ws, anker: int, grenze: int, ab: int) -> tuple[int | None, range]:
+    """Die Spezifikations-Spalte einer CDE und der Zeilenblock derselben Spezifikation um die Ankerzeile.
+
+    Eine CDE kann mehrere Spezifikationen enthalten (je eine Identitaets-Spalte links der Section-/Textspalte). Die
+    Spec-Spalte ist die erste Spalte links der Grenze, deren Wert die Ankerzeile mit ihrer Nachbarzeile teilt; der Block ist
+    der zusammenhaengende Bereich um die Ankerzeile mit diesem Wert. Ohne solche Spalte: der ganze Datenbereich."""
+    letzte = ws.max_row
+    alle = range(ab, letzte + 1)
+    if not ab <= anker <= letzte:
+        return None, alle
+    for c in range(1, grenze):
+        w = _wert_norm(ws._cells.get((anker, c)))
+        if w is None:
+            continue
+        lo = hi = anker
+        while lo - 1 >= ab and _wert_norm(ws._cells.get((lo - 1, c))) == w:
+            lo -= 1
+        while hi + 1 <= letzte and _wert_norm(ws._cells.get((hi + 1, c))) == w:
+            hi += 1
+        if hi > lo:
+            return c, range(lo, hi + 1)
+    return None, alle
+
+
+def _konstanten(ws, vorlage: int, anker: int, belegt: set[int], lay: Any, nz_cfg: dict
+                ) -> tuple[dict[int, ZellInhalt], list[int], int]:
+    """Konstanten einer neuen Zeile (Konfiguration neue_zeile, Entscheidung Nico).
+
+    - Kopiert werden nur Identitaets-Spalten LINKS der Section-/Textspalte (z. B. Spezifikation, Revision, Datum), deren Wert
+      in mindestens `konstanten_anteil` der Zeilen derselben Spezifikation gleich ist (der haeufigste Wert, nicht zufaellig der
+      der Vorlagezeile).
+    - Rechts der Textspalte bleibt alles leer (`konstanten_nur_links`); die Spalten mit Inhalt in der Vorlagezeile werden
+      zurueckgegeben (Hinweis: von Hand ergaenzen).
+    - Formeln, die in den Nachbarzeilen gleich gebaut sind, werden uebertragen (`formeln_uebertragen`).
+    - Die Vorlagezeile muss zur selben Spezifikation gehoeren wie die Ankerzeile; sonst wird die Ankerzeile Vorlage.
+
+    Rueckgabe: (Kopien je Spalte, leere Spalten, Vorlagezeile)."""
+    anteil = float(nz_cfg.get("konstanten_anteil", 0.9))
+    nur_links = bool(nz_cfg.get("konstanten_nur_links", True))
+    formeln_an = bool(nz_cfg.get("formeln_uebertragen", True))
+    verwaltet = {c for c in ((lay.section_spalte, lay.untergliederung_spalte, lay.kennwort_spalte, lay.titel_spalte,
+                              lay.inhalt_spalte) if lay else ()) if c}
+    grenze = min(verwaltet | set(belegt), default=ws.max_column + 1)
+    ab = (lay.daten_ab or (lay.kopfzeile + 1 if lay.kopfzeile else 2)) if lay else 2
+    spec, block = _spec_block(ws, anker, grenze, ab)
+    if spec is not None and _wert_norm(ws._cells.get((vorlage, spec))) != _wert_norm(ws._cells.get((anker, spec))):
+        vorlage = anker                                    # Vorlage nur aus derselben Spezifikation
     kopie: dict[int, ZellInhalt] = {}
     leer: list[int] = []
     nachbarn = [r for r in (vorlage - 2, vorlage - 1, vorlage + 1, vorlage + 2) if r >= 1]
     for c in range(1, ws.max_column + 1):
-        if c in belegt:
+        if c in belegt or c in verwaltet:
             continue
         z = ws._cells.get((vorlage, c))
-        if z is None or z.value is None or (isinstance(z.value, str) and not z.value.strip()):
-            continue
         f = _formel_text(z)
-        gleich_n = 0
-        for r in nachbarn:
-            n = ws._cells.get((r, c))
-            if n is None or n.value is None:
-                continue
-            if f is not None:
-                nf = _formel_text(n)
-                try:
-                    gleich_n += nf is not None and Translator(nf, origin=n.coordinate).translate_formula(z.coordinate) == f
-                except Exception:                          # noqa: BLE001 -- nicht uebertragbar: zaehlt nicht als gleich
-                    pass
-            elif _formel_text(n) is None and n.value == z.value and type(n.value) is type(z.value):
-                gleich_n += 1
-        if gleich_n >= 2:
-            kopie[c] = (ZellInhalt(ws.title, 0, c, formel=f, formel_von=vorlage) if f is not None
-                        else ZellInhalt(ws.title, 0, c, kopie_von=vorlage))
-        else:
+        if f is not None and formeln_an and _formel_gleich_gebaut(ws, z, f, nachbarn) >= 2:
+            kopie[c] = ZellInhalt(ws.title, 0, c, formel=f, formel_von=vorlage)
+            continue
+        if f is None and (c < grenze or not nur_links) and block:
+            zaehl: dict[tuple[str, str], int] = {}
+            for r in block:
+                zr = ws._cells.get((r, c))
+                if _formel_text(zr) is None:
+                    w = _wert_norm(zr)
+                    if w is not None:
+                        zaehl[w] = zaehl.get(w, 0) + 1
+            if zaehl:
+                w, n = max(zaehl.items(), key=lambda e: e[1])
+                if n >= anteil * len(block):
+                    passend = [r for r in block if _formel_text(ws._cells.get((r, c))) is None
+                               and _wert_norm(ws._cells.get((r, c))) == w]
+                    roh: dict[str, int] = {}               # die haeufigste Schreibweise (z. B. ohne Leerzeichen am Ende)
+                    for r in passend:
+                        k = repr(ws._cells[(r, c)].value)
+                        roh[k] = roh.get(k, 0) + 1
+                    best = max(roh.values())
+                    quelle = min((r for r in passend if roh[repr(ws._cells[(r, c)].value)] == best),
+                                 key=lambda r: (abs(r - vorlage), r))
+                    kopie[c] = ZellInhalt(ws.title, 0, c, kopie_von=quelle)
+                    continue
+        if _wert_norm(z) is not None or f is not None:
             leer.append(c)
-    return kopie, leer
+    return kopie, leer, vorlage
 
 
 def _gefaehrdet(quelle: Path) -> list[str]:
@@ -1005,14 +1079,23 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     abbildung: dict[str, list[tuple[str, int]]] = {}
     neue_zeilen_patch: list[NeueZeile] = []
     nz_index: dict[int, int] = {}                     # id(Operation) -> Index in neue_zeilen_patch
-    konstanten_an = bool((cfg.get("neue_zeile") or {}).get("konstanten_kopieren", False))
+    nz_cfg = cfg.get("neue_zeile") or {}
+    konstanten_an = bool(nz_cfg.get("konstanten_kopieren", False))
     if patch:
         for (blatt, pos), ops in sorted(einfuegungen.items(), key=lambda e: (e[0][0], e[0][1])):
             ws = wb[blatt]
             lay = xl.layouts.get(blatt)
             sek = lay.section_spalte if lay else None
+            # Gliederungs-Spalten (Section, Sub-Section, Kennwort) bekommen in neuen Zeilen den Stil der Vorlage, nur der
+            # Text ist rot (neue_zeile.nur_text_rot, Entscheidung Nico)
+            normal = ({c for c in (sek, lay.untergliederung_spalte, lay.kennwort_spalte) if c}
+                      if lay and nz_cfg.get("nur_text_rot", True) else set())
             for op in sorted(ops, key=lambda o: o.seq):
                 stil = op.stil_von or op.zeile
+                kopie: dict[int, ZellInhalt] = {}
+                leer: list[int] = []
+                if konstanten_an:
+                    kopie, leer, stil = _konstanten(ws, stil, op.zeile, set(op.zellen), lay, nz_cfg)
                 zellen: dict[int, Any] = {}
                 for spalte, text in op.zellen.items():
                     if spalte == sek and text.strip():
@@ -1021,24 +1104,25 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                         if vorlage_r is not None:
                             zahl = _section_zahl(text, ws.cell(vorlage_r, spalte).number_format)
                             if zahl is not None:
-                                zellen[spalte] = ZellInhalt(blatt, 0, spalte, wert=zahl, farbe=mk.NEU if farbig else "",
+                                zellen[spalte] = ZellInhalt(blatt, 0, spalte, wert=zahl,
+                                                            farbe=mk.NEU if farbig and spalte not in normal else "",
                                                             stil_von=vorlage_r if vorlage_r != stil else 0)
                                 continue
                             _hinweise(alle_nach_id[op.aenderung], "Die Section-Nummern stehen in der Excel als Zahl. Die neue "
                                       "Nummer wurde als Text eingetragen, weil sie mit dem Zahlenformat anders aussehen würde.")
-                    if farbig and text:
+                    if farbig and text and spalte not in normal:
                         zellen[spalte] = ZellInhalt(blatt, 0, spalte, stuecke=[mk.Stueck(mk.NEU, text)],
                                                     text_praefix=text.startswith("="))
                     else:
                         zellen[spalte] = ZellInhalt(blatt, 0, spalte, wert=text or None, text_praefix=text.startswith("="))
                 if konstanten_an:
-                    kopie, leer = _konstanten(ws, stil, set(op.zellen))
                     zellen.update(kopie)
                     op.leer_spalten = leer
                     if leer:
                         _hinweise(alle_nach_id[op.aenderung],
                                   "In der neuen Zeile bleiben die Spalten " + ", ".join(get_column_letter(c) for c in leer)
-                                  + " leer (sie sind in den Nachbarzeilen verschieden). Bitte von Hand ergänzen.")
+                                  + " leer (übernommen werden nur Kennungen links der Textspalte, die in der Spezifikation "
+                                  "überall gleich sind). Bitte bei Bedarf von Hand ergänzen.")
                     if any(z.formel for z in kopie.values()):
                         op.formeln = {c: z.formel for c, z in kopie.items() if z.formel}
                 nz_index[id(op)] = len(neue_zeilen_patch)

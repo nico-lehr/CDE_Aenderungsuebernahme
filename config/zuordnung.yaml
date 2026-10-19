@@ -140,9 +140,15 @@ normalform:                   # Vergleichsform "streng, aber fair" (src/gegenpro
   listenzeichen: ["•", "·", "▪", "◦", "‣", "-", "*"]   # optionales Aufzaehlungszeichen am Absatzanfang
 
 neue_zeile:                   # neue Zeile "wie ein Mensch" aus der Vorlagezeile (Nachbarzeile gleichen Typs), Schreiber patch
-  # Spalten, deren Wert in der Vorlagezeile und mindestens zwei Nachbarzeilen gleich ist (z. B. "Status offen", Spezifikation,
-  # Revision, Datum), werden kopiert; gleich gebaute Formeln werden uebertragen; andere Spalten bleiben leer (mit Hinweis)
+  # Kopiert werden nur Kennungen LINKS der Section-/Textspalte (z. B. Spezifikation, Revision, Datum), deren Wert in mindestens
+  # konstanten_anteil der Zeilen derselben Spezifikation gleich ist (eine CDE kann mehrere Specs enthalten: die Spec-Spalte ist
+  # die erste Spalte links, deren Wert die Ankerzeile mit ihrer Nachbarzeile teilt; gezaehlt wird im zusammenhaengenden Block
+  # mit diesem Wert). Die Vorlagezeile kommt aus derselben Spec. Rechts der Textspalte bleibt alles leer (mit Hinweis).
   konstanten_kopieren: true   # (Entscheidung Nico)
+  konstanten_anteil: 0.9      # Anteil der Zeilen der Spec mit demselben Wert
+  konstanten_nur_links: true  # rechts der Textspalte nichts kopieren (Status, Bewertungen, Bemerkungen ...)
+  formeln_uebertragen: true   # in den Nachbarzeilen gleich gebaute Formeln (berechnete Spalten) in die neue Zeile uebertragen
+  nur_text_rot: true          # Section, Sub-Section und Kennwort im Stil der Vorlage; nur der Text (und Titel) ist rot
 zeilen:
   # Bereiche (Formeln, Namen), die genau mit der Vorlagezeile enden, wachsen um eine neue Zeile direkt dahinter (mit Hinweis).
   # Bedingte Formatierung, Datenpruefung, Autofilter und Druckbereich wachsen so immer (die neue Zeile sieht aus wie die Vorlage).
