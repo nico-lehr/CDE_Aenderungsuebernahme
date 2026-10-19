@@ -670,6 +670,30 @@ def test_markiert_neue_zeile_konstanten_nur_links_und_aus_derselben_spec(tmp_pat
 
 
 @pytest.mark.markierung_an
+def test_markiert_neue_zeile_konstante_woertlich_mit_leerzeichen_am_ende(tmp_path):
+    """Konstanten werden WOERTLICH kopiert (auch ein Leerzeichen am Ende); die Normalform dient nur zum Zaehlen."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CDE"
+    ws.append(["Nr.", "Spezifikation", "Revision", "Section", "Anforderungstext"])
+    for i in range(1, 11):
+        ws.append([None, "11_22_33 " if i == 4 else "11_22_33", "R1", f"{i}.1", f"Absatz {i} mit Zebrafink."])
+    p = tmp_path / "w.xlsx"
+    wb.save(str(p))
+    aes = []
+    for k, vorlage in enumerate((5, 7)):          # Zeile 5 = "11_22_33 " (mit Leerzeichen), Zeile 7 = ohne
+        op = Operation("zeile_einfuegen", "CDE", vorlage, zellen={4: f"9.{k}", 5: f"Neu {k} mit Ventil."},
+                       stil_von=vorlage, aenderung=f"A{k}")
+        aes.append(_ae(f"A{k}", [op], typ="absatz_neu"))
+    uebernehmen(aes, p, tmp_path / "out.xlsx", absaetze=[])
+    for ae in aes:
+        assert (ae.status, ae.wirkung) == (UEBERNOMMEN, WIRKUNG_OK), (ae.grund, ae.hinweise)
+    ws = load_workbook(str(tmp_path / "out.xlsx"))["CDE"]
+    spec = {str(ws.cell(r, 5).value): ws.cell(r, 2).value for r in range(2, ws.max_row + 1)}
+    assert spec["Neu 0 mit Ventil."] == "11_22_33 " and spec["Neu 1 mit Ventil."] == "11_22_33"
+
+
+@pytest.mark.markierung_an
 def test_markiert_neue_section_nummer_als_zahl_im_stil_der_vorlage(tmp_path):
     p = _zahl_excel(tmp_path, [(2.1, "0.0"), (2.2, "0.0"), (3, "0")])
     ae = _neue_section("2.3", 3)

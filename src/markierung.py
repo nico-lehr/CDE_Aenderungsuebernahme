@@ -25,6 +25,7 @@ Neu-Ansicht (ADR 0006: durchgestrichene Laeufe zaehlen nicht), gilt `sicht="neu"
 from __future__ import annotations
 
 import colorsys
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -468,6 +469,25 @@ def _soll_zeichen(laeufe: Iterable[Lauf], aktiv: set[str], trenner: str = "") ->
     return out
 
 
+_NUMMER = re.compile(r"^\(?[\w.]{1,6}[.)]$")        # Listennummer: "3.", "d.", "2.1.", "a)", "(iv)"
+
+
+def _nummer_ersetzt(soll: list[list[Any]], x_: int | None, b0: int, b1: int, r_text: list[str], lo: int, hi: int) -> bool:
+    """Ersetzt der neue Text eine Listennummer, die in der Excel von Polster (geschuetzte Leerzeichen, Tab, mehrfacher
+    Leerraum) gefolgt wird, und beginnt er selbst mit einer Nummer und hat mehr Text dahinter?"""
+    if x_ is None or soll[x_][1] != ALT or not lo < hi or not all(r_text[y].isspace() for y in range(lo, hi)):
+        return False
+    if hi - lo < 2 and r_text[lo] == " ":
+        return False                              # ein einzelnes Leerzeichen ist kein Polster
+    a = x_
+    while a > 0 and soll[a - 1][1] == ALT:
+        a -= 1
+    alt = "".join(z[0] for z in soll[a:x_ + 1]).strip()
+    text = "".join(soll[s][0] for s in range(b0, b1 + 1))
+    teile = text.split(None, 1)
+    return bool(_NUMMER.match(alt) and not text[:1].isspace() and len(teile) == 2 and _NUMMER.match(teile[0]))
+
+
 def projiziere(texte: list[str], laeufe: Iterable[Lauf], aktiv: set[str],
                cfg: dict | None = None) -> list[list[tuple[str, str, int, int, str]]] | None:
     """Markierung eines PDF-Absatzes auf die Excel-Zeichen uebertragen (reine Funktion).
@@ -570,6 +590,16 @@ def projiziere(texte: list[str], laeufe: Iterable[Lauf], aktiv: set[str],
         hi = abb[y_] if y_ is not None else n
         if lo > hi:
             return None
+        if _nummer_ersetzt(soll, x_, b0, b1, r_text, lo, hi):
+            # Die Listennummer selbst wird ersetzt ("{-d.-}{+f. Besondere +}", Excel: "d." + Polster/Tab + "Ausfuehrung"):
+            # die neue Nummer steht direkt hinter der alten, der uebrige neue Text HINTER dem Polster (nicht an der Nummer)
+            text = "".join(soll[s][0] for s in range(b0, b1 + 1))
+            k1 = len(text.split(None, 1)[0])
+            k2 = len(text) - len(text[k1:].lstrip())
+            a_ = soll[b0][3]
+            einf.setdefault(lo, []).append([(soll[s][0], NEU, soll[s][3] or a_) for s in range(b0, b0 + k1)])
+            einf.setdefault(hi, []).append([(soll[s][0], NEU, soll[s][3] or a_) for s in range(b0 + k2, b1 + 1)])
+            continue
         if not vor:
             p = lo                                 # klebt am Zeichen davor
         elif not nach:
