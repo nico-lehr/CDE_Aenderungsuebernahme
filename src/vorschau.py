@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import threading
 from functools import lru_cache
 from pathlib import Path
 
@@ -10,16 +11,23 @@ from PIL import ImageDraw
 
 _DPI = 110
 
+# pdfium (pypdfium2, ueber pdfplumber.to_image) ist NICHT thread-sicher: zwei gleichzeitige Aufrufe koennen den ganzen Prozess
+# abstuerzen lassen. Wie die Sperre in src/api/routes.py rendert dieses Modul deshalb nie zwei Seiten gleichzeitig -- auch
+# fuer Aufrufer ausserhalb des Servers. RLock: wer die Sperre schon haelt (z. B. ueber PDFIUM_SPERRE von aussen), kommt
+# ohne Verklemmung wieder hinein.
+PDFIUM_SPERRE = threading.RLock()
+
 
 @lru_cache(maxsize=24)
 def _seite(pfad: str, nr: int):
-    with pdfplumber.open(pfad) as pdf:
+    with PDFIUM_SPERRE, pdfplumber.open(pfad) as pdf:
         return pdf.pages[nr - 1].to_image(resolution=_DPI).original.convert("RGB")
 
 
 def ausschnitt(pdf: str | Path, seite: int, bbox: tuple[float, float, float, float], farbe: str = "#0071E3",
                rand_pt: float = 70.0) -> bytes:
-    bild = _seite(str(pdf), seite).copy()
+    with PDFIUM_SPERRE:                          # Cache-Zugriff und Rendern nacheinander (siehe PDFIUM_SPERRE)
+        bild = _seite(str(pdf), seite).copy()
     f = _DPI / 72.0
     x0, top, x1, bot = (v * f for v in bbox)
     d = ImageDraw.Draw(bild, "RGBA")
