@@ -67,6 +67,8 @@ class PdfToken:
     teile: list[tuple[str, str]] = field(default_factory=list)   # Zeichen-Laeufe [(status, text)]; leer = ganzes Wort hat `status`
     trennstelle: int = -1           # Position im Wort, an der eine Zeilenend-Trennung zusammengefuegt wurde (-1 = keine);
                                     # steht dort ein "-", ist er optional (die Excel darf ihn haben oder nicht)
+    trenner_art: str = ""           # ADR 0006, intern: der Trenner danach ist selbst markiert ("d" gestrichen | "a" unterstrichen,
+                                    # gehoert nur zur alten bzw. neuen Fassung); "" = normaler Trenner. Nicht in plan.json.
 
 
 @dataclass

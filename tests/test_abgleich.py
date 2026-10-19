@@ -405,7 +405,7 @@ def test_unscharfer_treffer_ist_hoechstens_mittel(tmp_path):
 def test_ersatzweg_bekommt_absatz_wenn_die_laeufe_passen(tmp_path):
     """Hochzahl in der Excel: der Exakt-Index (Wort-Vorauswahl) findet die Stelle nicht, der alte Matcher schon. A1 ist in der
     Normalform gleich -> der Vorschlag bekommt einen PDF-Absatz; nach Freigabe besteht er die Gegenprobe A3."""
-    alt = excel(tmp_path, [["1", "Eins", "Die Anlage² meldet Fehler sofort an die Leitstelle."], ZWEI])
+    alt = excel(tmp_path, [["1", "Eins", "Die Anlage¹ meldet Fehler sofort an die Leitstelle."], ZWEI])
     pdf = pdf_aus([("h", "1 Eins"), ("p", "Die Anlage meldet {+alle+} Fehler sofort an die Leitstelle."),
                    ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")])
     xl = ExcelModell(alt)
@@ -414,7 +414,7 @@ def test_ersatzweg_bekommt_absatz_wenn_die_laeufe_passen(tmp_path):
     assert a.status == PRUEFEN and any(a.id in ab.aenderungen for ab in plan.absaetze)
     out = tmp_path / "frei.xlsx"
     uebernehmen(plan.aenderungen, alt, out, {a.id}, absaetze=plan.absaetze)
-    assert zelle(out, 2, 3) == "Die Anlage² meldet alle Fehler sofort an die Leitstelle."
+    assert zelle(out, 2, 3) == "Die Anlage¹ meldet alle Fehler sofort an die Leitstelle."
     a3_ok(plan, alt, out)
 
 
@@ -451,3 +451,49 @@ def test_neue_section_vor_seitenumbruch_ohne_satzende_ist_unklar(tmp_path):
     folge = next(a for a in plan.aenderungen if a.typ == "absatz_neu" and "geprüft" in a.neu)
     assert sec.status == folge.status == PRUEFEN
     assert "sperre:fortsetzung_unklar" in sec.pruefcodes and "sperre:fortsetzung_unklar" in folge.pruefcodes
+
+
+# ------------------------------------------------------------------------------------------------ Welle 3: markierter Leerraum
+def test_markierter_leerraum_wird_d_bzw_a_lauf():
+    """PdfToken.trenner_art (PDF-Leser, ADR 0006): ein gestrichenes bzw. unterstrichenes Leerzeichen gehoert nur zur alten bzw.
+    neuen Fassung -- in den Laeufen ein d- bzw. a-Lauf (kein Trenner "s"), am markierten Nachbarwort."""
+    t_alt = tok("alt", "", DEL)
+    t_alt.trenner_art = "d"
+    l = laeufe_aus_tokens([tok("Pumpe", "Pumpe", KEEP), t_alt, tok("Becken", "Becken", KEEP)])
+    assert [(x.art, x.text) for x in l] == [("k", "Pumpe"), ("s", " "), ("d", "alt"), ("d", " "), ("k", "Becken")]
+    assert zustand(l) == "Pumpe alt Becken" and zustand(l, {"G1"}) == "Pumpe Becken"
+    assert b_ops(l, "Pumpe alt Becken")[1] == "Pumpe Becken"
+    # eingefuegtes Leerzeichen zwischen zwei unveraenderten Teilen: nur die neue Fassung hat es
+    links = tok("Pumpen", "Pumpen", KEEP)
+    links.trenner_art = "a"
+    l2 = laeufe_aus_tokens([links, tok("haus", "haus", KEEP)])
+    assert [(x.art, x.text) for x in l2] == [("k", "Pumpen"), ("a", " "), ("k", "haus")]
+    assert zustand(l2) == "Pumpenhaus" and zustand(l2, {"G1"}) == "Pumpen haus"
+    assert b_ops(l2, "Pumpenhaus")[1] == "Pumpen haus"
+
+
+def test_hochgestellte_einheiten_ziffern_gelten_als_ziffern():
+    """Welle 3: "mm²" in der Excel und "mm2" aus dem PDF sind gleich ("²"/"³" werden "2"/"3", nicht entfernt); das Zeichen der
+    Excel bleibt beim Ersetzen daneben stehen. Andere Hochzahlen (Fussnoten-Marken) zaehlen weiter nicht."""
+    from src.gegenprobe import gleich
+    assert gleich("Querschnitt 4 mm2", "Querschnitt 4 mm²") and gleich("Volumen 3 m3", "Volumen 3 m³")
+    assert not gleich("Querschnitt 4 mm", "Querschnitt 4 mm²")             # "²" faellt nicht mehr weg
+    assert gleich("Hinweis", "Hinweis¹")
+    l = laeufe_aus_tokens(woerter("Querschnitt {-4-} {+6+} mm2 je Ader"))
+    assert b_ops(l, "Querschnitt 4 mm² je Ader")[1] == "Querschnitt 6 mm² je Ader"
+
+
+def test_excel_weicht_anderswo_ab_ergibt_fertigen_vorschlag(tmp_path):
+    """Nicos Entscheidung (ADR 0006 Punkt 7): die Excel weicht im Absatz vom PDF ab (hier fehlt ein Leerzeichen direkt am
+    geaenderten Wert). Die Stelle ist bekannt -> "pruefen" mit fertigem Vorschlag, der nur die markierte Stelle aendert und
+    die Abweichung der Excel stehen laesst; nie "nicht uebernommen" ohne Grund."""
+    alt = excel(tmp_path, [["1", "Eins", "Die Pumpe arbeitet bis [-35]degrees C im Freien ohne Heizung."], ZWEI])
+    pdf = pdf_aus([("h", "1 Eins"), ("p", "Die Pumpe arbeitet bis {-[-35]-} {+[-40]+} degrees C im Freien ohne Heizung."),
+                   ("h", "2 Zwei"), ("p", "Zweiter Absatz mit genug Text darin.")])
+    plan, out = lauf(tmp_path, pdf, alt)
+    (a,) = plan.aenderungen
+    assert a.status == PRUEFEN and "excel_weicht_ab" in a.pruefcodes and any(c.startswith("a1_") for c in a.pruefcodes)
+    assert a.ziel == "CDE!C2" and [(o.start, o.ende, o.text) for o in a.ops] == [(23, 28, "[-40]")]
+    frei = tmp_path / "frei.xlsx"
+    uebernehmen(plan.aenderungen, alt, frei, {a.id}, absaetze=plan.absaetze)
+    assert zelle(frei, 2, 3) == "Die Pumpe arbeitet bis [-40]degrees C im Freien ohne Heizung."

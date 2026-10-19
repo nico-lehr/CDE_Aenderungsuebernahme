@@ -129,6 +129,9 @@ class Plan:
     markierte_woerter: int = 0
     luecken: list[dict] = field(default_factory=list)   # Schema 2: Dinge, die nicht gelesen werden konnten
     absaetze: list[Absatz] = field(default_factory=list)   # Schema 3: PDF-Absaetze fuer die Gegenprobe (ADR 0004)
+    # Spec-Filter (Welle 3): {"erkannt": "11 22 33" | None, "quelle": vorgabe | pdf | einzige | "", "zeilen": [von, bis] | None,
+    # "kandidaten": [Specs der CDE], "pdf": [im PDF genannte Specs der CDE]}; None = die CDE hat keine Spec-Spalte
+    spec: dict[str, Any] | None = None
 
 
 def _bbox(tokens: list[PdfToken]) -> tuple[float, float, float, float]:
@@ -171,9 +174,14 @@ def _in(a: Fundstelle, b: Fundstelle) -> bool:
 
 
 class _Planer:
-    def __init__(self, pdf: PdfAnalyse, xl: ExcelModell, cfg: dict) -> None:
+    def __init__(self, pdf: PdfAnalyse, xl: ExcelModell, cfg: dict, spec: str | None = None) -> None:
         self.pdf, self.xl, self.cfg = pdf, xl, cfg
-        self.matcher = Matcher(xl, cfg)
+        self.spec_info: dict[str, Any] | None = None
+        self.spec_warnungen: list[str] = []
+        self._spec_zeilen: dict[str, set[int]] = {}          # Blatt -> Zeilen der Spec des PDFs (leer = kein Filter)
+        self._spec_unklar = False
+        self._spec_waehlen(spec)
+        self.matcher = Matcher(xl, cfg, self._erlaubt)
         self.out: list[Aenderung] = []
         self.absaetze: list[Absatz] = []
         self._tr: dict[tuple, Treffer | None] = {}
@@ -187,6 +195,83 @@ class _Planer:
         self._geloescht_bis: dict[tuple[str, int, int], list[tuple[int, int]]] = {}   # Zelle -> geloeschte Bereiche ganzer Absaetze
         self._ist: str = ""                         # Excel-Text der Ersatz-Stelle (fuer ist_absatz)
         self._soll: str = ""
+
+    # ------------------------------------------------------------ Spec-Filter (Welle 3, Nico: eine CDE enthaelt mehrere Specs)
+    def _erlaubt(self, blatt: str, zeile: int) -> bool:
+        """Darf diese Excel-Zeile benutzt werden? Im Register mit mehreren Specs nur die Zeilen der Spec des PDFs."""
+        zeilen = self._spec_zeilen.get(blatt)
+        return zeilen is None or zeile in zeilen
+
+    def _zeilen_der_spec(self, blatt: str) -> set[int] | None:
+        return self._spec_zeilen.get(blatt)
+
+    def _pdf_specs(self, bekannt: set[str]) -> tuple[Counter, Counter]:
+        """(sicher, alle): Specs der CDE, die das PDF in der Titel-/Fusszeile (planer.spec_pdf_muster) bzw. irgendwo nennt."""
+        from .excel_model import _register_cfg, spec_norm
+        rc = _register_cfg(config.lade("zuordnung")["excel"])
+        kern = rc.get("spec_muster", r"(\d{2})[ _.\-](\d{2})[ _.\-](\d{2})")
+        stark_rx = [re.compile(str(m).replace("{spec}", "(?P<spec>" + kern + ")")) for m in _planer_cfg(self.cfg).get(
+            "spec_pdf_muster", [])]
+        texte = [x for b in self.pdf.blocks for x in {b.alt_text, b.neu_text} if x]
+        texte += [str(i.get("text", "")) for i in self.pdf.ignoriert if i.get("text")]
+        sicher: Counter = Counter()
+        alle: Counter = Counter()
+        for t in texte:
+            for rx in stark_rx:
+                m = rx.search(t)
+                if m and spec_norm(m.group("spec"), rc) in bekannt:
+                    sicher[spec_norm(m.group("spec"), rc)] += 1
+            for m in re.finditer(kern, t):
+                sp = spec_norm(m.group(0), rc)
+                if sp in bekannt:
+                    alle[sp] += 1
+        return sicher, alle
+
+    def _spec_waehlen(self, vorgabe: str | None) -> None:
+        """Spec des PDFs bestimmen. Mehrere Specs in der CDE: nur deren Zeilen werden benutzt; keine oder mehrere passende:
+        Warnung und nichts automatisch. Eine Spec in der CDE: wie bisher (kein Filter)."""
+        from .excel_model import _register_cfg, spec_norm
+        je_spec: dict[str, dict[str, list[int]]] = {}
+        for blatt, lay in self.xl.layouts.items():
+            for sp, zeilen in self.xl.specs(blatt).items():
+                je_spec.setdefault(sp, {})[blatt] = zeilen
+        if not je_spec:
+            if vorgabe:
+                self.spec_warnungen.append("Die CDE hat keine Spalte mit Spezifikationsnummern; die vorgegebene Spec wird "
+                                           "nicht benutzt.")
+            return
+        sicher, alle = self._pdf_specs(set(je_spec))
+        gewaehlt, quelle = None, ""
+        if vorgabe:
+            v = spec_norm(vorgabe, _register_cfg(config.lade("zuordnung")["excel"]))
+            if v in je_spec:
+                gewaehlt, quelle = v, "vorgabe"
+            else:
+                self.spec_warnungen.append("Die vorgegebene Spec steht nicht in der CDE. Es wird nichts automatisch eingetragen.")
+        elif len(je_spec) == 1:
+            gewaehlt, quelle = next(iter(je_spec)), "einzige"
+        elif len(sicher) == 1:
+            gewaehlt, quelle = next(iter(sicher)), "pdf"
+        elif not sicher and len(alle) == 1:
+            gewaehlt, quelle = next(iter(alle)), "pdf"
+        self.spec_info = {"erkannt": gewaehlt, "quelle": quelle, "zeilen": None, "kandidaten": sorted(je_spec),
+                          "pdf": sorted(set(sicher) | set(alle))}
+        if gewaehlt is None:
+            self._spec_unklar = len(je_spec) > 1 or bool(vorgabe)
+            if not vorgabe:
+                self.spec_warnungen.append(
+                    "Spec des PDFs nicht in der CDE gefunden" + (" (mehrere passen)" if len(sicher) > 1 or len(alle) > 1 else "")
+                    + f": die CDE enthält {len(je_spec)} Specs. Es wird nichts automatisch eingetragen; bitte die Spec wählen.")
+            return
+        bereiche = je_spec[gewaehlt]
+        zeilen = sorted(r for rs in bereiche.values() for r in rs)
+        self.spec_info["zeilen"] = [zeilen[0], zeilen[-1]]
+        if len(je_spec) > 1:
+            self._spec_zeilen = {blatt: set(rs) for blatt, rs in bereiche.items()}
+            for blatt in {b for d in je_spec.values() for b in d}:
+                self._spec_zeilen.setdefault(blatt, set())
+            self.spec_warnungen.append(f"Die CDE enthält {len(je_spec)} Specs; benutzt werden nur die {len(zeilen)} Zeilen der "
+                                       f"Spec {gewaehlt}. Die Zeilen der anderen Specs bleiben unverändert.")
 
     # ------------------------------------------------------------ Helfer
     def treffer(self, b: PdfBlock) -> Treffer | None:
@@ -363,7 +448,7 @@ class _Planer:
 
     # ------------------------------------------------------------ Hauptschleife
     def lauf(self) -> None:
-        self.idx = ExaktIndex(self.xl, self.cfg, self.matcher.index)
+        self.idx = ExaktIndex(self.xl, self.cfg, self.matcher.index, self._erlaubt)
         self.spuren = spuren(self.pdf, self.idx, self.cfg)
         # ADR 0006: CDE-Register in der Mappe -> Labels der PDF-Absaetze (Sub-Section, Section, Part stehen in eigenen Spalten)
         self._register = any(l.register for l in self.xl.layouts.values())
@@ -808,8 +893,41 @@ class _Planer:
                 else:
                     for i0, i1 in self._gruppen(b):
                         self._text_gruppe(b, i0, i1)
+                    self._vorschlag_unscharf(b, tr, self.out[n0:])
                 self._ersatz_absatz(b, tr, self.out[n0:])
         return True
+
+    def _vorschlag_unscharf(self, b: PdfBlock, tr: Treffer | None, aes: list[Aenderung]) -> None:
+        """Nicos Entscheidung (ADR 0006 Punkt 7): ist der Absatz in der Excel verortet, die Excel weicht aber anderswo im Absatz
+        vom PDF ab, wird eine Aenderung, die Wort fuer Wort nicht passte (sonst "nicht uebernommen"), ein fertiger Vorschlag:
+        nur die markierte Stelle aendert sich (zeichengenau ueber die Normalform ausgerichtet), Excel-eigene Zeichen bleiben.
+        Nie automatisch ("pruefen", Codes excel_weicht_ab + a1_*)."""
+        offen = [ae for ae in aes if ae.status == NICHT and not ae.ops and not ae.pruefcodes]
+        if tr is None or not offen or tr.kandidat.art == "kopf":
+            return
+        k = tr.kandidat
+        aufbau = _aufbau(b.tokens, "X")
+        if len(aufbau.gruppen) != len(aes):
+            return
+        ids = {f"X{n + 1}": ae.id for n, ae in enumerate(aes)}
+        laeufe = umbenennen(aufbau.laeufe, ids)
+        fund = Fundstelle(blatt=k.blatt, zellen=((k.zeile, k.spalte, k.start, k.end),), art="absatz",
+                          schluessel=self.idx.schluessel(k.blatt, k.zeile, k.spalte, k.start), text=k.text,
+                          end_schluessel=self.idx.schluessel(k.blatt, k.zeile, k.spalte, k.end))
+        so = ops_fuer_spur(laeufe, fund, self.xl.text, self.cfg, b.idx * 1000, unscharf=True)
+        a1 = self._a1_codes(b.alt_text, k.text)
+        for ae in offen:
+            ops = so.ops.get(ae.id, [])
+            if not ops or so.probleme.get(ae.id):
+                continue
+            ae.status, ae.konfidenz, ae.grund = PRUEFEN, MITTEL, ""
+            ae.ops = ops
+            ae.ziel = f"{k.blatt}!{get_column_letter(ops[0].spalte)}{ops[0].zeile}"
+            ae.ist_absatz = k.text
+            self._hinweis(ae, "Die Excel weicht im Absatz an einer anderen Stelle vom PDF ab; der Vorschlag ändert nur die "
+                              "markierte Stelle. Bitte prüfen und freigeben.")
+            doppelt = bool(self._deckel and "excel_weicht_ab" in self._deckel)       # der Deckel nennt den Grund schon
+            self._setze(ae, MITTEL, "" if doppelt else _GRUND["excel_weicht_ab"], ["excel_weicht_ab"] + a1)
 
     def _ersatz_absatz(self, b: PdfBlock, tr: Treffer | None, aes: list[Aenderung]) -> None:
         """PDF-Absatz fuer die Gegenprobe A3 auch auf dem Weg ueber den alten Matcher -- aber nur, wenn die Laeufe des Blocks
@@ -911,6 +1029,8 @@ class _Planer:
             texte.add(normalform(zustand(sp.laeufe[lab.n:], set()), nf)[0])
         texte.discard("")
         for key, t in sorted(self.xl.gestrichen.items()):
+            if not self._erlaubt(key[0], key[1]):
+                continue
             if normalform(t, nf)[0] in texte and not self.xl.text(*key).strip():
                 return key
         return None
@@ -992,6 +1112,7 @@ class _Planer:
             if fehlt:
                 if self._schon_da(b, i0, i1, tr, neu_w):
                     self._nicht(ae, "Der neue Text steht schon in der Excel (die Änderung ist offenbar schon eingetragen).", cand.ziel)
+                    self._code(ae, "schon_eingetragen")
                 elif not neu_w and len(fehlt) == len(d_idx):
                     self._nicht(ae, "Der gestrichene Text steht nicht mehr in der Excel (vielleicht schon entfernt, vielleicht "
                                     "anders formuliert). Bitte von Hand prüfen.", cand.ziel)
@@ -1063,6 +1184,7 @@ class _Planer:
             if self._schon_da(b, i0, i1, tr, neu_w):
                 self._nicht(ae, "Der neue Text steht schon in der Excel (die Änderung ist offenbar schon eingetragen).",
                             self._ziel(xt))
+                self._code(ae, "schon_eingetragen")
                 return
             ae.ops = [op]
             ae.ziel = self._ziel(xt)
@@ -1294,6 +1416,28 @@ class _Planer:
         zl, sl, _, el = fund.zellen[-1]
         return _Ort(fund.blatt, z0, s0, fund.art, a0, el, fund.text, 1.0, stufe, davor, gruende, list(dict.fromkeys(codes)))
 
+    def _reihenfolge_sicher(self, k: int, tr: Treffer) -> Fundstelle | None:
+        """Der Vorgaenger-Absatz k steht in der Excel nicht genau so (Excel weicht ab), ist aber ueber die Reihenfolge eindeutig:
+        zwischen den beiden sicheren Nachbarankern gibt es im PDF genau diesen einen (nicht neuen) Absatz ohne Anker und in der
+        Excel genau eine Textzeile -- die, die der Matcher gefunden hat. Dann ist sie ein sicherer Anker fuer den neuen Absatz
+        dahinter (Welle 3). Sonst None."""
+        z = self.zuo[k]
+        lo, hi = z.fenster
+        kd = tr.kandidat
+        if lo is None or hi is None or kd.art == "kopf":
+            return None
+        vor = max((j for j in range(k) if self.zuo[j].automatisch), default=None)
+        nach = min((j for j in range(k + 1, len(self.spuren)) if self.zuo[j].automatisch), default=None)
+        if vor is None or nach is None:
+            return None
+        offen = [j for j in range(vor + 1, nach) if not self.spuren[j].ganz_neu and not self.zuo[j].automatisch]
+        if offen != [k]:
+            return None
+        zeilen = [ort for key, ort in self.idx.verwaltete_zeilen(kd.blatt) if lo < key < hi]
+        if len(zeilen) != 1 or zeilen[0] != (kd.zeile, kd.spalte, kd.start, kd.end):
+            return None
+        return self.idx._fund(kd.blatt, [zeilen[0]], "absatz", kd)
+
     def _ort_aus_treffer(self, tr: Treffer, davor: bool) -> _Ort:
         k = tr.kandidat
         if k.art != "kopf" and tr.zuordnung:
@@ -1318,6 +1462,10 @@ class _Planer:
             self._fenster = z.fenster
             tr = self.treffer(sp.bloecke[-1])
             if tr is not None and tr.score >= schw["mittel"]:
+                sicher = self._reihenfolge_sicher(k, tr)
+                if sicher is not None:
+                    return self._ort_aus_fund(i, sicher, Zuordnung("durch_reihenfolge", sicher, fenster=z.fenster),
+                                              uebersprungen == 0, True)
                 return self._ort_aus_treffer(tr, True)
             uebersprungen += 1
         for k in range(i + 1, len(self.spuren)):
@@ -1551,7 +1699,7 @@ class _Planer:
             art = "sub_titel" if self._titel_zeile(ort.blatt, "sub_titel", text) else "sub"
         elif lab.art == "liste" and lab.neu:
             art = "liste_titel" if self._titel_zeile(ort.blatt, "liste_titel", text) else "liste"
-            text = lab.neu + self.xl.register_polster(ort.blatt, ort.zeile, lab.neu) + text
+            text = lab.neu + self.xl.register_polster(ort.blatt, ort.zeile, lab.neu, self._zeilen_der_spec(ort.blatt)) + text
         else:
             art = "absatz"
         zellen: dict[int, str] = {}
@@ -1562,7 +1710,7 @@ class _Planer:
         zellen[lay.inhalt_spalte] = text                                    # type: ignore[index]
         if art in REGISTER_UEBERSCHRIFT and lay.kennwort_spalte and lay.kennwort:
             zellen[lay.kennwort_spalte] = lay.kennwort
-        return zellen, self.xl.register_vorlage(ort.blatt, ort.zeile, art)
+        return zellen, self.xl.register_vorlage(ort.blatt, ort.zeile, art, self._zeilen_der_spec(ort.blatt))
 
     def _titel_zeile(self, blatt: str, art: str, text: str) -> bool:
         """Neuer Listenpunkt / Sub-Section-Absatz mit Doppelpunkt am Ende: Ueberschriftzeile, wenn das Register solche hat."""
@@ -1570,7 +1718,7 @@ class _Planer:
             return False
         lay = self.xl.layouts[blatt]
         return any((rz := self.xl.register_zeile(blatt, r)) is not None and rz.art == art
-                   for r in range(lay.daten_ab, lay.max_zeile + 1))
+                   for r in range(lay.daten_ab, lay.max_zeile + 1) if self._erlaubt(blatt, r))
 
     def _neue_section(self, ae, sp: Spur, koerper: list[Spur], koerper_nr: list[int], cand: _Ort, lay, stufe, davor, seq) -> None:
         if lay.register:
@@ -1778,10 +1926,18 @@ def _stuecke_der_aenderung(ae: Aenderung, je_zelle: dict[tuple[str, int, int], l
     return end_stuecke(xl.text(*ziel), ops, zwischen, cfg, bereiche)
 
 
-def plane(pdf: PdfAnalyse, xl: ExcelModell, cfg: dict | None = None) -> Plan:
+def plane(pdf: PdfAnalyse, xl: ExcelModell, cfg: dict | None = None, spec: str | None = None) -> Plan:
+    """Plan fuer ein PDF und eine Excel. `spec`: Spezifikationsnummer, die der Nutzer vorgibt (sonst aus dem PDF erkannt;
+    nur wichtig, wenn die CDE mehrere Specs enthaelt, Welle 3)."""
     cfg = cfg or config.lade("zuordnung")
-    p = _Planer(pdf, xl, cfg)
+    p = _Planer(pdf, xl, cfg, spec)
     p.lauf()
+    if p._spec_unklar:                   # Spec unklar: nichts automatisch, alles bleibt ein Vorschlag
+        for ae in p.out:
+            if ae.status == UEBERNOMMEN:
+                ae.status, ae.konfidenz = PRUEFEN, MITTEL
+                ae.grund = (ae.grund + "; " if ae.grund else "") + _codes.satz("spec_unklar")
+                p._code(ae, "spec_unklar")
     for ae in p.out:                     # Absicherung: an der Stelle muss beim Eintragen derselbe Text stehen
         for op in ae.ops:
             if op.art == "ersetzen":
@@ -1804,8 +1960,8 @@ def plane(pdf: PdfAnalyse, xl: ExcelModell, cfg: dict | None = None) -> Plan:
     for ae in p.out:
         ae.grund_einfach = _codes.grund_einfach(ae)
         ae.stuecke = _stuecke_der_aenderung(ae, je_zelle, xl, zwischen, cfg, absatz_von)
-    warn = list(pdf.warnungen) + list(xl.warnungen)
+    warn = list(pdf.warnungen) + list(xl.warnungen) + p.spec_warnungen
     plan = Plan(aenderungen=p.out, layout=xl.beschreibung(), warnungen=warn,
                 ignoriert=pdf.ignoriert, markierte_woerter=pdf.markierte_woerter,
-                luecken=list(pdf.luecken), absaetze=p.absaetze)
+                luecken=list(pdf.luecken), absaetze=p.absaetze, spec=p.spec_info)
     return plan

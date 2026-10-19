@@ -77,6 +77,41 @@ def test_anhang_hinter_dem_letzten_anker(tmp_path):
     assert a.bereich == "ausserhalb" and "Anhang" in a.grund and a.status == NICHT
 
 
+def test_inhaltsverzeichnis_ohne_seitenzahlen_verschiebt_den_anfang_nicht(tmp_path):
+    """Welle 3: Ein Inhaltsverzeichnis im Vorspann wiederholt die Ueberschriften genau (ohne Seitenzahlen). Bei gleich langer
+    Kette gewinnt die echte Gliederung mit ihren Folgeabsaetzen; die Vorspann-Aenderung hinter dem Verzeichnis bleibt
+    ausserhalb, die echte Ueberschrift ist sicher zugeordnet."""
+    from src.excel_model import ExcelModell
+    from src.pdf_reader import analysiere_pdf
+    from src.planner import plane
+    from tests._word_pdf import WordDok
+    from tests.test_register import excel_absaetze, register_mappe, stuecke
+    pdf = list(GRUND)
+    pdf[1] = ("section", "1.1", "PUMPEN{+HAUS+}")
+    xlsx = register_mappe(tmp_path / "a.xlsx", excel_absaetze(pdf))
+    d = WordDok()
+    d.absatz([stuecke("Inhalt")], ebene=1, abstand=6)
+    d.kapitel(stuecke("PART 1 ALLGEMEINES"))
+    d.ueberschrift(stuecke("1.1"), stuecke("PUMPEN"))
+    d.ueberschrift(stuecke("1.2"), stuecke("LAGERUNG"))
+    d.absatz([stuecke("Revision {-A.2.0-}{+A.3.0+} vom Fruehjahr")], ebene=1, abstand=6)
+    d.neue_seite()
+    for art, label, text in pdf:
+        if art == "part":
+            d.kapitel(stuecke(f"PART {label} ") + stuecke(text))
+        elif art == "section":
+            d.ueberschrift(stuecke(label), stuecke(text))
+        elif art in ("sub", "sub_titel"):
+            d.listenpunkt(1, stuecke(label), [stuecke(text)], abstand=0)
+        else:
+            d.listenpunkt(2 if label[0].isdigit() else 3, stuecke(label), [stuecke(text)], abstand=0)
+    plan = plane(analysiere_pdf(d.speichern(tmp_path / "b.pdf")), ExcelModell(xlsx))
+    rev = next(a for a in plan.aenderungen if "A.2.0" in a.alt)
+    assert rev.bereich == "ausserhalb" and not rev.ops
+    titel = next(a for a in plan.aenderungen if a.neu == "HAUS")
+    assert titel.status == UEBERNOMMEN and titel.ziel == "Abgleich!G9" and titel.seite == 2
+
+
 def test_neuer_absatz_am_ende_der_spezifikation_bleibt_drin(tmp_path):
     pdf = GRUND + [("liste", "{+3.+}", "{+Die Kranich-Plakette ist sichtbar.+}")]
     plan, xl, _ = _plan(tmp_path, pdf)

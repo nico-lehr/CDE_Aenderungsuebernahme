@@ -42,6 +42,10 @@ excel:
     # Listennummer + Polster (Tab, geschuetzte Leerzeichen, Leerzeichen) am Anfang des Texts; Listenpunkt <-> Text mit gleicher Nummer
     listen_label: '^(?P<label>\d{1,3}[.)]|[a-z]{1,3}[.)]|[A-Z]{1,3}[.)]|[ivxlcdm]{1,6}[.)])(?P<polster>[\t    ]+)(?=\S)'
     polster_standard: "\t"      # Polster einer neuen Listennummer, wenn keine Zeile mit gleicher Art Listennummer eines zeigt
+    # Spec-Filter (Welle 3, Nico: eine CDE enthaelt mehrere Specs): Spalte mit der Spezifikationsnummer je Zeile. Ziffergruppen
+    # mit Leerzeichen/Unterstrich/Punkt/Bindestrich ("11 22 33" = "11_22_33"), Zusaetze dahinter egal
+    spec_muster: '(?<![\d])(\d{2})[ _.\-](\d{2})[ _.\-](\d{2})(?:[ _.\-](\d{2}))?(?![\d])'
+    spec_min_anteil: 0.8        # so viele Werte der Spalte (Datenzeilen) muessen spec-artig sein
 
 einfuegen:
   neuer_absatz: auto          # auto | zelle | zeile
@@ -85,6 +89,10 @@ planer:                       # Planen und Anwenden (src/planner.py, src/applier
   # nicht uebernommen, kein offener Punkt, zaehlt in der Bilanz. register = nur wenn das Hauptblatt ein CDE-Register ist | immer | aus
   umfang: register
   umfang_min_anker: 5         # erst ab so vielen sicheren Ankern im Hauptblatt (sonst wie bisher)
+  # Spec-Filter (Welle 3): Spezifikationsnummer des PDFs. Sicher ist sie aus der Titelzeile ("SECTION 11 22 33 ...") oder der
+  # wiederkehrenden Fusszeile ("11 22 33 ... - 7"); {spec} steht fuer excel.register.spec_muster. Sonst zaehlt eine einzige
+  # im PDF genannte Spec, die es in der CDE gibt. Enthaelt die CDE mehrere Specs, werden nur die Zeilen dieser Spec benutzt.
+  spec_pdf_muster: ['^SECTION\s+{spec}', '^{spec}\b.*-\s*\d+\s*$']
   # Ohne Angabe des PDF-Lesers (PdfBlock.fortsetzung) raten, ob ein Absatz ueber den Seitenumbruch weitergeht: letzter Block
   # einer Seite ohne Satzende + erster Block der naechsten Seite = "moeglich" (verbunden nur, wenn A1 es bestaetigt; ganz
   # neuer Text danach -> fortsetzung_unklar, nie automatisch). Wird nur benutzt, wenn KEIN Block eine Angabe hat. Aus, seit der
@@ -120,11 +128,12 @@ anwenden:                     # Schreiben in die Excel (src/applier.py)
 normalform:                   # Vergleichsform "streng, aber fair" (src/gegenprobe.py): Gross/Klein und Satzzeichen zaehlen
   # Zeichen, die beim Vergleich ganz wegfallen: weiches Trennzeichen, Nullbreiten, Hochzahlen (Fussnoten-Marken)
   entfernen: ["­", "​", "‌", "‍", "⁠", "﻿",
-              "¹", "²", "³", "⁰", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"]
+              "¹", "⁰", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"]
   # Varianten, die als gleich gelten (Anfuehrungszeichen, Striche)
   ersetzen: {"„": "\"", "“": "\"", "”": "\"", "«": "\"", "»": "\"",
              "‚": "'", "‘": "'", "’": "'", "‹": "'", "›": "'",
-             "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "―": "-", "−": "-"}
+             "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "―": "-", "−": "-",
+             "²": "2", "³": "3"}   # Einheiten (mm², m³): gleich "mm2"/"m3" (der Leser liefert mm2, die Excel hat beides)
   leerraum: [" ", " ", " ", " ", "\t", "\n", "\r"]   # zaehlen als ein Leerzeichen
   kein_leerzeichen_vor: ".,;:!?)]}"
   kein_leerzeichen_nach: "([{"

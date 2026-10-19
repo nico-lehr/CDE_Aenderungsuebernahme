@@ -39,9 +39,10 @@ def _label_art(label: str) -> str:
 
 # ================================================================================================ Mappe (Excel)
 def register_mappe(pfad: Path, absaetze: list[tuple], variante: int = 1, e_leer: bool = False,
-                   g_wert: dict[int, object] | None = None, nebenblaetter: bool = True) -> Path:
+                   g_wert: dict[int, object] | None = None, nebenblaetter: bool = True, spec_von=None) -> Path:
     """Erfundene CDE-Mappe. absaetze: (art, label, text[, fett]) mit art part | section | sub | sub_titel | liste |
-    liste_titel | absatz. Zeile des i-ten Absatzes: DATEN_AB + i. g_wert: Index -> eigener Zellwert fuer G (z. B. Rich Text)."""
+    liste_titel | absatz. Zeile des i-ten Absatzes: DATEN_AB + i. g_wert: Index -> eigener Zellwert fuer G (z. B. Rich Text).
+    spec_von: Index -> Wert der Spec-Spalte B (Standard: eine Spec fuer alle Zeilen)."""
     wb = Workbook()
     ws0 = wb.active
     ws0.title = "Hinweise"
@@ -87,7 +88,7 @@ def register_mappe(pfad: Path, absaetze: list[tuple], variante: int = 1, e_leer:
             sec, sub = label, ""
         elif art in ("sub", "sub_titel"):
             sub = label
-        ws.cell(r, 2, "40 05 13")
+        ws.cell(r, 2, spec_von(i) if spec_von else "40 05 13")
         ws.cell(r, 3, "A.3.0")
         ws.cell(r, 4, "2026_03_01")
         ws.cell(r, E, sec + (" " if e_leer else ""))
@@ -508,6 +509,24 @@ def test_neue_zeilen_mit_section_sub_section_polster_und_kennwort(tmp_path):
 
 
 @pytest.mark.legende_neu
+def test_neue_zeile_hinter_abweichendem_vorgaenger_ist_ueber_die_reihenfolge_sicher(tmp_path):
+    """Welle 3 (Korpus nachbau_word, Paar 303): der Vorgaenger des neuen Listenpunkts steht in der Excel etwas anders (Excel
+    weicht ab), liegt aber als einzige offene Zeile zwischen zwei sicheren Ankern -> der neue Absatz ist sicher."""
+    pdf = GRUND[:6] + [("liste", "{+3.+}", "{+Werknorm WN 3000 fuer Pumpen.+}")] + GRUND[6:]
+    excel = excel_absaetze(GRUND)
+    excel[5] = ("liste", "2.", "Werknorm WN 2040 fur Leitungen.")              # Abweichung in der Excel
+    plan, xl, _ = _plan(tmp_path, pdf, excel)
+    (ae,) = plan.aenderungen
+    assert ae.status == UEBERNOMMEN and not ae.pruefcodes
+    assert (ae.ops[0].zeile, ae.ops[0].vor) == (13, False)
+    # zwei offene Zeilen zwischen den Ankern: nicht eindeutig -> weiter nur ein Vorschlag
+    excel[4] = ("liste", "1.", "Werknorm WN 1001 fur Ventile.")
+    plan2, _, _ = _plan(tmp_path / "b", pdf, excel)
+    (ae2,) = plan2.aenderungen
+    assert ae2.status == PRUEFEN and "anker_unsicher" in ae2.pruefcodes
+
+
+@pytest.mark.legende_neu
 def test_neue_zeile_mit_tab_polster_wie_die_nachbarn(tmp_path):
     pdf = GRUND[:6] + [("liste", "{+3.+}", "{+Werknorm WN 3000 fuer Pumpen.+}")] + GRUND[6:]
     plan, xl, _ = _plan(tmp_path, pdf, variante=2)
@@ -540,4 +559,4 @@ def test_stuecke_und_grund_einfach(tmp_path):
     ae = _ae(plan, "foerdert")
     assert ae.stuecke == [["normal", "Die Pumpe "], ["alt", "foerdert"], ["neu", "hebt"],
                           ["normal", " das Wasser in das obere Becken."]]
-    assert ae.grund_einfach.startswith("Wird automatisch eingetragen")
+    assert ae.grund_einfach.startswith("Wird eingetragen")

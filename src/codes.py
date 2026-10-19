@@ -49,6 +49,7 @@ SAETZE: dict[str, str] = {
     "keine_inhaltsspalte": "Die Spalte mit dem Text wurde in der Excel nicht erkannt.",
     "zeilen_risiko": "Beim Einfügen der neuen Zeile könnte in der Excel etwas verrutschen. Bitte prüfen.",
     "ausserhalb_cde": "Gehört nicht zur CDE (Deckblatt, Vorspann oder Anhang des PDF).",
+    "spec_unklar": "Die Spec des PDFs wurde in der CDE nicht eindeutig gefunden. Bitte prüfen.",
     # ---- Neuer Text
     "steuerzeichen": "Der neue Text enthält Steuerzeichen und kann nicht in die Excel geschrieben werden.",
     "neutext_verdaechtig": "Der neue Text könnte aus dem PDF falsch gelesen worden sein.",
@@ -102,7 +103,7 @@ A1_ART: dict[str, str] = {
 
 # Wichtigster Grund zuerst: Gruende, die das Eintragen ganz verhindern, vor Gruenden fuer "pruefen", vor reinen Hinweisen
 RANG: tuple[str, ...] = (
-    "ausserhalb_cde", "steuerzeichen", "schon_eingetragen", "abgewaehlt", "nicht_gefunden", "zu_unsicher", "kein_anker",
+    "ausserhalb_cde", "spec_unklar", "steuerzeichen", "schon_eingetragen", "abgewaehlt", "nicht_gefunden", "zu_unsicher", "kein_anker",
     "blatt_ohne_anker", "keine_inhaltsspalte", "gegenprobe_", "ohne_absatz", "sperre:", "excel_weicht_ab", "a1_", "widerspruch",
     "mehrdeutig", "keiner", "label_spalte", "teil_absatz", "mehrere_zellen", "excel_umbruch", "naht_unklar", "neutext_verdaechtig",
     "zahlformat", "zeilen_risiko", "anker_", "layout_unsicher", "section_", "kopfspalte", "versteckt", "kurz",
@@ -132,19 +133,50 @@ def _rang(code: str) -> int:
     return len(RANG)
 
 
+# Kurzfassung fuer die Dashboard-Karten (hoechstens KURZ_MAX_WOERTER Woerter, Welle 3): wo der Satz oben laenger ist
+KURZ: dict[str, str] = {
+    "mehrdeutig": "Der alte Absatz steht mehrmals in der Excel; unklar, welche Stelle gemeint ist.",
+    "widerspruch": "Der alte Absatz steht in der Excel an einer unerwarteten Stelle.",
+    "excel_weicht_ab": "Die Excel weicht hier vom alten PDF-Text ab. Vorschlag bitte prüfen.",
+    "label_spalte": "Nummer oder Buchstabe steht auch in den Zeilen darunter. Bitte prüfen.",
+    "anker_unsicher": "Die Stelle für den neuen Absatz ist nur ungefähr bekannt.",
+    "anker_teil": "Der neue Absatz könnte mitten in einem längeren Excel-Absatz landen.",
+    "anker_luecke": "Vor dem neuen Absatz steht in der Excel Text ohne Gegenstück im PDF.",
+    "blatt_ohne_anker": "Die Stelle läge in einem Nebenblatt; dort kommt keine neue Zeile hin.",
+    "sperre": "Eine Stelle im Absatz ist im PDF unklar markiert. Bitte im PDF prüfen.",
+}
+KURZ_MAX_WOERTER = 15
+
+
+def kurz(code: str) -> str:
+    """Satz zu einem Pruefcode fuer die Dashboard-Karte (kurz, ohne Kennungen)."""
+    if code in KURZ:
+        return KURZ[code]
+    if code.startswith("sperre:"):
+        return KURZ["sperre"] if satz(code) else ""
+    return satz(code)
+
+
+def _kurz_genug(text: str) -> str:
+    """Erster Satzteil eines frueheren Grunds ohne Klammerzusatz -- nur, wenn er kurz genug ist."""
+    t = text.split("; ")[0].split(" (")[0].strip()
+    t = t if t.endswith((".", "!", "?")) else t + "."
+    return t if 1 < len(t.split()) <= KURZ_MAX_WOERTER else ""
+
+
 def grund_einfach(ae: Any) -> str:
-    """EIN Satz zum Status einer Aenderung (wichtigster Grund zuerst), fuer das Dashboard."""
-    gruende = sorted((c for c in ae.pruefcodes if satz(c)), key=_rang)
+    """EIN kurzer Satz zum Status einer Aenderung (wichtigster Grund zuerst), fuer die Dashboard-Karten."""
+    gruende = sorted((c for c in ae.pruefcodes if kurz(c)), key=_rang)
     if gruende:
-        haupt = satz(gruende[0])
+        haupt = kurz(gruende[0])
         if ae.status == UEBERNOMMEN:
-            return "Wird eingetragen. Hinweis: " + haupt
+            return "Wird eingetragen. " + haupt if len(haupt.split()) <= KURZ_MAX_WOERTER - 2 else haupt
         return haupt
     if ae.status == UEBERNOMMEN:
-        return "Wird automatisch eingetragen: der alte Text steht genau so in der Excel."
-    erster = (ae.grund or "").split("; ")[0].strip()
+        return "Wird eingetragen: der alte Text steht genau so in der Excel."
+    erster = _kurz_genug(ae.grund or "")
     if ae.status == PRUEFEN:
         return erster or "Vorschlag: bitte prüfen und freigeben."
     if ae.status == NICHT:
-        return erster or "Wird nicht eingetragen."
+        return erster or "Wird nicht eingetragen; bitte die Stelle von Hand prüfen."
     return erster

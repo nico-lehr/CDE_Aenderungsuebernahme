@@ -38,3 +38,18 @@ Zellen mit Markierung werden über ihre **Neu-Ansicht** gelesen (durchgestrichen
 - `SCHEMA_VERSION` 4: `Aenderung.bereich`, `.stuecke` (fertige Ergebnis-Läufe für die Anzeige), `.grund_einfach`; `PdfAnalyse.randnotizen` (intern).
 - Tests, die die alte Legende voraussetzen, laufen über eine Weiche weiter (nicht gelöscht, nicht abgeschwächt).
 - Ein Generator v3 (`word_markup`) baut erfundene Paare in genau dieser Struktur; echte Dokumente bleiben außerhalb von Git (Regel 16).
+
+## Nachtrag 19.10.2026 – Spec-Filter (Auftrag 003, Welle 3; Info von Nico)
+**Eine CDE enthält mehrere Specs.** Nico filtert nach der Spec, die zum PDF gehört, und bearbeitet nur deren Zeilen – nie die ganze CDE.
+- **Spec-Spalte** (`src/excel_model.py`, `BlattLayout.spec_spalte`): im Register die Spalte, deren Werte fast alle spec-artig sind
+  (`excel.register.spec_muster`, Anteil `spec_min_anteil`), bevorzugt links der Section-Spalte. Einheitliche Form: Ziffergruppen mit
+  Leerzeichen; Leerzeichen, Unterstrich, Punkt und Bindestrich zählen gleich, Zusätze (z. B. eine Region) und Leerzeichen am Ende sind egal.
+- **Spec des PDFs** (`src/planner.py`): sicher aus der Titelzeile („SECTION NN NN NN …“) oder der Fußzeile („NN NN NN … - Seite“),
+  Muster `planer.spec_pdf_muster`; sonst zählt eine einzige im PDF genannte Spec, die es in der CDE gibt. Der Nutzer kann sie vorgeben
+  (`plane(..., spec=...)`).
+- **Wirkung:** Enthält die CDE mehrere Specs, benutzen Kandidaten, Reißverschluss, Bereich der CDE, Dubletten, Vorlagezeilen, Polster und
+  neue Zeilen nur die Zeilen dieser Spec; Zeilen anderer Specs werden nie angefasst (auch keine „schon eingetragen“-Treffer dort).
+  Keine oder mehrere passende Specs ⇒ Warnung „Spec des PDFs nicht in der CDE gefunden“ und nichts automatisch (Code `spec_unklar`,
+  alles „prüfen“). Nur eine Spec in der Mappe ⇒ Verhalten wie zuvor.
+- **Plan:** `Plan.spec = {"erkannt", "quelle" (vorgabe | pdf | einzige), "zeilen": [von, bis], "kandidaten", "pdf"}` (nur Nummern und
+  Zeilen, keine Inhalte); die Übergabe an `plan.json` und Dashboard/CLI bindet der Orchestrator an.
