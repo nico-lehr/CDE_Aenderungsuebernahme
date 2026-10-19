@@ -320,6 +320,8 @@ def pruefe_absatz_markiert(absatz: Absatz, zellen: dict[tuple[int, int], tuple[s
                 drin = start <= pos < ende
                 if not drin and aid and aid in eigene and kl != _N and not ch.isspace():
                     return "gegenprobe_aussen"
+            elif not aid:
+                continue                # ohne Aenderung und ohne Position: aeltere Markierung ausserhalb der Ansicht
             else:
                 drin = start < lu < ende or (lu in (start, ende) and bool(aid) and aid in eigene)
                 if not drin and aid and aid in eigene and not ch.isspace():

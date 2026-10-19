@@ -409,6 +409,27 @@ def _pruefe_projektion(excel: str, laeufe: list[Lauf], soll: str) -> None:
     assert pruefe_absatz_markiert(ab, {(2, 3): (excel, m.zeichen)}, {"A1"}) is None
 
 
+def test_a3_markiert_ignoriert_aeltere_unsichtbare_markierungen():
+    """Welle 3, Punkt 4: eine Zelle mit durchgestrichenem Text einer frueheren Runde (in der Neu-Ansicht unsichtbar). A3
+    vergleicht nur, was zur Neu-Ansicht gehoert -- das alte Gestrichene darf kein gegenprobe_alt ausloesen."""
+    vorher = [Stueck(NORMAL, "Die "), Stueck(ALT, "alte "), Stueck(NORMAL, "Pumpe läuft "), Stueck(ALT, "sehr "),
+              Stueck(NORMAL, "leise.")]
+    t = sicht_text(vorher, SICHT_NEU)
+    assert t == "Die Pumpe läuft leise."
+    s = t.index("leise")
+    laeufe = _lauf("Die Pumpe läuft {-leise-}|{+laut+}|.")
+    m = markiere_ops(vorher, _ops(("e", s, s + 5, "laut", "A1")), sicht=SICHT_NEU)
+    assert [z for z in m.zeichen if z[2] < 0 and not z[4]]                  # die alten Zeichen stehen mit in der Liste
+    ab = Absatz("P1", "CDE", [(2, 3, 0, len(t))], laeufe)
+    assert pruefe_absatz_markiert(ab, {(2, 3): (t, m.zeichen)}, {"A1"}) is None
+    proj = projiziere([t], laeufe, {"A1"})
+    m2 = markiere_ops(vorher, [], sicht=SICHT_NEU, bereiche=[(0, len(t), proj[0])])
+    assert pruefe_absatz_markiert(ab, {(2, 3): (t, m2.zeichen)}, {"A1"}) is None
+    # ein eigener Fehler faellt weiter auf: der neue Text fehlt
+    m3 = markiere_ops(vorher, _ops(("e", s, s + 5, "", "A1")), sicht=SICHT_NEU)
+    assert pruefe_absatz_markiert(ab, {(2, 3): (t, m3.zeichen)}, {"A1"}) == "gegenprobe_text"
+
+
 def test_projektion_einfuegung_hinter_den_ganzen_excel_leerraum():
     """Welle 3, Punkt 2: Listennummer + viele geschuetzte Leerzeichen; das PDF fuegt am Absatzanfang ein. Der neue Text kommt
     hinter den ganzen Excel-Leerraum (vor das naechste behaltene Zeichen) -- ausser das PDF fuegt ausdruecklich vor dem
