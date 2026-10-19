@@ -29,6 +29,15 @@ ausgeblendet, nicht weg („Archivierte anzeigen“ holt ihn zurück).
 **③ Fertig** – **Excel herunterladen** und **Protokoll herunterladen**. Mit **Neuer Abgleich** geht es von vorn los.
 Über „Entscheidungen ändern …“ kannst du zurück und eine weitere Excel erstellen; die frühere bleibt erhalten.
 
+## Mehrere Specs in einer CDE
+
+Enthält deine CDE mehrere Specs (Spezifikationsnummern), bearbeitet das Tool **nur die Zeilen der Spec, zu der das PDF gehört**.
+Die anderen Zeilen bleiben unverändert.
+- Oben in Schritt ② steht dann zum Beispiel „Spec: 11 22 33 · Zeilen 120–380“. Stimmt das nicht, klick **„Andere Spec wählen“** und such die richtige aus.
+  Das startet einen neuen Abgleich mit denselben Dateien (nichts muss neu abgelegt werden; der erste bleibt unter „Zuletzt“).
+- Findet das Tool die Spec nicht sicher heraus, fragt es oben **„Welche Spec gehört zu diesem PDF?“**. Bis du eine wählst, wird **nichts eingetragen**.
+- Hat die CDE nur eine Spec, siehst du davon nichts.
+
 ## Was die Farben bedeuten
 
 Genau wie in der fertigen Excel:

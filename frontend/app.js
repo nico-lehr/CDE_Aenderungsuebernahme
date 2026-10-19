@@ -295,6 +295,7 @@
     const meta = [fmtZeit(r.angelegt)];
     if (r.status === 'uebernommen') meta.push(pl(zahl(r.ergebnisse), 'Excel erstellt', 'Excel-Dateien erstellt'));
     else meta.push(h('span', { class: st.warn ? 'warn' : '' }, st.text));
+    if (r.spec) meta.push(`Spec ${r.spec}`);
     if (r.archiviert) meta.push('archiviert');
     const teile = meta.filter(Boolean).flatMap((m, i) => (i ? [' · ', m] : [m]));
     const menu = h('details', { class: 'menu' });
@@ -461,6 +462,64 @@
 
   const grundZeile = (a) => h('p', { class: 'grund' }, h('span', { class: 'grund-label' }, 'Grund'), grundText(a));
 
+  // ------------------------------------------------------------------ Spec (eine CDE kann mehrere Specs enthalten)
+  // Nico filtert immer nach der Spec des PDFs. Die Auswahl kommt vom Server (plan.spec, plan.specs); ein anderer Spec = neuer Abgleich.
+  function specInfo() {
+    const p = state.plan || {};
+    const sp = p.spec && typeof p.spec === 'object' ? p.spec : null;
+    const namen = liste(p.specs).filter((x) => x && typeof x.name === 'string');
+    const liste_ = namen.length ? namen : liste(sp && sp.kandidaten).map((n) => ({ name: text(n) }));
+    const mehr = liste_.length > 1;                                    // bei nur einer Spec: keine Anzeige, kein Auswahlzwang
+    const codeUnklar = aenderungen().some((a) => liste(a.pruefcodes).includes('spec_unklar'));
+    const unklar = mehr && (!(sp && sp.erkannt) || codeUnklar);
+    return { mehr, unklar, erkannt: sp && sp.erkannt ? text(sp.erkannt) : '', zeilen: sp && Array.isArray(sp.zeilen) ? sp.zeilen : null,
+      quelle: sp ? text(sp.quelle) : '', liste: liste_ };
+  }
+  const specZeilen = (x) => (x.von != null && x.bis != null ? `${pl(zahl(x.zeilen), 'Zeile', 'Zeilen')} (${x.von}–${x.bis})` : '');
+
+  function zeichneSpec() {
+    const si = specInfo();
+    $('spec-zone').hidden = !si.mehr;
+    if (!si.mehr) return;
+    const zeile = si.erkannt ? [h('span', {}, 'Spec: '), h('strong', {}, si.erkannt),
+      si.zeilen ? ` · Zeilen ${si.zeilen[0]}–${si.zeilen[1]}` : '', si.quelle === 'vorgabe' ? ' · von dir gewählt' : si.quelle === 'pdf' ? ' · im PDF erkannt' : ''] : [];
+    $('spec-zeile').hidden = si.unklar;
+    $('spec-text').replaceChildren(...zeile);
+    const wahl = $('spec-wahl');
+    wahl.classList.toggle('unklar', si.unklar);
+    if (si.unklar) wahl.hidden = false;
+    else if ($('btn-spec-andere').getAttribute('aria-expanded') !== 'true') wahl.hidden = true;
+    wahl.setAttribute('role', si.unklar ? 'alert' : 'group');
+    if (!si.unklar) wahl.setAttribute('aria-labelledby', 'spec-titel');
+    $('spec-titel').textContent = si.unklar ? 'Welche Spec gehört zu diesem PDF?' : 'Andere Spec wählen';
+    $('spec-frage').textContent = si.unklar
+      ? 'Das Tool konnte nicht sicher erkennen, zu welcher Spec dieses PDF gehört. Bis du eine wählst, wird nichts eingetragen. Es werden nur die Zeilen dieser Spec bearbeitet, die anderen bleiben unverändert.'
+      : 'Deine CDE enthält mehrere Specs. Es werden nur die Zeilen der gewählten Spec bearbeitet, die anderen bleiben unverändert.';
+    $('spec-liste').replaceChildren(...si.liste.map((x) => h('li', {}, h('button', { class: 'spec-knopf', type: 'button', 'data-spec': x.name,
+      'aria-current': x.name === si.erkannt ? 'true' : null, 'aria-label': `Spec ${x.name}${specZeilen(x) ? ', ' + specZeilen(x) : ''}${x.name === si.erkannt ? ', gerade gewählt' : ''}`,
+      onclick: () => specWaehlen(x.name) }, h('span', {}, x.name), h('span', { class: 'meta' }, specZeilen(x))))));
+  }
+
+  function specAndere() {
+    const knopf = $('btn-spec-andere'), offen = knopf.getAttribute('aria-expanded') !== 'true';
+    knopf.setAttribute('aria-expanded', offen ? 'true' : 'false');
+    $('spec-wahl').hidden = !offen;
+    if (offen) $('spec-titel').focus({ preventScroll: false });
+  }
+
+  async function specWaehlen(name) {
+    if (!state.plan) return;
+    const id = state.plan.run_id;
+    busy(true, 'Neuer Abgleich …', `Die Dateien werden mit der Spec ${name} neu abgeglichen. Das dauert etwa 15 Sekunden. Der bisherige Abgleich bleibt erhalten.`);
+    let plan;
+    try {
+      plan = await api(`/lauf/${lauf(id)}/neu-analysieren`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ spec: name }) });
+    } catch (e) { busy(false); meldeFehler(e); return; }
+    busy(false);
+    oeffne(plan);
+    toast(`Neuer Abgleich mit der Spec ${name}. Der vorige bleibt unter „Zuletzt“.`);
+  }
+
   // ------------------------------------------------------------------ Schritt 2: Prüfen
   function statusText(e) {
     if (e === 'ja') return [h('span', { 'aria-hidden': 'true' }, '✓'), 'Wird übernommen'];
@@ -575,6 +634,8 @@
     const bitte = vorschlaege();
     $('anzahl-bitte').textContent = String(bitte.length);
     $('karten-bitte').replaceChildren(...bitte.map(karteBitte));
+    $('btn-spec-andere').setAttribute('aria-expanded', 'false');
+    zeichneSpec();
     $('bitte-leer').hidden = bitte.length > 0;
     $('btn-alle-ja').hidden = bitte.length < 2;
     $('anzahl-auto').textContent = String(automatische().length);
@@ -608,6 +669,10 @@
 
     const offen = bitte.length - erledigt;
     const saetze = [];
+    if (specInfo().unklar) {
+      $('excel-hinweis').textContent = 'Bitte zuerst die Spec wählen (siehe oben). Bis dahin wird nichts eingetragen.';
+      return;
+    }
     if (offen) saetze.push(`${offen === 1 ? '1 Vorschlag ist' : `${offen} Vorschläge sind`} noch offen und ${offen === 1 ? 'wird' : 'werden'} nicht eingetragen.`);
     else if (bitte.length) saetze.push('Alle Vorschläge sind entschieden.');
     saetze.push(`Eingetragen ${automatische().length - abw + ja === 1 ? 'wird 1 Änderung' : `werden ${automatische().length - abw + ja} Änderungen`}.`);
@@ -617,6 +682,12 @@
 
   async function excelErstellen() {
     if (!state.plan) return;
+    if (specInfo().unklar) {                           // nichts wird eingetragen, solange keine Spec gewählt ist
+      toastFehler('Bitte zuerst wählen, welche Spec zu diesem PDF gehört. Bis dahin wird nichts eingetragen.');
+      $('spec-zone').scrollIntoView({ block: 'center', behavior: reduziert() ? 'auto' : 'smooth' });
+      $('spec-titel').focus({ preventScroll: true });
+      return;
+    }
     const freigaben = vorschlaege().filter((a) => state.entscheid.get(a.id) === 'ja').map((a) => a.id);
     const abwahl = automatische().filter((a) => state.abwahl.has(a.id)).map((a) => a.id);
     if (automatische().length - abwahl.length + freigaben.length <= 0) {
@@ -732,6 +803,10 @@
         text(x.beschreibung) ? ` – ${text(x.beschreibung)}` : '', zahl(x.woerter) ? ` (${pl(zahl(x.woerter), 'Wort', 'Wörter')})` : ''))) : h('p', { class: 'hint' }, 'Keine.'),
       h('h3', {}, 'Hinweise zum Abgleich'),
       warn.length ? h('ul', { class: 'einfach-liste' }, warn.map((x) => h('li', {}, text(x)))) : h('p', { class: 'hint' }, 'Keine.'),
+      h('h3', {}, 'Spec'),
+      specInfo().liste.length ? dl([['Gewählte Spec', specInfo().erkannt || 'nicht eindeutig'], ['Quelle', { vorgabe: 'von dir gewählt', pdf: 'im PDF erkannt', einzige: 'einzige Spec der CDE' }[specInfo().quelle] || '–'],
+        ['Specs der CDE', specInfo().liste.map((x) => `${x.name}${specZeilen(x) ? ' (' + specZeilen(x) + ')' : ''}`).join(' · ')],
+        ['Im PDF genannt', liste(p.spec && p.spec.pdf).join(', ') || 'keine']]) : h('p', { class: 'hint' }, 'Die CDE hat keine Spalte mit Spezifikationsnummern.'),
       h('h3', {}, 'Erkannter Aufbau der Excel'),
       liste(p.layout).length ? tabelle('Erkannter Aufbau der Excel', ['Blatt', 'Section', 'Titel', 'Inhalt', 'Modell', 'Sections', 'Sicherheit'],
         liste(p.layout).map((x) => [text(x.blatt), x.section_spalte || '–', x.titel_spalte || '–', x.inhalt_spalte || '–',
@@ -847,6 +922,7 @@
     });
     $('btn-auto-alle').addEventListener('click', () => { state.autoLimit = Infinity; zeichneAuto(); });
     $('btn-excel').addEventListener('click', excelErstellen);
+    $('btn-spec-andere').addEventListener('click', specAndere);
     $('btn-zurueck-pruefen').addEventListener('click', () => zeigeSchritt('pruefen'));
     $('fachleute').addEventListener('toggle', zeichneFachleute);
     $('toast-schliessen').addEventListener('click', fehlerSchliessen);

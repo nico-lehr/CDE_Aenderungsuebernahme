@@ -28,7 +28,7 @@ Die Original-Excel bleibt unberührt. Dazu gibt es ein Protokoll, in dem jede Ä
 | Befehl | Wofür |
 |---|---|
 | `analyse --pdf A.pdf --excel B.xlsx` | nur auswerten, Bilanz anzeigen, nichts schreiben |
-| `lauf --pdf A.pdf --excel B.xlsx` | auswerten und alle **sicheren** Änderungen eintragen (`--alle-vorschlaege` nimmt auch Vorschläge mit) |
+| `lauf --pdf A.pdf --excel B.xlsx` | auswerten und alle **sicheren** Änderungen eintragen (`--alle-vorschlaege` nimmt auch Vorschläge mit, `--abwahl A0003,A0007` lässt diese automatischen Änderungen aus, `--spec "11 22 33"` wählt bei einer CDE mit mehreren Specs die Spec des PDFs) |
 | `messen --korpus entwicklung` | **Messwerkzeug**: Paare (PDF + Excel vorher + nachher) ausführen und mit „nachher“ vergleichen — Treffergenauigkeit, Abdeckung, **stille Fehler**, Fehlerarten. Ausgabe nur Zahlen, nie Dokumentinhalt |
 | `farben --pdf A.pdf` | welche Farben im PDF vorkommen und wie sie gedeutet werden (nur Zahlen und Farbcodes) |
 | `profil liste / vorschau / bestaetigen / analyse` | Excel-Aufbau von Hand festlegen, wenn die Automatik unsicher ist. **Neue Profile gehen nie direkt live**: erst Vorschau, dann bewusste Bestätigung |
@@ -38,10 +38,15 @@ Testdaten erzeugen (erfunden): `python scripts/erzeuge_paare.py --korpus entwick
 
 ## Dashboard
 
-*Neuer Lauf* (PDF + Excel ziehen) · *Prüfen & Übernehmen* (Liste mit Suche/Filter/Sortierung, PDF-Ausschnitt, „Dort steht jetzt“ neben
-„Im PDF: alt → neu“, Hinweise und Wirkung je Änderung, Freigabe unsicherer Vorschläge, frühere Ergebnisse mit Download) ·
-*Verlauf* (alle Läufe; **Archivieren statt Löschen**, Wiederherstellen) · *Farben im PDF* (zum Kalibrieren).
-Bedienbar per Tastatur, hell und dunkel, Meldungen in einfachem Deutsch.
+Eine Seite in **drei Schritten** (Anleitung für den Alltag: `docs/so_gehts.md`):
+**① Dateien** (PDF und CDE-Excel ablegen, „Abgleichen“; darunter „Zuletzt“ mit den letzten Abgleichen, **Archivieren statt Löschen**) ·
+**② Prüfen** (ein Satz mit Fortschritt; Karten „Bitte prüfen“ mit der Vorschau, wie die Zelle in der Excel aussieht – alt hellblau durchgestrichen,
+neu rot –, PDF-Ausschnitt und Grund, je Karte „Übernehmen“ / „Nicht übernehmen“, per Tastatur J/K, A, N, ?; eingeklappt „Automatisch eingetragen“
+mit „Trotzdem nicht eintragen“ und „Nicht in der CDE“; „Excel erstellen“) · **③ Fertig** (Excel und Protokoll herunterladen).
+Enthält die CDE **mehrere Specs**, steht oben „Spec: 11 22 33 · Zeilen 120–380“ mit „Andere Spec wählen“ (neuer Abgleich mit denselben Dateien);
+ist die Spec unklar, fragt das Dashboard zuerst „Welche Spec gehört zu diesem PDF?“ und trägt bis dahin nichts ein.
+Alles Technische (Wort-Bilanz, Lücken, erkannter Aufbau, Farben im PDF, Prüfcodes) steht unten in „Details für Fachleute“; Warnungen (bei einer
+Bilanz, die nicht stimmt, oder einem unvollständig gelesenen PDF) erscheinen oben. Bedienbar per Tastatur, hell und dunkel, Meldungen in einfachem Deutsch.
 
 ## Ordner
 
@@ -69,7 +74,7 @@ Alle Zahlen stammen von **erfundenen** Beispielen; sie sind kein Versprechen fü
 - Teil-Formatierung (z. B. einzelne fette Wörter) in geänderten Excel-Zellen kann verloren gehen.
 - Formeln, bedingte Formatierung, Datenprüfung, Filter, Excel-Tabellen und verbundene Zellen an der Einfügestelle werden **nicht repariert**, sondern führen zu „prüfen“ mit Warnung.
 - Noch **keine echten Beispiele** getestet: Farb- und Zeilenabstand-Schwellen müssen mit echten PDFs kalibriert werden (`docs/kalibrierung.md`).
-- Automatisch Übernommenes lässt sich im Dashboard noch nicht einzeln abwählen (die Schnittstelle kennt nur Freigaben für Vorschläge).
+- Automatisch Übernommenes lässt sich im Dashboard einzeln abwählen („Trotzdem nicht eintragen“) und auf der Kommandozeile mit `lauf --abwahl ID,ID`. Eine **fertige Excel** wird dadurch nie verändert: jede Abwahl oder Freigabe erzeugt ein neues Ergebnis.
 
 ## Stand Auftrag 002 und lokale Fortsetzung
 

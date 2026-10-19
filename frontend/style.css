@@ -345,6 +345,26 @@ summary:focus-visible, [tabindex]:focus-visible, label:focus-visible {
 .balken { height: 8px; border-radius: 999px; background: var(--grey-150); overflow: hidden; margin-top: 14px; }
 .balken-fuellung { height: 100%; width: 0; border-radius: 999px; background: var(--green); transition: width 0.4s var(--ease); }
 
+/* ====================================================================== Spec (nur bei einer CDE mit mehreren Specs) */
+.spec-zone { margin: -16px 0 32px; }
+.spec-zeile { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 0 4px; }
+.spec-text { font-size: 14px; color: var(--grey-500); font-variant-numeric: tabular-nums; }
+.spec-text strong { color: var(--ink); font-weight: 600; }
+.spec-wahl { margin-top: 12px; background: var(--white); border: 1px solid var(--grey-150); border-radius: 16px; box-shadow: var(--shadow-sm); padding: 20px 24px; display: grid; gap: 12px; }
+.spec-wahl.unklar { background: var(--amber-wash); border-color: var(--amber); border-left-width: 6px; }
+.spec-wahl.unklar h2 { color: var(--amber); }
+.spec-wahl.unklar .hint { color: var(--ink); }
+.spec-liste { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.spec-knopf {
+  width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; min-height: 48px; padding: 8px 16px;
+  border: 1px solid var(--grey-300); border-radius: 12px; background: var(--white); color: var(--ink); font: inherit; font-size: 15px; font-weight: 600;
+  cursor: pointer; text-align: left; transition: background 0.2s ease, border-color 0.2s ease;
+}
+.spec-knopf:hover { background: var(--rr-blue-light); border-color: var(--rr-blue); }
+.spec-knopf[aria-current="true"] { border-color: var(--green); background: var(--green-wash); }
+.spec-knopf[aria-current="true"] .meta { color: var(--ink); }
+.spec-knopf .meta { font-size: 13px; font-weight: 500; color: var(--grey-500); font-variant-numeric: tabular-nums; }
+
 /* ====================================================================== Bereiche und Karten */
 .bereich { margin-bottom: 32px; }
 .bereich-kopf { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }

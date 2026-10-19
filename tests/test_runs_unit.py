@@ -369,3 +369,26 @@ def test_plan_speichert_legende_und_sprechblasen_als_zahl(lauf):
     plan = runs.lade_plan(lauf)
     assert isinstance(plan["legende_modus"], str) and plan["legende_modus"]
     assert plan["sprechblasen"] == 0
+
+
+# --- Spec (Spec-Filter) -----------------------------------------------------------------------------
+@pytest.mark.parametrize("roh, erwartet", [(None, None), ("", None), ("   ", None), ("11 22 33", "11 22 33"), ("  11   22 33 ", "11 22 33"),
+                                           ("11_22.33-44", "11_22.33-44"), ("A" * 40, "A" * 40)])
+def test_pruefe_spec_gueltig(roh, erwartet):
+    assert runs.pruefe_spec(roh) == erwartet
+
+
+@pytest.mark.parametrize("roh", ["x" * 41, "11;22", "<b>", "11\n22; rm", "-11", "../x", "11 22 33'", 5, ["1"]])
+def test_pruefe_spec_ungueltig(roh):
+    with pytest.raises(ValueError) as e:
+        runs.pruefe_spec(roh)
+    assert getattr(e.value, "status", None) == 400
+
+
+def test_neu_analysieren_laesst_den_alten_lauf_unberuehrt(lauf):
+    d = runs.lauf_dir(lauf)
+    vorher = {str(p.relative_to(d)): p.read_bytes() for p in d.rglob("*") if p.is_file()}
+    neu, plan = runs.neu_analysieren(lauf, "11 22 33")
+    assert neu != lauf and plan["run_id"] == neu and runs.lade_plan(neu)["spec"] is None      # CDE ohne Spec-Spalte
+    assert {str(p.relative_to(d)): p.read_bytes() for p in d.rglob("*") if p.is_file()} == vorher
+    assert (runs.lauf_dir(neu) / "eingabe" / "cde_alt.xlsx").read_bytes() == (d / "eingabe" / "cde_alt.xlsx").read_bytes()

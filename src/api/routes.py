@@ -8,23 +8,21 @@ from __future__ import annotations
 
 import logging
 import tempfile
-import threading
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request, send_file
 
 from .. import runs
 from ..fehler import NutzerFehler
-from ..vorschau import ausschnitt
+from ..vorschau import PDFIUM_SPERRE, ausschnitt
 from .einstellungen import srv
 
 api_bp = Blueprint("api", __name__)
 log = logging.getLogger("cde.api")
 
-# pdfium (pypdfium2, ueber pdfplumber.to_image in src/vorschau.py und in src/sicht.py bei der Analyse) ist NICHT thread-sicher:
-# zwei gleichzeitige Aufrufe koennen den ganzen Server abstuerzen lassen (Speicherfehler). Der Server laeuft mit Threads und das
-# Dashboard laedt mehrere PDF-Ausschnitte zugleich -- deshalb laeuft alles, was pdfium benutzt, nacheinander.
-_PDFIUM = threading.Lock()
+# pdfium ist nicht thread-sicher (siehe src/vorschau.py): alles, was pdfium benutzt (Analyse, PDF-Ausschnitte), laeuft unter
+# der gemeinsamen, wiedereintrittsfaehigen Sperre vorschau.PDFIUM_SPERRE.
+_PDFIUM = PDFIUM_SPERRE
 
 _FARBE = {"absatz_neu": "#0071E3", "section_neu": "#0071E3", "text_eingefuegt": "#0071E3",
           "text_ersetzt": "#B9770E"}
@@ -85,6 +83,10 @@ def neu():
             runs.pruefe_dateiname(f.filename or "")
         except NutzerFehler as e:
             return _fehler(e.meldung, e.status)
+    try:
+        spec = runs.pruefe_spec(request.form.get("spec"))       # nur Zeichen und Laenge; vor dem Anlegen des Laufs
+    except NutzerFehler as e:
+        return _fehler(e.meldung, e.status)
     grenze_mb = int(srv()["upload_max_mb_datei"])
     for f in (pdf, xls):
         f.stream.seek(0, 2)
@@ -103,9 +105,14 @@ def neu():
             return _fehler("Eine der Dateien ist kein gültiges PDF bzw. keine gültige Excel-Datei.")
         run_id = runs.neuer_lauf(p, x, pdf.filename or "aenderungen.pdf", xls.filename or "cde.xlsx")
     profil = (request.form.get("profil") or "").strip() or None    # Layout-Profil: nur bestaetigte werden angenommen
+    return _analysiere_antwort(run_id, profil, spec)
+
+
+def _analysiere_antwort(run_id: str, profil: str | None, spec: str | None):
+    """Analyse eines frisch angelegten Laufs; bei einem Fehler bleibt der Lauf mit seinen Eingaben stehen (Regel 29)."""
     try:
         with _PDFIUM:                            # die Analyse liest das PDF ein zweites Mal mit pdfium (src/sicht.py)
-            plan = runs.analysiere(run_id, profil)
+            plan = runs.analysiere(run_id, profil, spec)
     except Exception as e:                       # noqa: BLE001 -- der Lauf bleibt stehen (Regel 29), Meldung einfach halten
         if isinstance(e, NutzerFehler):          # gewollte Meldung (z. B. Profil nicht bestaetigt, Excel beschaedigt): schon einfaches Deutsch
             meldung, code = e.meldung, e.status
@@ -123,6 +130,39 @@ def neu():
 @api_bp.get("/lauf/<run_id>")
 def lauf(run_id: str):
     return jsonify(_leicht(runs.lade_plan(run_id)))
+
+
+@api_bp.get("/lauf/<run_id>/specs")
+def specs(run_id: str):
+    """Specs, die die CDE dieses Laufs enthaelt (Name, Zeilenzahl, von, bis), und die gewaehlte Spec des PDFs.
+    Leer, wenn die Excel keine Spalte mit Spezifikationsnummern hat."""
+    plan = runs.lade_plan(run_id)
+    return jsonify({"specs": plan["specs"], "spec": plan["spec"]})
+
+
+@api_bp.post("/lauf/<run_id>/neu-analysieren")
+def neu_analysieren(run_id: str):
+    """Neuer Lauf mit denselben Eingabedateien und einer anderen Spec ({"spec": "11 22 33"}). Der bisherige Lauf bleibt
+    unveraendert (Regel 29); die Dateien muessen nicht erneut hochgeladen werden."""
+    daten = request.get_json(silent=True)
+    if not isinstance(daten, dict) or not isinstance(daten.get("spec"), str) or not daten["spec"].strip():
+        return _fehler("Bitte eine Spec angeben.")
+    try:
+        spec = runs.pruefe_spec(daten["spec"])
+        with _PDFIUM:
+            _neu, plan = runs.neu_analysieren(run_id, spec)
+    except NutzerFehler:
+        raise                                     # zentrale Behandlung (app.py)
+    except Exception as e:                        # noqa: BLE001
+        neu = getattr(e, "run_id", None)
+        log.exception("Neue Analyse zu Lauf %s fehlgeschlagen", run_id)
+        if neu:
+            try:
+                runs.markiere_analyse_fehler(neu, _MELDUNG_ANALYSE)
+            except Exception:                     # noqa: BLE001
+                log.exception("Fehlermarke fuer Lauf %s konnte nicht geschrieben werden", neu)
+        return _fehler(_MELDUNG_ANALYSE, 500, run_id=neu, status="fehlgeschlagen")
+    return jsonify(_leicht(plan))
 
 
 @api_bp.delete("/lauf/<run_id>")

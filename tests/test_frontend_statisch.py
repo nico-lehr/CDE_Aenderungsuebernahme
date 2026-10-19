@@ -317,6 +317,28 @@ def test_wichtige_aussagen_stehen_im_dashboard():
     assert len([a for t, a in SEITE.elemente if t == "input" and a.get("type") == "search"]) <= 1, "Höchstens eine Suche"
 
 
+def test_spec_auswahl_hat_ids_beschriftung_und_ist_ohne_mehrere_specs_versteckt():
+    """Eine CDE kann mehrere Specs enthalten: Zeile „Spec: …“, Knopf „Andere Spec wählen“, Liste VOR den Karten (ohne Auswahlliste/Select)."""
+    zone = _finde(id="spec-zone")[0]
+    assert "hidden" in zone and zone.get("aria-label"), "ohne mehrere Specs nichts anzeigen"
+    knopf = _finde(id="btn-spec-andere")[0]
+    assert knopf.get("type") == "button" and knopf.get("aria-controls") == "spec-wahl" and knopf.get("aria-expanded") == "false"
+    assert "hidden" in _finde(id="spec-wahl")[0]
+    assert _finde(id="spec-titel")[0].get("tabindex") == "-1"
+    liste = _finde(id="spec-liste")[0]
+    assert next(t for t, a in SEITE.elemente if a is liste) == "ul" and liste.get("aria-labelledby") == "spec-titel"
+    ids = HTML_IDS
+    assert ids.index("spec-zone") < ids.index("bereich-bitte") < ids.index("klapp-auto"), "Spec-Wahl steht VOR den Karten"
+    for wort in ("Andere Spec wählen", "Welche Spec gehört zu diesem PDF?"):
+        assert wort in HTML + JS
+    for wort in ("neu-analysieren", "Bis dahin wird nichts eingetragen", "Bitte zuerst die Spec wählen", "spec_unklar", "von dir gewählt",
+                 "aria-current", "specs", "kandidaten", "quelle"):
+        assert wort in JS, f"Fehlt in app.js: {wort}"
+    assert "JSON.stringify({ spec: name })" in JS, "Der Spec-Name geht als JSON an die API (kein Freitext aus der Adresszeile)"
+    assert "specInfo().unklar" in JS.split("async function excelErstellen")[1].split("busy(true")[0], "Excel erstellen prüft die Spec zuerst"
+    assert "class: 'spec-knopf'" in JS and ".spec-knopf" in CSS
+
+
 def test_vorschau_in_den_farben_der_excel():
     """alt = Hellblau + durchgestrichen, neu = Rot (wie die Markierung in der Ergebnis-Excel, ADR 0005), als Token."""
     regeln = {kopf: _deklarationen(k) for ctx, kopf, k in REGELN if not ctx}
@@ -377,6 +399,9 @@ def test_css_kontraste_text_auf_flaeche(thema):
         # Ergebnis-Vorschau in den Excel-Farben (auf Karte und Vorschaufläche) und gedrückte Entscheidungs-Knöpfe
         ("--mark-alt", "--white"), ("--mark-alt", "--grey-50"), ("--mark-neu", "--white"), ("--mark-neu", "--grey-50"),
         ("--white", "--green"), ("--white", "--grey-500"), ("--amber", "--grey-50"), ("--green", "--grey-50"),
+        # Spec-Auswahl: Zeilenzahl auf Hover (blau), Titel auf dem gelben Hinweis, aktuelle Spec auf Grün
+        ("--grey-500", "--rr-blue-light"), ("--ink", "--rr-blue-light"), ("--ink", "--green-wash"),
+        ("--ink", "--amber-wash"),
     ]
     schlecht = []
     for vorn, hinten in paare:
