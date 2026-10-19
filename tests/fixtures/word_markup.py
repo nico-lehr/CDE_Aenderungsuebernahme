@@ -145,6 +145,9 @@ class Absatz:
     ueberschrift: bool = False    # Ueberschriftzeile (fett, Kennwort in I)
     excel_alt: str | None = None  # Text in vorher.xlsx, wenn die Excel vom PDF abweicht
     abweichung: tuple[int, int, str] | None = None   # (start, ende, Excel-Text) der Abweichung im alten PDF-Text
+    trennen: dict[str, int] = field(default_factory=dict)   # nur nachbau_test: Wort -> Trennstelle am Zeilenende (Silbentrennung)
+    umbruch_erzwingen: bool = False                   # nur nachbau_test: Absatz moeglichst ueber den Seitenumbruch setzen
+    blase_lang: bool = False                          # nur nachbau_test: lange mehrzeilige Sprechblase am Absatz
     autor: int = 0
     stoerer: list[str] = field(default_factory=list)
     seite: int = 0
@@ -680,6 +683,74 @@ def _abweichungen(ctx: Kontext) -> None:
             ctx.markiere(name)
 
 
+# ====================================================================== Stoerer nur im ungesehenen Korpus nachbau_test
+NUR_TEST_FAMILIEN = ("silbentrennung_zeilenende", "listenpunkt_umbruch_nummer")
+KORPUS_TEST = "nachbau_test"
+COMPOSITA = [("Wasser", "behälter"), ("Druck", "behälter"), ("Absperr", "klappenantrieb"), ("Kühlwasser", "pumpe"),
+             ("Schaltschrank", "gehäuse"), ("Dichtungs", "material"), ("Rohrleitungs", "halterung"), ("Lüftungs", "anlage"),
+             ("Antriebs", "welle"), ("Sicherheits", "ventil"), ("Förder", "pumpe"), ("Montage", "anleitung")]
+FUELL = ["und", "oder", "sowie", "für", "mit", "an", "zu", "alle", "einzelne", "weitere"] + [w for w in PLURAL if " " not in w]
+
+
+def _zeilen_von(text: str, ebene: int, trennen: dict[str, int] | None = None) -> tuple[list[str], int]:
+    """Zeilen eines Absatzes wie der Setzer sie umbricht (nur Text) und Zahl der Trennungen."""
+    x_text = EINZUG[min(ebene + 1, len(EINZUG) - 1)]
+    zeilen, n = _umbrechen([(c, ("", pw.SCHWARZ, False)) for c in text], RECHTS - x_text, "Times-Roman", trennen)
+    return ["".join(c for tok in z for c, _ in tok) for z in zeilen], n
+
+
+def _familie_silbentrennung(ctx: Kontext) -> None:
+    """Familie "silbentrennung_zeilenende": Ein zusammengesetztes Wort steht am Zeilenende und wird getrennt ("Wasser-" / "behaelter");
+    entweder ist genau dieses Wort Teil der Aenderung (gestrichen und ersetzt, der Strich laeuft ueber den Zeilenumbruch) oder
+    daneben wird ein Wort eingefuegt. Dazu eine lange, mehrzeilige Sprechblase. Die Excel hat das Wort ungetrennt."""
+    r = ctx.rng
+    kand = [a for a in ctx.absaetze if a.art in ("sub", "liste") and a.status is None and not a.edits and a.excel_alt is None
+            and a.label_alt == a.label_neu]
+    r.shuffle(kand)
+    ziel = r.randint(3, 6)
+    for a in kand:
+        if ziel <= 0:
+            break
+        for _versuch in range(80):
+            w1, w2 = r.choice(COMPOSITA)
+            wort = w1 + w2
+            vorne = " ".join([r.choice(["Alle", "Die", "Sämtliche", "Weitere"])] + [r.choice(FUELL) for _ in range(r.randint(2, 9))])
+            hinten = ctx.satz()
+            text = f"{vorne} {wort} {hinten}"
+            s0 = len(vorne) + 1
+            e0 = s0 + len(wort)
+            probe = Absatz(a.id, a.art, a.ebene, text, trennen={wort: len(w1)})
+            if r.random() < 0.5:                                       # das Wort selbst wird ersetzt (Strich ueber den Zeilenumbruch)
+                x1, x2 = r.choice([c for c in COMPOSITA if c[0] + c[1] != wort])
+                probe.edits = [Edit(s0, e0 + 1, x1 + x2 + " ", _autor(ctx), "wort_ersetzt")]
+            else:                                                      # davor wird ein Wort eingefuegt (der Umbruch verschiebt sich)
+                probe.edits = [Edit(s0, s0, r.choice(ADVERB) + " ", _autor(ctx), "eingefuegt")]
+            anzeige = "".join(t for _art, t, _au, _g in probe.stuecke())
+            zeilen, n = _zeilen_von(anzeige, a.ebene, probe.trennen)
+            if n and any(z.endswith(w1 + "-") for z in zeilen):
+                a.text, a.edits, a.trennen, a.blase_lang = text, probe.edits, probe.trennen, True
+                a.stoerer.append("silbentrennung_zeilenende")
+                ziel -= 1
+                break
+
+
+def _familie_umbruch_nummer(ctx: Kontext) -> None:
+    """Familie "listenpunkt_umbruch_nummer": Ein Listenpunkt, dessen Nummer wechselt (gruen, "c.a."), steht so, dass nur seine erste
+    Zeile auf die Seite passt; der Rest und die Textaenderungen (Wort ersetzt, Satz angefuegt) stehen auf der naechsten Seite."""
+    r = ctx.rng
+    kand = [a for a in ctx.absaetze if a.art == "liste" and a.status is None and a.label_alt != a.label_neu and not a.edits
+            and a.excel_alt is None]
+    r.shuffle(kand)
+    for a in kand[:r.randint(3, 6)]:
+        for _ in range(6):
+            if len(_zeilen_von(a.text, a.ebene)[0]) >= 3:
+                break
+            a.text += " " + ctx.satz()
+        _aendere_text(ctx, a, "wort_ersetzt")
+        a.edits.append(Edit(len(a.text), len(a.text), " " + ctx.satz(), _autor(ctx), "satz_eingefuegt"))
+        a.umbruch_erzwingen = True
+
+
 # ====================================================================== Excel-Inhalt je Absatz
 def _mit_abweichung(a: Absatz) -> Absatz:
     """Kopie des Absatzes mit dem Excel-Text an der Stelle der Abweichung; die Aenderungen dahinter ruecken mit."""
@@ -851,46 +922,18 @@ class Setzer:
 
     # ---- Absaetze ------------------------------------------------------------------------------------------------
     def absatz(self, x_label: float, x_text: float, label: list[tuple[str, str, int]],
-               stuecke: list[tuple[str, str, int, bool]], schrift: str = "Times-Roman") -> dict[str, Any]:
-        """Setzt einen Absatz mit haengendem Einzug. -> {seite, seite_ende, anker: [(seite, x, gl, geaendert)]}"""
+               stuecke: list[tuple[str, str, int, bool]], schrift: str = "Times-Roman", trennen: dict[str, int] | None = None,
+               erzwingen: bool = False) -> dict[str, Any]:
+        """Setzt einen Absatz mit haengendem Einzug. -> {seite, seite_ende, anker: [(seite, x, gl, geaendert)], getrennt}"""
         zeichen: list[tuple[str, Stil]] = []
         for art, text, autor, gelb in stuecke:
             st = _stil(art, autor, gelb)
             zeichen.extend((c, st) for c in text)
-        token: list[list[tuple[str, Stil]]] = []            # Woerter und Leerzeichen (ein Wort kann mehrere Stile haben)
-        for c, st in zeichen:
-            if c == " ":
-                token.append([(c, st)])
-            elif token and token[-1][0][0] != " ":
-                token[-1].append((c, st))
-            else:
-                token.append([(c, st)])
-
-        def w(tok: list[tuple[str, Stil]]) -> float:
-            return pw.breite("".join(c for c, _ in tok), schrift, GROESSE)
-
-        zeilen: list[list[list[tuple[str, Stil]]]] = []
-        akt: list[list[tuple[str, Stil]]] = []
-        breite, luecke = 0.0, None
-        maxb = RECHTS - x_text
-        for tok in token:
-            if tok[0][0] == " ":
-                if akt:
-                    luecke = tok if luecke is None else luecke + tok
-                continue
-            dazu = (w(luecke) if luecke else 0.0) + w(tok)
-            if akt and breite + dazu > maxb:
-                zeilen.append(akt)                           # Leerzeichen am Zeilenende entfallen (auch gestrichene)
-                akt, breite = [tok], w(tok)
-            else:
-                if luecke:
-                    akt.append(luecke)
-                akt.append(tok)
-                breite += dazu
-            luecke = None
-        if akt or not zeilen:
-            zeilen.append(akt)
-        info: dict[str, Any] = {"seite": 0, "seite_ende": 0, "anker": []}
+        zeilen, getrennt = _umbrechen(zeichen, RECHTS - x_text, schrift, trennen)
+        if erzwingen and len(zeilen) >= 3 and self.seite and self.y + ZEILE <= KOERPER_UNTEN \
+                and KOERPER_UNTEN - self.y <= 30 * ZEILE:
+            self.y = max(self.y, KOERPER_UNTEN - ZEILE)       # nur die erste Zeile passt auf die Seite, der Rest folgt auf der naechsten
+        info: dict[str, Any] = {"seite": 0, "seite_ende": 0, "anker": [], "getrennt": getrennt}
         for nr, z in enumerate(zeilen):
             self._platz()
             gl = self.y + GL_VERSATZ
@@ -934,6 +977,57 @@ class Setzer:
             return False
         self.blasen += 1
         return True
+
+
+def _umbrechen(zeichen: list[tuple[str, Stil]], maxb: float, schrift: str = "Times-Roman",
+               trennen: dict[str, int] | None = None) -> tuple[list[list[list[tuple[str, Stil]]]], int]:
+    """Zeilenumbruch eines Absatzes (greedy, wie ein Textprogramm). Passt ein Wort aus `trennen` (Wort -> Trennstelle) nicht mehr auf die
+    Zeile, aber sein erster Teil mit Trennstrich, wird es dort getrennt (Silbentrennung am Zeilenende, "Wasser-" / "behaelter").
+    -> (Zeilen aus Woertern aus (Zeichen, Stil), Zahl der Trennungen)."""
+    token: list[list[tuple[str, Stil]]] = []            # Woerter und Leerzeichen (ein Wort kann mehrere Stile haben)
+    for c, st in zeichen:
+        if c == " ":
+            token.append([(c, st)])
+        elif token and token[-1][0][0] != " ":
+            token[-1].append((c, st))
+        else:
+            token.append([(c, st)])
+
+    def w(tok: list[tuple[str, Stil]]) -> float:
+        return pw.breite("".join(c for c, _ in tok), schrift, GROESSE)
+
+    zeilen: list[list[list[tuple[str, Stil]]]] = []
+    akt: list[list[tuple[str, Stil]]] = []
+    breite, luecke, getrennt = 0.0, None, 0
+    for tok in token:
+        if tok[0][0] == " ":
+            if akt:
+                luecke = tok if luecke is None else luecke + tok
+            continue
+        dazu = (w(luecke) if luecke else 0.0) + w(tok)
+        if akt and breite + dazu > maxb:
+            text = "".join(c for c, _ in tok)
+            k = next((k for wort, k in (trennen or {}).items() if text.startswith(wort)), 0)
+            if k:
+                teil1 = tok[:k] + [("-", tok[k - 1][1])]
+                if breite + (w(luecke) if luecke else 0.0) + w(teil1) <= maxb:
+                    if luecke:
+                        akt.append(luecke)
+                    akt.append(teil1)
+                    zeilen.append(akt)
+                    akt, breite, luecke, getrennt = [tok[k:]], w(tok[k:]), None, getrennt + 1
+                    continue
+            zeilen.append(akt)                           # Leerzeichen am Zeilenende entfallen (auch gestrichene)
+            akt, breite = [tok], w(tok)
+        else:
+            if luecke:
+                akt.append(luecke)
+            akt.append(tok)
+            breite += dazu
+        luecke = None
+    if akt or not zeilen:
+        zeilen.append(akt)
+    return zeilen, getrennt
 
 
 def _vorspann(s: Setzer) -> None:
@@ -1025,12 +1119,26 @@ def rendere_pdf(ctx: Kontext) -> tuple[pw.WordPdf, Setzer]:
         else:
             x_label = EINZUG[a.ebene]
             x_text = EINZUG[min(a.ebene + 1, len(EINZUG) - 1)]
-            info = s.absatz(x_label, x_text, a.label_stuecke(), a.stuecke())
+            info = s.absatz(x_label, x_text, a.label_stuecke(), a.stuecke(), trennen=a.trennen or None,
+                            erzwingen=a.umbruch_erzwingen)
+            if info["getrennt"]:
+                ctx.markiere("silbentrennung_zeilenende")
+                a.stoerer.append("silbentrennung_zeilenende")
         s.y += 3.0
         a.seite, a.seite_ende = info["seite"], info["seite_ende"]
         if a.seite_ende > a.seite and (a.edits or a.label_alt != a.label_neu):
             ctx.markiere("seitenumbruch_im_absatz")
             a.stoerer.append("seitenumbruch_im_absatz")
+            if a.umbruch_erzwingen and a.label_alt != a.label_neu:
+                ctx.markiere("listenpunkt_umbruch_nummer")        # Nummer wechselt (gruen) in der ersten Zeile, Aenderung danach
+                a.stoerer.append("listenpunkt_umbruch_nummer")
+        if a.blase_lang and o["leiste"] and info["anker"]:     # eigener Zufallsstrom: die uebrigen Sprechblasen bleiben gleich
+            rb = random.Random(ctx.seed * 37 + a.id)
+            kommentar_nr += 1
+            text = " ".join(rb.sample(KOMMENTARE, 3))
+            if s.blase(info["anker"][-1], [(f"Kommentiert [{o['initialen']}{kommentar_nr}]:", True), (" " + text, False)]):
+                s.kommentare += 1
+                ctx.markiere("sprechblase_mehrzeilig")
         # Sprechblasen in der Markup-Leiste (nichts davon gehoert in die Excel)
         if not o["leiste"] or not info["anker"]:
             continue
@@ -1559,8 +1667,10 @@ def nachbearbeiten(pfad: Path, ctx: Kontext, formeln: list[str]) -> None:
 
 
 # ====================================================================== Modell bauen, Wahrheit, Hauptfunktion
-def baue_kontext(seed: int, cfg: dict[str, Any] | None = None) -> Kontext:
-    """Das logische Modell eines Paars (deterministisch je Seed). cfg: zeilen=(min, max), aenderungen=n, leiste=bool ..."""
+def baue_kontext(seed: int, cfg: dict[str, Any] | None = None, korpus: str = KORPUS) -> Kontext:
+    """Das logische Modell eines Paars (deterministisch je Seed). cfg: zeilen=(min, max), aenderungen=n, leiste=bool ...
+    korpus nachbau_test (oder cfg nur_test=True, nur fuer Tests des Generators mit Entwicklungs-Seeds) schaltet die NUR_TEST_FAMILIEN
+    zu; in nachbau_word kommen sie nie vor und der Zufallsstrom bleibt unveraendert."""
     cfg = dict(cfg or {})
     rng = random.Random(seed * 1_000_003 + 3_000_017)
     ctx = Kontext(seed, rng, cfg)
@@ -1597,6 +1707,9 @@ def baue_kontext(seed: int, cfg: dict[str, Any] | None = None) -> Kontext:
     _plane_aenderungen(ctx, anzahl)
     _nummeriere(ctx)
     _abweichungen(ctx)
+    if korpus == KORPUS_TEST or cfg.get("nur_test"):
+        _familie_silbentrennung(ctx)
+        _familie_umbruch_nummer(ctx)
     ziel = Block("ziel", ctx.absaetze, o["spez_excel"], o["spez_variante"], "A.3.0", o["datum"])
     ctx.bloecke = _fremde_specs(ctx, ziel) if cfg.get("mehrere_specs", seed % 2 == 0) else [ziel]
     _excel_werte(ctx)
@@ -1676,7 +1789,7 @@ def erzeuge(seed: int, ziel: Path | str, korpus: str = KORPUS, cfg: dict[str, An
     ordner = Path(ziel) / f"synth_{seed:04d}_{name}"
     if ordner.exists():
         raise FileExistsError(f"{ordner} existiert schon (Paare sind append-only)")
-    ctx = baue_kontext(seed, cfg)
+    ctx = baue_kontext(seed, cfg, korpus)
     pdf, setzer = rendere_pdf(ctx)
     tmp = Path(ziel) / f".tmp_{ordner.name}"
     if tmp.exists():

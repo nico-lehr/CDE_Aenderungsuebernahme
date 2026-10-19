@@ -13,6 +13,8 @@ Korpora (Regel 11, Generator v2):
         entwicklung  Seeds < 1000
         ex_test      nur Seeds 1001-1030 (frueherer Testkorpus, offen als Entwicklung erklaert)
         test         nur Seeds >= 2000 (reserviert fuer die ungesehene Endmessung -- nicht zum Einstellen benutzen)
+        nachbau_test Generator v3 wie nachbau_word, aber ungesehen: nur Seeds >= 2000 (Standard 2001-2030), eigene Stoerer-Familien
+                     (reserviert fuer die Endmessung -- nicht zum Einstellen benutzen)
         nachbau_word Generator v3 (Word-PDF mit Aenderungsverfolgung + CDE-Register, Profil word_markup), Seeds < 1000,
                      Standard 301-360; KORPUS.json nennt legende "auto" und nachher_format "markiert"
 Erzeuger: writer (eigener PDF-Schreiber, Standard) | libreoffice (Flat-ODT -> soffice) | wechselnd (gerade Seeds
@@ -121,8 +123,10 @@ def pruefe_seeds(korpus: str, seeds: list[int]) -> str | None:
     """Regel 11: Fehlermeldung, wenn Seeds nicht zum Korpus passen, sonst None."""
     if korpus == "entwicklung" and any(s >= generator.SEED_GRENZE for s in seeds):
         return f"Entwicklungs-Seeds muessen unter {generator.SEED_GRENZE} liegen (Regel 11)."
-    if korpus in generator.KORPORA_V3 and any(s >= generator.SEED_GRENZE for s in seeds):
+    if korpus == "nachbau_word" and any(s >= generator.SEED_GRENZE for s in seeds):
         return f"{korpus} ist ein Entwicklungskorpus: Seeds muessen unter {generator.SEED_GRENZE} liegen (Regel 11)."
+    if korpus == "nachbau_test" and any(s < generator.TEST_SEED_MIN for s in seeds):
+        return f"nachbau_test ist der ungesehene Testkorpus: Seeds muessen ab {generator.TEST_SEED_MIN} liegen (Regel 11)."
     lo, hi = generator.EX_TEST_SEEDS
     if korpus == "ex_test" and any(not lo <= s <= hi for s in seeds):
         return f"ex_test umfasst nur die Seeds {lo}-{hi} (frueherer Testkorpus, Regel 11)."
@@ -150,8 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     if fehler:
         print(f"Fehler: {fehler}", file=sys.stderr)
         return 2
-    if args.korpus == "test":
-        print("Hinweis (Regel 11): Der Korpus 'test' ist fuer die ungesehene Endmessung reserviert.")
+    if args.korpus in ("test", "nachbau_test"):
+        print(f"Hinweis (Regel 11): Der Korpus '{args.korpus}' ist fuer die ungesehene Endmessung reserviert.")
     v3 = args.korpus in generator.KORPORA_V3
     if v3 and args.erzeuger != "writer":
         print("Fehler: Der Korpus nachbau_word (Generator v3) zeichnet sein PDF selbst (nur --erzeuger writer).", file=sys.stderr)
