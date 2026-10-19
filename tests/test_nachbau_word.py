@@ -265,10 +265,10 @@ def test_nachher_markierung_wie_nico(paar, erwartet):
             continue
         if a["typ"] == "absatz_geloescht":
             assert {k for k, _t in laeufe} == {"alt"}
-        if a["soll_status"] == "uebernommen":
-            assert _ansicht(laeufe, "alt") == v.cell(a["zeile"], 7).value               # alt-Ansicht = vorher (nichts verloren)
-        else:
-            assert a["vorschlag"] == [list(x) for x in _zus(laeufe)]                   # fertiger Vorschlag = PDF-Absatz inline
+        # alt-Ansicht = vorher (nichts verloren) -- auch wenn die Excel anderswo vom PDF abweicht: die Abweichung bleibt stehen
+        assert _ansicht(laeufe, "alt") == v.cell(a["zeile"], 7).value
+        if a["soll_status"] == "pruefen":
+            assert a["vorschlag"] == [list(x) for x in _zus(laeufe)]                   # fertiger Vorschlag = Zelle in nachher
         for (k1, _t1), (k2, _t2) in zip(laeufe, laeufe[1:]):
             direkt_hintereinander += k1 == "alt" and k2 == "neu"
         if isinstance(g.value, CellRichText):                                            # Grundschrift in jedem Lauf
@@ -500,13 +500,10 @@ def test_rueckbau_baut_vorher_nach(paar, erwartet, tmp_path):
     v = load_workbook(paar / "vorher.xlsx", rich_text=True)[erwartet["hauptblatt"]]
     r = load_workbook(ziel, rich_text=True)[erwartet["hauptblatt"]]
     assert r.max_row == v.max_row
-    pruefen = {a["zeile"] for a in erwartet["aenderungen"] if a["soll_status"] == "pruefen"}
     for z in range(1, v.max_row + 1):
         for c in (2, 3, 4, 5, 6, 7):
             a, b = v.cell(z, c).value, r.cell(z, c).value
-            if c == 7 and z in pruefen:
-                continue                                                   # Excel wich vom PDF ab: nachher = PDF-Absatz
-            assert str(a) == str(b), (z, c)
+            assert str(a) == str(b), (z, c)                                  # auch Zeilen mit Excel-Abweichung
             assert not _laeufe(r.cell(z, c)) or all(k == "normal" for k, _t in _laeufe(r.cell(z, c)))
 
 
@@ -542,3 +539,131 @@ def test_messen_nachher_kategorien(paar, monkeypatch, tmp_path):
     assert b["art"] == "rueckbau" and set(b["gesamt"]["zellen"]) == set(messen.RUECKBAU_KATEGORIEN)
     _keine_inhalte(paar, (ordner / "bericht.json").read_text(encoding="utf-8") + (ordner / "bericht.md").read_text(encoding="utf-8"))
     assert messen.main(["--nachher", "--ordner", str(tmp_path / "gibt_es_nicht")]) == 2
+
+
+# ====================================================================== Welle 3: Fehler-Orte, neue Zeilen, mehrere Specs
+def test_jeder_gemeldete_stille_fehler_ist_eine_echte_abweichung(paar, monkeypatch, tmp_path):
+    """Selbsttest der Fehler-Orte: `zeile` ist die Zeile in vorher; `zeile_nachher`/`zeile_ergebnis` zeigen, wo Soll und Ist stehen.
+    An jedem gemeldeten Ort muss sich Soll und Ist unterscheiden. Sabotage unterhalb einer eingefuegten Zeile wird genau dort
+    gemeldet (kein Versatz um die eingefuegten Zeilen)."""
+    erwartet = json.loads((paar / "erwartet.json").read_text(encoding="utf-8"))
+    neu = sorted(a["nachher_zeile"] for a in erwartet["aenderungen"] if a["typ"] == "absatz_neu" and a["bereich"] == "cde")
+    unter = [a for a in erwartet["aenderungen"] if a["bereich"] == "cde" and a["typ"] == "text_ersetzt"
+             and a["soll_status"] == "uebernommen" and a["nachher_zeile"] > neu[0] and a["art"] != "listennummer"]
+    ziel = unter[-1]
+    falsch = tmp_path / "falsch.xlsx"
+    wb = load_workbook(paar / "nachher.xlsx", rich_text=True)
+    zelle = wb[erwartet["hauptblatt"]].cell(ziel["nachher_zeile"], 7)
+    zelle.value = "".join(t for k, t in _laeufe(zelle) if k != "alt") + " Zusatz"     # falsch: Alt fehlt, Wort zu viel
+    from openpyxl.styles import Font
+    zelle.font = Font(name="Arial", size=11)
+    wb.save(falsch)
+
+    def sabotiert(aend, quelle, ziel_, freigaben=None, cfg=None, **_):
+        shutil.copy2(falsch if Path(quelle).name == "vorher.xlsx" else quelle, ziel_)
+    monkeypatch.setattr(messen, "uebernehmen", sabotiert)
+    kopie = tmp_path / "ergebnis.xlsx"
+    r = messen.messe_paar(paar, ergebnis_kopie=kopie)
+    # Regel 27 = richtige Zelle ohne Freigabe (Soll und Ist absichtlich gleich) -- alle anderen stillen Fehler sind Abweichungen
+    falsche_orte = [f for f in r["fehler"] if f["stumm"] and f["zeile"] != 0 and "regel27_verstoss" not in f["stille_arten"]]
+    assert any(f["zeile_ergebnis"] == ziel["nachher_zeile"] == f["zeile_nachher"] and f["zeile"] == ziel["zeile"]
+               and f["spalte"] == 7 for f in falsche_orte)
+    assert ziel["nachher_zeile"] > ziel["zeile"]                          # die Zeile liegt wirklich unter einer neuen Zeile
+    neu_rgb = messen._markierungsfarben()[1]
+    wn, we = load_workbook(paar / "nachher.xlsx", rich_text=True), load_workbook(kopie, rich_text=True)
+    for f in falsche_orte:
+        s_ = wn.worksheets[f["blatt"] - 1].cell(f["zeile_nachher"], f["spalte"]) if f["zeile_nachher"] else None
+        i_ = we.worksheets[f["blatt"] - 1].cell(f["zeile_ergebnis"], f["spalte"]) if f["zeile_ergebnis"] else None
+        form = lambda z: None if z is None else messen._s(messen._zelltext_formatiert(z, neu_rgb))   # noqa: E731
+        assert form(s_) != form(i_), f
+
+
+def test_neue_zeilen_im_soll_nur_textspalte_rot(paar, erwartet):
+    n = load_workbook(paar / "nachher.xlsx", rich_text=True)[erwartet["hauptblatt"]]
+    for a in erwartet["aenderungen"]:
+        if a["typ"] != "absatz_neu" or a["bereich"] != "cde":
+            continue
+        z = a["nachher_zeile"]
+        assert {k for k, _t in _laeufe(n.cell(z, 7))} == {"neu"}
+        for c in (2, 3, 4):                                                   # B/C/D wie die Zeile davor
+            assert str(n.cell(z, c).value) == str(n.cell(z - 1, c).value), (z, c)
+        for c in (5, 6):                                                      # E/F aus der Gliederung, normal
+            assert n.cell(z, c).value and all(k == "normal" for k, _t in _laeufe(n.cell(z, c)))
+        assert all(n.cell(z, c).value is None for c in range(8, wm.LETZTE_SPALTE + 1))   # rechts der Textspalte leer
+        assert n.cell(z, 1).value is None
+
+
+MEHRERE = {**KLEIN, "name": "spec", "mehrere_specs": True, "fremd_zeilen": (15, 25)}
+
+
+@pytest.fixture(scope="module")
+def paar_specs(tmp_path_factory) -> Path:
+    ziel = tmp_path_factory.mktemp("specs") / "nachbau_word"
+    p = erzeuge_paar(SEED + 4, MEHRERE, ziel, "nachbau_word")
+    (ziel / "KORPUS.json").write_text(json.dumps({"generator_version": "3", **generator.korpus_einstellungen("nachbau_word")}),
+                                      encoding="utf-8")
+    return p
+
+
+def test_mehrere_specs_im_register(paar_specs):
+    e = json.loads((paar_specs / "erwartet.json").read_text(encoding="utf-8"))
+    assert "mehrere_specs" in e["stoerer"] and "dubletten_fremde_spec" in e["stoerer"]
+    rollen = [s["rolle"] for s in e["specs"]]
+    i = rollen.index("ziel")
+    assert rollen.count("ziel") == 1 and 0 < i < len(rollen) - 1 and 3 <= len(rollen) <= 4    # fremde Specs davor UND danach
+    v = load_workbook(paar_specs / "vorher.xlsx", rich_text=True)[e["hauptblatt"]]
+    n = load_workbook(paar_specs / "nachher.xlsx", rich_text=True)[e["hauptblatt"]]
+    texte_ziel: set[str] = set()
+    a, b = e["specs"][i]["zeilen_vorher"]
+    for z in range(a, b + 1):
+        texte_ziel.add(re.sub(r"^\S+[\t\xa0 ]+", "", str(v.cell(z, 7).value)))
+    dubletten = 0
+    norm = {re.sub(r"[\s_]", "", s["spez"]) for s in e["specs"]}
+    assert len(norm) == len(e["specs"])                                       # jede Spec mit eigener Nummer
+    for s in e["specs"]:
+        a, b = s["zeilen_vorher"]
+        an, bn = s["zeilen_nachher"]
+        werte = {re.sub(r"[\s_]", "", str(v.cell(z, 2).value)) for z in range(a, b + 1)}
+        assert len(werte) == 1                                                # Block: eine Spec (Schreibweise darf schwanken)
+        assert {str(v.cell(z, 3).value) for z in range(a, b + 1) if isinstance(v.cell(z, 3).value, str)} <= {s["revision"]}
+        assert str(v.cell(a, 5).value).strip() == "Part 1"                   # eigene Gliederung
+        if s["rolle"] == "fremd":
+            assert b - a == bn - an                                           # Soll: fremder Block unveraendert
+            for z in range(a, b + 1):
+                for c in range(1, wm.LETZTE_SPALTE + 1):
+                    assert str(v.cell(z, c).value) == str(n.cell(z - a + an, c).value)
+                dubletten += re.sub(r"^\S+[\t\xa0 ]+", "", str(v.cell(z, 7).value)) in texte_ziel
+    assert dubletten >= 1                                                     # gleiche Saetze wie in der Ziel-Spec
+    schreibweisen = {str(v.cell(s["zeilen_vorher"][0], 2).value) for s in e["specs"]}
+    assert any(" " in x.strip() for x in schreibweisen) or any("_" in x for x in schreibweisen)
+    for x in e["aenderungen"]:                                                # alle Aenderungen im Ziel-Block
+        if x["bereich"] == "cde":
+            assert e["specs"][i]["zeilen_nachher"][0] <= x["nachher_zeile"] <= e["specs"][i]["zeilen_nachher"][1]
+
+
+def test_messen_erkennt_fremde_specs_und_zaehlt_beruehrung(paar_specs, monkeypatch, tmp_path):
+    e = json.loads((paar_specs / "erwartet.json").read_text(encoding="utf-8"))
+    fremd = sum(s["zeilen_vorher"][1] - s["zeilen_vorher"][0] + 1 for s in e["specs"] if s["rolle"] == "fremd")
+
+    def perfekt(aend, quelle, ziel, freigaben=None, cfg=None, **_):
+        shutil.copy2(paar_specs / "nachher.xlsx" if Path(quelle).name == "vorher.xlsx" else quelle, ziel)
+    monkeypatch.setattr(messen, "uebernehmen", perfekt)
+    r = messen.messe_paar(paar_specs)
+    assert r["fremde_spec_zeilen"] == fremd and r["fremde_spec_beruehrt"] == 0 and r["kollateral"] == 0
+    # Sabotage: das "Tool" aendert eine Dublette in einer fremden Spec
+    s = next(x for x in e["specs"] if x["rolle"] == "fremd")
+    falsch = tmp_path / "falsch.xlsx"
+    wb = load_workbook(paar_specs / "nachher.xlsx", rich_text=True)
+    zelle = wb[e["hauptblatt"]].cell(s["zeilen_nachher"][0] + 2, 7)
+    zelle.value = str(zelle.value) + " zusätzlich"
+    wb.save(falsch)
+
+    def sabotiert(aend, quelle, ziel, freigaben=None, cfg=None, **_):
+        shutil.copy2(falsch if Path(quelle).name == "vorher.xlsx" else quelle, ziel)
+    monkeypatch.setattr(messen, "uebernehmen", sabotiert)
+    r2 = messen.messe_paar(paar_specs)
+    assert r2["fremde_spec_beruehrt"] == 1 and r2["kollateral"] == 1
+    assert r2["stille_fehler_nach_art"].get("fremde_spec") == 1 and r2["stille_fehler"] == r["stille_fehler"] + 1
+    b = messen.fasse_zusammen([dict(r2, name="x")], "nachbau_word", "3", False)
+    k = next(x for x in b["kriterien"] if x["name"] == "Fremde Spec berührt")
+    assert k["ampel"] == "NICHT ok" and b["gesamt"]["paare_mit_fremder_spec"] == 1

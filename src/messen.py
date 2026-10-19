@@ -54,7 +54,8 @@ from .protokoll import bilanz
 BERICHT_FORMAT = 1
 FEHLERARTEN = ("pdf_falsch_gelesen", "layout_falsch", "zuordnung_falsch", "plan_falsch", "bilanz_kaputt", "unklar")
 STILLE_ARTEN = ("uebernommen_aber_falsch", "kollateral", "bilanz", "nachkontrolle_ok_aber_falsch",
-                "keine_wirkung", "luecke_nicht_gemeldet", "regel27_verstoss", "datentyp_gewechselt", "format_falsch")
+                "keine_wirkung", "luecke_nicht_gemeldet", "regel27_verstoss", "datentyp_gewechselt", "format_falsch",
+                "fremde_spec")
 STRUKTUR_ARTEN = ("blatt", "sichtbarkeit", "zeile_versteckt", "spalte_versteckt", "verbunden", "validierung",
                   "zahlenformat", "schrift", "datentyp", "bedingte_formatierung", "hyperlink", "kommentar",
                   "benannter_bereich", "autofilter", "tabelle", "fixierung", "spaltenbreite", "zeilenhoehe")
@@ -100,6 +101,9 @@ PLAUSI_BILD_ANTEIL = 0.05  # ein Bild zaehlt als Hinweis, wenn es mindestens so 
 ZEILEN_AEHNLICH = 0.6       # ab hier gelten zwei Zeilen als "dieselbe Zeile, veraendert"
 BLOCK_MAX = 4000            # groessere Austausch-Bloecke werden nur nach Position gepaart
 EXCEL_MAX_ZEILE = 1048576   # letzte Zeile eines Excel-Blatts (Bereiche bis dorthin wachsen beim Einfuegen nicht weiter)
+SPEC_MIN_BLOCK = 3          # so viele aufeinanderfolgende Zeilen mit derselben fremden Spec-Nr. bilden einen fremden Spec-Block
+SPEC_SEITEN = 8             # Spec-Nummern werden auf so vielen ersten Seiten des PDF gesucht (Kopf, Fuss, SECTION-Zeile)
+_SPEC_NR = re.compile(r"(?<!\d)(\d{2})[ _.]?(\d{2})[ _.]?(\d{2})(?!\d)")
 DATEIEN = ("aenderungen.pdf", "vorher.xlsx", "nachher.xlsx")
 
 _UNSICHTBAR = dict.fromkeys(map(ord, "­​‌‍﻿"), None)
@@ -605,6 +609,7 @@ class Fehler:
     stumm: bool = False
     stille_arten: set[str] = field(default_factory=set)
     quelle: str = "soll"      # soll = Soll-Zelle verfehlt | auto = Ergebnis falsch | paar = ganzes Paar
+    key: Any = None           # Schluessel der Einheit (fuer die Orte in nachher und Ergebnis)
 
 
 _ZIEL_ZELLE = re.compile(r"^(.+)!([A-Z]+)(\d+)$")
@@ -617,7 +622,8 @@ class _Auswertung:
     def __init__(self, v_blaetter, n_blaetter, e_blaetter, e_alle_blaetter, namen: list[str], aenderungen, plan,
                  pdf_analyse, bil_auto, bil_plan, idempotent: bool | None, luecken_erwartet: list[dict] | None,
                  vor_status: dict[str, str] | None = None, pdf_zeichen: set[str] | None = None,
-                 typen: tuple[list, list] | None = None, markiert: bool = False) -> None:
+                 typen: tuple[list, list] | None = None, markiert: bool = False,
+                 pdf_specs: set[str] | None = None) -> None:
         self.namen = namen
         # nachher_format "markiert": die Zellen tragen Formatklassen (alt/neu/normal); Woerter zaehlen je Ansicht (ADR 0005)
         self.markiert = markiert
@@ -652,6 +658,8 @@ class _Auswertung:
             _anker_neu(self.I[i], self.V[i], self._tot[i])
         for bi, s in enumerate(self.S):
             self._soll_pdf_blind(bi, s)
+        # Zeilen fremder Specs (mehrere Specs in einem Register; nur die Spec des PDF darf sich aendern)
+        self.fremd: list[set[int]] = [self._fremde_zeilen(bi, pdf_specs) for bi in range(len(self.V))]
         self.bil_auto, self.bil_plan = bil_auto, bil_plan
         self.idempotent = idempotent
         self.fehler: dict[Any, Fehler] = {}
@@ -852,8 +860,35 @@ class _Auswertung:
     def _fehler(self, key: Any, bi: int, zeile: int, spalte: int, quelle: str) -> Fehler:
         f = self.fehler.get(key)
         if f is None:
-            f = self.fehler[key] = Fehler(bi, zeile, spalte, quelle=quelle)
+            f = self.fehler[key] = Fehler(bi, zeile, spalte, quelle=quelle, key=key)
         return f
+
+    def orte(self, key: Any, zeile: int = 0) -> tuple[int | None, int | None, bool]:
+        """(Zeile in nachher, Zeile im Ergebnis, neue Zeile?) zu einem Fehler-Schluessel. `zeile` im Bericht ist die Zeile in
+        vorher (bei neuen Zeilen die Zeile davor); nach eingefuegten Zeilen liegen Soll und Ist woanders -- diese Angaben nennen
+        die Zeilen, an denen man Soll und Ist direkt vergleichen kann (None = gibt es dort nicht)."""
+        if not isinstance(key, tuple) or not key:
+            return None, None, False
+        if key[0] in ("z", "typ") and len(key) == 4:
+            _, bi, z, _c = key
+            return self.S[bi].zuordnung.get(z), self.I[bi].zuordnung.get(z), False
+        if key[0] == "n" and len(key) == 4:                        # Soll-Einheit einer neuen Zeile
+            _, bi, si, _c = key
+            ii = self.neu_abgleich[bi][0].get(si)
+            return self.S[bi].neue_nr[si], (self.I[bi].neue_nr[ii] if ii is not None else None), True
+        if key[0] == "n" and len(key) == 5:                        # neue Zeile im Ergebnis
+            bi = key[1]
+            it = next((i for i in self.ist if i["key"] == key), None)
+            if it is None:
+                return None, None, True
+            rev = {ii: si for si, ii in self.neu_abgleich[bi][0].items()}
+            si = rev.get(it["ist_index"])
+            return (self.S[bi].neue_nr[si] if si is not None else None), self.I[bi].neue_nr[it["ist_index"]], True
+        if key[0] == "r27" and zeile > 0:                          # Regel 27: Ort der Wirkung (Zeile in vorher)
+            f = self.fehler.get(key)
+            bi = f.bi if f is not None else 0
+            return self.S[bi].zuordnung.get(zeile), self.I[bi].zuordnung.get(zeile), False
+        return None, None, False
 
     # ------------------------------------------------------------------ Zuordnung Aenderung <-> Zelle
     def _zugehoerig(self, W: Counter, R: Counter) -> list:
@@ -934,6 +969,41 @@ class _Auswertung:
             return True
         spalten = {column_index_from_string(lay[k]) for k in ("section_spalte", "titel_spalte", "inhalt_spalte") if lay.get(k)}
         return spalte in spalten
+
+    def _fremde_zeilen(self, bi: int, pdf_specs: set[str] | None) -> set[int]:
+        """vorher-Zeilen, die zu einer FREMDEN Spec gehoeren -- nur aus vorher <-> nachher und dem PDF abgeleitet (auch fuer echte
+        Paare): Spec-Spalte ist die erste Spalte, deren Wert in allen laut Soll geaenderten Zeilen dieselbe Spec-Nummer des PDF
+        ist (Schreibweise vereinheitlicht: "11_22_33", "11 22 33 "). Fremd sind Bloecke von mindestens SPEC_MIN_BLOCK
+        aufeinanderfolgenden Zeilen mit einer anderen Spec-Nummer in dieser Spalte. Ohne Spec-Nummer im PDF: keine."""
+        if not pdf_specs:
+            return set()
+        geaendert = {z for (z, _c) in self.S[bi].zellen}
+        zeilen = self.V[bi]
+        if not geaendert or not zeilen:
+            return set()
+        breite = max(len(z.zellen) for z in zeilen)
+        for c in range(breite):
+            werte = {z.nr: (_spec_norm(z.zellen[c]) if c < len(z.zellen) else "") for z in zeilen}
+            ziel = {werte.get(z, "") for z in geaendert}
+            if len(ziel) != 1 or next(iter(ziel)) not in pdf_specs:
+                continue
+            v = next(iter(ziel))
+            fremd: set[int] = set()
+            lauf: list[int] = []
+            letzter = None
+            for z in zeilen:                                      # Laeufe gleicher fremder Nummer
+                w = werte[z.nr]
+                if lauf and w == letzter:
+                    lauf.append(z.nr)
+                else:
+                    if len(lauf) >= SPEC_MIN_BLOCK:
+                        fremd.update(lauf)
+                    lauf = [z.nr] if (w and w != v and _SPEC_NR.fullmatch(w)) else []
+                letzter = w
+            if len(lauf) >= SPEC_MIN_BLOCK:
+                fremd.update(lauf)
+            return fremd
+        return set()
 
     _POLSTER = re.compile(r"^(?:\d{1,3}|[A-Za-z]{1,3})[.)]([\t  ]* [\t  ]*)")
 
@@ -1405,8 +1475,8 @@ class _Auswertung:
                         stumm(key, bi, z, c, "nachkontrolle_ok_aber_falsch", schuld)
                     if self.markiert and _s_text(tat) == _s_text(erw):
                         stumm(key, bi, z, c, "format_falsch", schuld)      # Text richtig, Markierung (Formatklasse) falsch
-            if _s(tat) == _s(self._vorher(bi, z, c)):
-                stumm(key, bi, z, c, "keine_wirkung", ids)
+            if _s(tat) == _s(self._vorher(bi, z, c)) and _s(erw) != _s(tat):
+                stumm(key, bi, z, c, "keine_wirkung", ids)            # nur wenn die Zelle laut Soll anders sein muesste
 
         # neue Zeilen: gibt es im Ergebnis eine Zeile mit dem Inhalt der Operation, und ist sie laut Soll richtig?
         ist_neu_zellen = [it for it in self.ist if it["art"] == "neu"]
@@ -1485,6 +1555,19 @@ class _Auswertung:
             stumm(key, it["bi"], it["zeile"], it["spalte"], "kollateral", [])
             kollateral += 1
             kollateral_keys.add(key)
+
+        # Fremde Spec: jede Aenderung in einer fremden Spec ist Kollateralschaden (laut Soll bleibt sie unveraendert)
+        fremd_keys: set[Any] = set()
+        for it in self.ist:
+            if it["richtig"] or it["zeile"] not in self.fremd[it["bi"]]:
+                continue
+            key = it["key"]
+            if key not in kollateral_keys:
+                kollateral += 1
+                kollateral_keys.add(key)
+            stumm(key, it["bi"], it["zeile"], it["spalte"], "kollateral", [])
+            stumm(key, it["bi"], it["zeile"], it["spalte"], "fremde_spec", [])
+            fremd_keys.add(key)
 
         # Regel-27-Verstoesse eintragen (zaehlen als stille Fehler, nie als Treffer)
         r27_alle = {**r27_wirkung, **r27}
@@ -1690,6 +1773,8 @@ class _Auswertung:
         # --- Format-Treue (nur "markiert"): Soll-Zellen der Haupt-Spalten, deren Text das Tool richtig geschrieben hat -------------
         fmt = [e for e in haupt if e.get("text_gleich")]
         return {
+            "fremde_spec_zeilen": sum(len(f) for f in self.fremd),
+            "fremde_spec_beruehrt": len(fremd_keys),
             "markiert": self.markiert,
             "format_treue_zellen_geprueft": len(fmt),
             "format_treue_zellen_gleich": sum(1 for e in fmt if e["format_gleich"]),
@@ -1762,7 +1847,9 @@ class _Auswertung:
             "hinweise": self.hinweise,
             "fehler": [
                 {"blatt": f.bi + 1 if f.quelle != "paar" else 0, "zeile": f.zeile, "spalte": f.spalte,
-                 "aenderung": f.aenderungen[0] if f.aenderungen else "", "art": f.art, "stumm": f.stumm}
+                 "aenderung": f.aenderungen[0] if f.aenderungen else "", "art": f.art, "stumm": f.stumm,
+                 "stille_arten": sorted(f.stille_arten),
+                 **dict(zip(("zeile_nachher", "zeile_ergebnis", "neue_zeile"), self.orte(f.key, f.zeile)))}
                 for f in sorted(self.fehler.values(), key=lambda f: (f.bi, f.zeile, f.spalte, f.art))
             ],
         }
@@ -1812,6 +1899,25 @@ def _pdf_pruefung(pdf: Path) -> tuple[list[dict[str, Any]] | None, set[str] | No
         return out, zeichen
     except Exception:
         return None, None
+
+
+def _spec_norm(text: Any) -> str:
+    """Vereinheitlichte Spec-Nummer ("11_22_33", "11 22 33 ", "11.22.33" -> "112233"); sonst der vereinheitlichte Text."""
+    return re.sub(r"[\s_.\-]", "", str(text or "")).lower()
+
+
+def _pdf_specs(pdf: Path) -> set[str] | None:
+    """Spec-Nummern (Form "11 22 33") auf den ersten Seiten des PDF -- unabhaengig vom Tool. None = nicht lesbar."""
+    try:
+        import pdfplumber
+        out: set[str] = set()
+        with pdfplumber.open(str(pdf)) as doc:
+            for seite in doc.pages[:SPEC_SEITEN]:
+                for m in _SPEC_NR.finditer(seite.extract_text() or ""):
+                    out.add("".join(m.groups()))
+        return out
+    except Exception:
+        return None
 
 
 # ---- Struktur (RT-136): alles, was keine Zelle mit Text ist -----------------------------------------------------------
@@ -1911,13 +2017,36 @@ def _menge_diff(erwartet: set, da: set, offen: int) -> int:
     return max(len(erwartet - da), 0 if offen else len(da - erwartet))
 
 
+_ZELLBEZUG = re.compile(r"(?<![A-Za-z0-9_.\"])(\$?)([A-Z]{1,3})(\$?)(\d{1,7})(?![A-Za-z0-9_(])")
+
+
+def _relativ(formel: str, anker: tuple[int, int] | None) -> str:
+    """Formel einer bedingten Formatierung mit Bezuegen relativ zur linken oberen Zelle ihres Bereichs (wie Excel sie beim
+    Einfuegen von Zeilen mitzieht: "LEN(F62)>2" auf F62:F107 == "LEN(F63)>2" auf F63:F108). Absolute Bezuege bleiben."""
+    if anker is None:
+        return formel
+
+    def ers(m: re.Match) -> str:
+        sp = column_index_from_string(m.group(2))
+        z = int(m.group(4))
+        c_ = m.group(2) if m.group(1) else f"C[{sp - anker[1]}]"
+        r_ = m.group(4) if m.group(3) else f"R[{z - anker[0]}]"
+        return f"{m.group(1)}{c_}{m.group(3)}{r_}"
+    return _ZELLBEZUG.sub(ers, formel)
+
+
 def _bedingte_formatierung(ws: Any, abb: dict[int, int | None] | None, vmax: int) -> tuple[set, int]:
     out: set = set()
     offen = 0
     for cf in ws.conditional_formatting:
+        try:
+            c1, r1, _c2, _r2 = range_boundaries(str(cf.sqref).split()[0].replace("$", ""))
+            anker = (r1, c1) if r1 is not None and c1 is not None else None
+        except Exception:
+            anker = None
         regeln = tuple(sorted(
-            (str(r.type), str(r.operator), tuple(str(f) for f in (r.formula or [])), str(r.text), str(r.rank), str(r.percent),
-             str(r.bottom), str(r.aboveAverage), str(r.stopIfTrue)) for r in cf.rules))
+            (str(r.type), str(r.operator), tuple(_relativ(str(f), anker) for f in (r.formula or [])), str(r.text), str(r.rank),
+             str(r.percent), str(r.bottom), str(r.aboveAverage), str(r.stopIfTrue)) for r in cf.rules))
         for rng in str(cf.sqref).split():
             b = _bereich_abb(rng, abb, vmax)
             if b is None:
@@ -2114,21 +2243,29 @@ def _struktur_befund(vorher: Path, ergebnis: Path, diffs: list[Diff]) -> dict[st
                     erwartet.add((rng.min_col, lo, rng.max_col, hi))
             da = {(rng.min_col, rng.min_row, rng.max_col, rng.max_row) for rng in e.merged_cells.ranges}
             n["verbunden"] += max(len(erwartet - da), 0 if offen_m else len(da - erwartet))
+            # Neue Zeilen am Blattende: ein Bereich, der bis zur letzten Zeile reichte, darf sie einschliessen (wie das Soll und wie
+            # Excel beim Weiterschreiben unter einer Liste) ODER beim alten Ende bleiben (Excel beim Einfuegen) -- beides ist richtig.
+            abbs_alt = [abb]
+            hinten = [x for x in d.neue_nr if abb.get(vmax) is not None and x > abb[vmax]]
+            if hinten:
+                abb_ende = dict(abb)
+                abb_ende[vmax] = max(hinten)
+                abbs_alt.append(abb_ende)
             # Datenvalidierung
-            dv_erw, dv_offen = _validierungen(v, abb)
             dv_da, _ = _validierungen(e, None)
-            n["validierung"] += max(len(dv_erw - dv_da), 0 if dv_offen else len(dv_da - dv_erw))
+            n["validierung"] += min(max(len(erw - dv_da), 0 if offen else len(dv_da - erw))
+                                    for erw, offen in (_validierungen(v, a_) for a_ in abbs_alt))
             # bedingte Formatierung, Hyperlinks, Excel-Tabellen
-            cv, cv_offen = _bedingte_formatierung(v, abb, vmax)
-            n["bedingte_formatierung"] += _menge_diff(cv, _bedingte_formatierung(e, None, vmax)[0], cv_offen)
+            cf_da = _bedingte_formatierung(e, None, vmax)[0]
+            n["bedingte_formatierung"] += min(_menge_diff(cv, cf_da, cv_offen)
+                                              for cv, cv_offen in (_bedingte_formatierung(v, a_, vmax) for a_ in abbs_alt))
             lv, lv_offen = _hyperlinks(v, abb, vmax)
             n["hyperlink"] += _menge_diff(lv, _hyperlinks(e, None, vmax)[0], lv_offen)
             tv, tv_offen = _tabellen(v, abb, vmax)
             n["tabelle"] += _menge_diff(tv, _tabellen(e, None, vmax)[0], tv_offen)
             # Autofilter
-            av, av_offen = _autofilter(v, abb, vmax)
             ae_, _ = _autofilter(e, None, vmax)
-            n["autofilter"] += (not av_offen) and av != ae_
+            n["autofilter"] += min(int((not av_offen) and av != ae_) for av, av_offen in (_autofilter(v, a_, vmax) for a_ in abbs_alt))
             # Kommentare (an veraenderten Zellen und in neuen Zeilen darf das Tool welche anlegen oder ergaenzen)
             ev_kommentare = {(r, c): _kommentar_text(z) for (r, c), z in v._cells.items() if _kommentar_text(z) is not None}
             ee_kommentare = {(r, c): _kommentar_text(z) for (r, c), z in e._cells.items() if _kommentar_text(z) is not None}
@@ -2294,7 +2431,7 @@ def _messe_paar(ordner: Path, mit_vorschlaegen: bool, ergebnis_kopie: Path | Non
         plausi, pdf_zeichen = _pdf_pruefung(pdf)
         auswertung = _Auswertung(v_bl, n_bl, e_bl, e_alle_bl, _blattnamen(vorher), aend_auto, plan, pa, bil_auto,
                                  bil_plan, idempotent, (erwartet or {}).get("luecken"), vor_status, pdf_zeichen,
-                                 (n_typ, e_typ), markiert=markiert)
+                                 (n_typ, e_typ), markiert=markiert, pdf_specs=_pdf_specs(pdf))
         # Struktur zuerst (liefert die Zellen mit Datentyp-Wechsel), dann die Auswertung
         struktur: dict[str, Any] | None
         try:
@@ -2691,6 +2828,9 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
     gesamt["format_treue"] = _anteil(f_gleich, f_zellen)
     gesamt["format_treue_zeichen_anteil"] = _anteil(gesamt["format_treue_zeichen_gleich"], gesamt["format_treue_zeichen"])
     gesamt["stille_fehler_format"] = stille_art.get("format_falsch", 0)
+    gesamt["fremde_spec_beruehrt"] = s("fremde_spec_beruehrt")
+    gesamt["paare_mit_fremder_spec"] = sum(1 for p in paare if p.get("fremde_spec_zeilen"))
+    gesamt["paare_fremde_spec_beruehrt"] = sum(1 for p in paare if p.get("fremde_spec_beruehrt"))
     gesamt["legende_erkannt"] = dict(sorted(Counter(p.get("legende_erkannt") or "unbekannt" for p in gemessen).items()))
     gesamt["markup_leiste_erkannt"] = sum(1 for p in gemessen if p.get("markup_leiste_erkannt"))
     n = len(paare)                       # alle Paare
@@ -2784,6 +2924,12 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
          "ampel": _ampel(None if not m else gesamt["idempotent"] == m, luecke=lue)},
         {"nr": 6, "name": "Kollateralschaden", "wert": str(gesamt["kollateral"]), "ziel": "0", "einheit": "Zellen",
          "ampel": _ampel(gesamt["kollateral"] == 0, luecke=lue)},
+        {"nr": 6, "name": "Fremde Spec berührt", "wert": f"{gesamt['fremde_spec_beruehrt']} Zellen in "
+                                                         f"{gesamt['paare_fremde_spec_beruehrt']} Paaren",
+         "ziel": "0", "einheit": "Zellen",
+         "ampel": _ampel(None if not gesamt["paare_mit_fremder_spec"] else gesamt["fremde_spec_beruehrt"] == 0, luecke=lue),
+         "detail": f"{gesamt['paare_mit_fremder_spec']} Paare haben mehrere Specs im Register (Spec-Nr. des PDF, Blöcke mit anderer "
+                   f"Spec-Nr.). Jede Änderung dort zählt auch als Kollateralschaden und stiller Fehler (Art fremde_spec)"},
         {"nr": 6, "name": "Struktur unverändert (nur die genannten Eigenschaften)", "wert": str(gesamt["struktur_geaendert"]),
          "ziel": "0", "einheit": "Befunde",
          "ampel": _ampel(None if not struktur_paare else gesamt["struktur_geaendert"] == 0, luecke=lue),
@@ -3007,7 +3153,7 @@ def _md(b: dict[str, Any]) -> str:
         bil = "nicht messbar" if p["bilanz_stimmt"] is None else ("stimmt" if p["bilanz_stimmt"] else "NICHT")
         if p.get("teilweise_gemessen"):
             bil += " (teilweise gemessen)"
-        fe = "; ".join(" ".join(x for x in (f"Blatt {f['blatt']} Z{f['zeile']} S{f['spalte']}", f["aenderung"], f["art"],
+        fe = "; ".join(" ".join(x for x in (f"Blatt {f['blatt']} Z{f['zeile']}{_ort_md(f)} S{f['spalte']}", f["aenderung"], f["art"],
                                             f"({f['grund']})" if f.get("grund") else "") if x) for f in p["fehler"])
         struktur = "-" if p.get("struktur_geaendert") is None else str(p["struktur_geaendert"])
         plausi = p.get("plausibilitaet_hinweise")
@@ -3017,6 +3163,14 @@ def _md(b: dict[str, Any]) -> str:
     if any("fehler_schablonen" in p for p in b["paare"]):
         z += _md_schablonen(b["paare"])
     return "\n".join(z) + "\n"
+
+
+def _ort_md(f: dict[str, Any]) -> str:
+    """Zeile in nachher (N) und im Ergebnis (E), wenn sie von der vorher-Zeile abweicht oder es eine neue Zeile ist."""
+    zn, ze = f.get("zeile_nachher"), f.get("zeile_ergebnis")
+    if not f.get("neue_zeile") and zn == f.get("zeile") and ze == f.get("zeile"):
+        return ""
+    return f" (N{zn if zn is not None else '-'}/E{ze if ze is not None else '-'}{', neu' if f.get('neue_zeile') else ''})"
 
 
 def _md_schablonen(paare: list[dict[str, Any]]) -> list[str]:
@@ -3289,7 +3443,8 @@ def messe_nachher(ordner: Path, einstellungen: dict[str, str] | None = None, max
         bil = bilanz(aend, plan.markierte_woerter, plan.ignoriert, plan.luecken)
         _plausi, pdf_zeichen = _pdf_pruefung(pdf)
         aw = _Auswertung(_lese_excel(rueck, True), _lese_excel(nachher, True), _lese_excel(ergebnis, True), None,
-                         _blattnamen(rueck), aend, plan, pa, bil, bil_plan, None, None, vor_status, pdf_zeichen, markiert=True)
+                         _blattnamen(rueck), aend, plan, pa, bil, bil_plan, None, None, vor_status, pdf_zeichen, markiert=True,
+                         pdf_specs=_pdf_specs(pdf))
     kat: Counter = Counter()
     kat_haupt: Counter = Counter()
     schablonen: list[dict[str, Any]] = []
@@ -3305,10 +3460,12 @@ def messe_nachher(ordner: Path, einstellungen: dict[str, str] | None = None, max
             schablonen.append({"kategorie": k, "blatt": e["bi"] + 1, "zeile": e["zeile"], "spalte": e["spalte"],
                                "neue_zeile": e["art"] == "neu", "soll": _rueckbau_form(e["soll"], pos),
                                "ist": _rueckbau_form(e["ist"] or "", pos)})
+    fremd_extra = 0
     for it in aw.ist:
         if it["key"] in belegt:
             continue
         kat["tool_extra"] += 1
+        fremd_extra += it["zeile"] in aw.fremd[it["bi"]]
         if aw._verwaltet(it["bi"], it["spalte"]):
             kat_haupt["tool_extra"] += 1
         schablonen.append({"kategorie": "tool_extra", "blatt": it["bi"] + 1, "zeile": it["zeile"], "spalte": it["spalte"],
@@ -3325,6 +3482,7 @@ def messe_nachher(ordner: Path, einstellungen: dict[str, str] | None = None, max
         if not fehler:
             gut.append(s)
     return {"name": ordner.name, "rueckbau": stats, "zellen": {k: int(kat.get(k, 0)) for k in RUECKBAU_KATEGORIEN},
+            "tool_extra_fremde_spec": fremd_extra, "fremde_spec_zeilen": sum(len(f) for f in aw.fremd),
             "zellen_haupt": {k: int(kat_haupt.get(k, 0)) for k in RUECKBAU_KATEGORIEN},
             "aenderungen": len(aend), "aenderungen_nach_status": {s: sum(1 for a in aend if a.status == s)
                                                                  for s in (UEBERNOMMEN, PRUEFEN, NICHT)},
@@ -3345,7 +3503,8 @@ def fasse_rueckbau_zusammen(paare: list[dict[str, Any]], korpus: str) -> dict[st
               "aenderungen": sum(p["aenderungen"] for p in gemessen),
               "aenderungen_nach_status": {s: sum(p["aenderungen_nach_status"][s] for p in gemessen)
                                           for s in (UEBERNOMMEN, PRUEFEN, NICHT)},
-              "original_unveraendert": sum(1 for p in gemessen if p["original_unveraendert"])}
+              "original_unveraendert": sum(1 for p in gemessen if p["original_unveraendert"]),
+              "tool_extra_fremde_spec": sum(p.get("tool_extra_fremde_spec", 0) for p in gemessen)}
     alle = sum(gesamt["zellen"].values())
     gesamt["anteil_gleich"] = _anteil(gesamt["zellen"]["gleich"] + gesamt["zellen"]["gleich_bis_leerraum"], alle)
     return {"format": BERICHT_FORMAT, "art": "rueckbau", "korpus": korpus, "schema_version": SCHEMA_VERSION,
@@ -3415,7 +3574,7 @@ def _main_nachher(eltern: Path, kandidaten: list[Path], korpus: str, einstellung
     print(f"Rückbau-Messung {korpus}: {g['paare']} Paare (gemessen {g['paare_gemessen']})")
     for k in RUECKBAU_KATEGORIEN:
         print(f"  {k:<28} {g['zellen'][k]:>6} Zellen  (Haupt-Spalten {g['zellen_haupt'][k]})")
-    print(f"  Anteil gleich: {_prozent(g['anteil_gleich'])}")
+    print(f"  Anteil gleich: {_prozent(g['anteil_gleich'])}  |  davon tool_extra in fremder Spec: {g['tool_extra_fremde_spec']}")
     print(f"Bericht: {ziel / 'bericht.md'}")
     return 0
 

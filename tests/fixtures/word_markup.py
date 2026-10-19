@@ -144,6 +144,7 @@ class Absatz:
     fett: bool = False            # ganze Zelle fett (Grundschrift)
     ueberschrift: bool = False    # Ueberschriftzeile (fett, Kennwort in I)
     excel_alt: str | None = None  # Text in vorher.xlsx, wenn die Excel vom PDF abweicht
+    abweichung: tuple[int, int, str] | None = None   # (start, ende, Excel-Text) der Abweichung im alten PDF-Text
     autor: int = 0
     stoerer: list[str] = field(default_factory=list)
     seite: int = 0
@@ -207,6 +208,7 @@ class Kontext:
     rng: random.Random
     cfg: dict[str, Any]
     absaetze: list[Absatz] = field(default_factory=list)
+    bloecke: list[Any] = field(default_factory=list)      # Spec-Bloecke im Register (siehe Block), Ziel-Block = absaetze
     stoerer: list[str] = field(default_factory=list)
     opt: dict[str, Any] = field(default_factory=dict)
     benutzt: set[str] = field(default_factory=set)
@@ -673,11 +675,23 @@ def _abweichungen(ctx: Kontext) -> None:
             wort = a.text[s:e]
             neu = wort[:-1] if len(wort) > 4 and r.random() < 0.4 else _ersatz(ctx, wort)
             a.excel_alt = a.text[:s] + neu + a.text[e:]
+            a.abweichung = (s, e, neu)
             a.stoerer.append(name)
             ctx.markiere(name)
 
 
 # ====================================================================== Excel-Inhalt je Absatz
+def _mit_abweichung(a: Absatz) -> Absatz:
+    """Kopie des Absatzes mit dem Excel-Text an der Stelle der Abweichung; die Aenderungen dahinter ruecken mit."""
+    s, e, neu = a.abweichung                                    # type: ignore[misc]
+    d = len(neu) - (e - s)
+    edits = [Edit(x.start + (d if x.start >= e else 0), x.ende + (d if x.start >= e else 0), x.neu, x.autor, x.art)
+             for x in a.edits]
+    assert all(x.ende <= s or x.start >= e for x in a.edits)
+    return Absatz(a.id, a.art, a.ebene, a.text[:s] + neu + a.text[e:], edits=edits)
+
+
+
 def polster(ctx: Kontext, stufe: int) -> str:
     return ctx.opt["polster"][stufe - 1]
 
@@ -704,7 +718,10 @@ def excel_laeufe(ctx: Kontext, a: Absatz, nachher: bool) -> list[tuple[str, str]
     if not a.edits and a.excel_alt is not None:
         out.append(("normal", a.excel_alt))                       # unveraenderter Absatz: Abweichung bleibt stehen
     else:
-        for art, text, _autor, _gelb in a.stuecke():
+        # Weicht die Excel anderswo im Absatz ab, bleibt die Abweichung stehen; nur die PDF-Aenderung wird markiert eingetragen
+        # (Nico, 18./19.10.: Vorschlag zum Abhaken). Die Aenderungen liegen mindestens 6 Zeichen von der Abweichung entfernt.
+        basis = _mit_abweichung(a) if a.abweichung else a
+        for art, text, _autor, _gelb in basis.stuecke():
             out.append(({"k": "normal", "d": "alt", "a": "neu"}[art], text))
     zus: list[tuple[str, str]] = []
     for f, t in out:
@@ -1048,49 +1065,122 @@ DUENN = Side(style="thin", color="FFBFBFBF")
 RAHMEN = Border(left=DUENN, right=DUENN, top=DUENN, bottom=DUENN)
 
 
+@dataclass
+class Block:
+    """Eine Spezifikation im Register (zusammenhaengender Zeilenblock). Nur der Ziel-Block gehoert zum PDF."""
+    rolle: str                    # ziel | fremd
+    absaetze: list[Absatz]
+    spez_excel: str               # Schreibweise in Spalte B ("11_22_33", "11 22 33")
+    variante: str                 # ohne | leerzeichen (alle mit Leerzeichen am Ende) | gemischt (einzelne)
+    rev: str
+    datum: Any
+
+
 def _excel_werte(ctx: Kontext) -> None:
-    """Werte der uebrigen Spalten je Absatz (fest je Seed). Neue Absaetze bekommen nur B-F (wie die Nachbarzeile)."""
-    r = random.Random(ctx.seed * 17 + 3)
+    """Werte der uebrigen Spalten je Absatz (fest je Seed), je Spec-Block mit eigener Spec-Nr., Revision und Datum. Neue Absaetze
+    bekommen nur B-F: B/C/D wie die Zeile davor (ihr Block), E/F aus der Gliederung; alles rechts der Textspalte bleibt leer."""
     o = ctx.opt
-    vorher = None
-    for i, a in enumerate(ctx.absaetze):
-        w: dict[str, Any] = {}
-        a.excel = w                                            # type: ignore[attr-defined]
-        b = o["spez_excel"] + (" " if o["spez_variante"] == "leerzeichen"
-                               or (o["spez_variante"] == "gemischt" and r.random() < 0.06) else "")
-        e = a.section + (" " if o["e_variante"] == "alle" or (o["e_variante"] == "part" and a.art == "part") else "")
-        if a.status == "neu" and vorher is not None:
-            w.update(B=vorher.excel["B"], C="A.3.0", D=o["datum"], E=e)    # type: ignore[attr-defined]
-        else:
-            w.update(B=b, C="A.3.0", D=o["datum"], E=e)
-        if a.sub:
-            w["F"] = a.sub
-        if a.status != "neu":
-            if not a.ueberschrift:
-                w["H"] = r.choices(["D", "E", "C"], [5, 3, 2])[0]
-                w["R"] = r.choice(["Offen", "Offen", "Erledigt"])
-                if r.random() < 0.6:
-                    w["JKLMN"[r.randint(0, 4)]] = "X"
-                if r.random() < 0.25:
-                    w["O"] = r.choice(["A", "R"])
-                if r.random() < 0.12:
-                    w["P"] = r.choice(BEGRUENDUNGEN)
-                if r.random() < 0.08:
-                    w["S"] = r.choice(BEMERKUNGEN)
-                if r.random() < 0.05:
-                    w["AB"] = r.choice(KOMMENTARE)
-                if r.random() < 0.03:
-                    w["A"] = r.randint(1, 40)
-                if o["fette_zellen"] and r.random() < 0.04:
-                    a.fett = True
-                    ctx.markiere("fette_zelle")
+    for k, blk in enumerate(ctx.bloecke):
+        r = random.Random(ctx.seed * 17 + 3 + 1009 * k * (blk.rolle == "fremd"))
+        vorher = None
+        for i, a in enumerate(blk.absaetze):
+            w: dict[str, Any] = {}
+            a.excel = w                                        # type: ignore[attr-defined]
+            b = blk.spez_excel + (" " if blk.variante == "leerzeichen"
+                                  or (blk.variante == "gemischt" and r.random() < 0.06) else "")
+            e = a.section + (" " if o["e_variante"] == "alle" or (o["e_variante"] == "part" and a.art == "part") else "")
+            if a.status == "neu" and vorher is not None:
+                vw = vorher.excel                              # type: ignore[attr-defined]
+                w.update(B=vw["B"], C=vw["C"], D=vw["D"], E=e)
             else:
-                w["I"] = KENNWORT
-            naechster = ctx.absaetze[i + 1] if i + 1 < len(ctx.absaetze) else None
-            if o["alte_markierung"] and r.random() < 0.06 and not (naechster and naechster.status == "neu"):
-                w["alt_markiert"] = True                       # C/D tragen Markierungen einer frueheren Runde
-                ctx.markiere("alte_markierung_cd")
-        vorher = a
+                w.update(B=b, C=blk.rev, D=blk.datum, E=e)
+            if a.sub:
+                w["F"] = a.sub
+            if a.status != "neu":
+                if not a.ueberschrift:
+                    w["H"] = r.choices(["D", "E", "C"], [5, 3, 2])[0]
+                    w["R"] = r.choice(["Offen", "Offen", "Erledigt"])
+                    if r.random() < 0.6:
+                        w["JKLMN"[r.randint(0, 4)]] = "X"
+                    if r.random() < 0.25:
+                        w["O"] = r.choice(["A", "R"])
+                    if r.random() < 0.12:
+                        w["P"] = r.choice(BEGRUENDUNGEN)
+                    if r.random() < 0.08:
+                        w["S"] = r.choice(BEMERKUNGEN)
+                    if r.random() < 0.05:
+                        w["AB"] = r.choice(KOMMENTARE)
+                    if r.random() < 0.03:
+                        w["A"] = r.randint(1, 40)
+                    if o["fette_zellen"] and r.random() < 0.04:
+                        a.fett = True
+                        ctx.markiere("fette_zelle")
+                else:
+                    w["I"] = KENNWORT
+                naechster = blk.absaetze[i + 1] if i + 1 < len(blk.absaetze) else None
+                if blk.rolle == "ziel" and o["alte_markierung"] and r.random() < 0.06 \
+                        and not (naechster and naechster.status == "neu"):
+                    w["alt_markiert"] = True                   # C/D tragen Markierungen einer frueheren Runde
+                    ctx.markiere("alte_markierung_cd")
+            vorher = a
+
+
+SPEZ_REVS = ["A.1.0", "A.2.0", "B.1.0", "C.0.0", "B.2.1"]
+SPEZ_DATEN = ["2025_09_12", "2025_11_20", "2026_01_15", "2026_02_03"]
+
+
+def _fremde_specs(ctx: Kontext, ziel: Block) -> list[Block]:
+    """Stoerer `mehrere_specs`: 2-3 weitere Specs als eigene Bloecke vor UND nach der Ziel-Spec, mit eigener Spec-Nr. (uneinheitliche
+    Schreibweise), Revision, Datum und Gliederung 1.1 ... Ein Teil ihrer Saetze steht genau so oder fast so auch in der Ziel-Spec
+    (Dubletten-Falle) -- bevorzugt Saetze, die das PDF aendert. Laut Soll bleiben diese Bloecke unveraendert."""
+    r = random.Random(ctx.seed * 97 + 13)
+    n = r.randint(2, 3)
+    davor = r.randint(1, n - 1)
+    ziel_nr = ctx.opt["spez"]
+    kandidaten = [a for a in ctx.absaetze if a.art in ("sub", "liste") and a.status is None]
+    kandidaten.sort(key=lambda a: (not a.edits, a.id))
+    fremde: list[Block] = []
+    for k in range(n):
+        nr = ziel_nr
+        while nr == ziel_nr:
+            nr = f"{r.randint(10, 48)} {r.randint(10, 99)} {r.randint(10, 99)}"
+        schreib = r.choice(["unterstrich", "unterstrich", "leer"])
+        tmp = Kontext(ctx.seed, random.Random(ctx.seed * 131 + k * 7919), {}, benutzt=ctx.benutzt)
+        tmp._zaehler = 100_000 * (k + 1)
+        tmp.opt["doppelbuchstaben"] = False
+        groesse = r.randint(*ctx.cfg.get("fremd_zeilen", (40, 140)))
+        _baue_struktur(tmp, groesse)
+        _kuerze(tmp, groesse)
+        # Dubletten: gleiche oder fast gleiche Saetze wie in der Ziel-Spec (dieselbe Art: Absatz bzw. Listenpunkt)
+        plaetze = [a for a in tmp.absaetze if a.art in ("sub", "liste")]
+        r.shuffle(plaetze)
+        quelle = [a for a in kandidaten if a.edits][:6] + r.sample(kandidaten, min(6, len(kandidaten)))
+        gesetzt = 0
+        for a in plaetze:
+            passend = [q for q in quelle if q.art == a.art]
+            if not passend or gesetzt >= max(2, len(plaetze) // 4):
+                continue
+            q = passend[gesetzt % len(passend)]
+            a.text = q.text if r.random() < 0.6 else _fast_gleich(r, q.text)
+            gesetzt += 1
+        if gesetzt:
+            ctx.markiere("dubletten_fremde_spec")
+        fremde.append(Block("fremd", tmp.absaetze, nr.replace(" ", "_") if schreib == "unterstrich" else nr,
+                            r.choice(["ohne", "ohne", "leerzeichen", "gemischt"]), r.choice(SPEZ_REVS), r.choice(SPEZ_DATEN)))
+    ctx.markiere("mehrere_specs")
+    return fremde[:davor] + [ziel] + fremde[davor:]
+
+
+def _fast_gleich(r: random.Random, text: str) -> str:
+    """Fast gleicher Satz: ein Wort (nicht das erste) ausgetauscht."""
+    stellen = [m.span() for m in _WORT.finditer(text) if m.start() > 0]
+    if not stellen:
+        return text + " (Entwurf)"
+    s, e = r.choice(stellen)
+    wort = text[s:e]
+    pool = _KATEGORIEN.get(wort) or (ROLLEN if wort[:1].isupper() else ADVERB)
+    neu = r.choice([w for w in pool if w != wort and " " not in w] or ["zusätzlich"])
+    return text[:s] + neu + text[e:]
 
 
 def _schrift(fett: bool = False, groesse: float = 10, **kw: Any) -> Font:
@@ -1131,7 +1221,8 @@ def _kopfbereich(ws: Any, ctx: Kontext) -> list[str]:
     kopf = PatternFill("solid", fgColor="FFDDEBF7")
     ws["B1"] = "CDE"
     ws["C1"] = "Register"
-    ws["D1"] = f"Anforderungsabgleich Spezifikation {o['spez']}"
+    ws["D1"] = (f"Anforderungsabgleich Spezifikation {o['spez']}" if len(ctx.bloecke) <= 1
+                else f"Anforderungsabgleich Projekt {o['projekt']} (mehrere Spezifikationen)")
     ws["G1"] = f"Projekt {o['projekt']} – {o['titel']}"
     ws["H1"] = "Hinweise: Spalten J bis N ankreuzen, Status in Spalte R pflegen, Begründung in Spalte P."
     for z in ("B1", "C1", "D1", "G1", "H1"):
@@ -1212,7 +1303,7 @@ def schreibe_excel(pfad: Path, ctx: Kontext, nachher: bool) -> tuple[dict[int, i
     formeln = _kopfbereich(ws, ctx)
     pos: dict[int, int] = {}
     zeile = DATEN_START - 1
-    for a in ctx.absaetze:
+    for a in (a for blk in ctx.bloecke for a in blk.absaetze):
         if not nachher and a.status == "neu":
             continue
         zeile += 1
@@ -1256,7 +1347,8 @@ def _bereiche(ws: Any, ctx: Kontext, letzte: int, pos: dict[int, int], nachher: 
     """Bedingte Formatierung und Datenpruefung in zerstueckelten Bereichen. Im nachher ziehen sie mit eingefuegten Zeilen mit
     (wie Excel beim Einfuegen von Zeilen)."""
     r = random.Random(ctx.seed * 13 + 5)
-    vorher_zeilen = sorted(p for a, p in ((a, pos.get(a.id)) for a in ctx.absaetze if a.status != "neu") if p)
+    vorher_zeilen = sorted(p for a, p in ((a, pos.get(a.id)) for blk in ctx.bloecke for a in blk.absaetze
+                                          if a.status != "neu") if p)
     n = len(vorher_zeilen)
     vletzte = DATEN_START - 1 + n                               # letzte Zeile in vorher
 
@@ -1505,6 +1597,8 @@ def baue_kontext(seed: int, cfg: dict[str, Any] | None = None) -> Kontext:
     _plane_aenderungen(ctx, anzahl)
     _nummeriere(ctx)
     _abweichungen(ctx)
+    ziel = Block("ziel", ctx.absaetze, o["spez_excel"], o["spez_variante"], "A.3.0", o["datum"])
+    ctx.bloecke = _fremde_specs(ctx, ziel) if cfg.get("mehrere_specs", seed % 2 == 0) else [ziel]
     _excel_werte(ctx)
     # Stoerer-Familien, die aus dem Modell folgen
     o_st = ctx.markiere
@@ -1540,7 +1634,7 @@ def _eintraege(ctx: Kontext, pos_v: dict[int, int], pos_n: dict[int, int], setze
     def neu(**kw: Any) -> None:
         out.append({"nr": len(out) + 1, **kw})
 
-    vor_zeile = DATEN_START - 1
+    vor_zeile = min(pos_v[a.id] for a in ctx.absaetze if a.id in pos_v) - 1
     for a in ctx.absaetze:
         abweichung = a.excel_alt is not None and (bool(a.edits) or a.label_alt != a.label_neu)
         soll = "pruefen" if abweichung else "uebernommen"
@@ -1613,6 +1707,12 @@ def erzeuge(seed: int, ziel: Path | str, korpus: str = KORPUS, cfg: dict[str, An
             "woerter_markiert": setzer.woerter_markiert,
             "aenderungen": eintraege,
             "abweichungen_ohne_aenderung": abw,
+            # Spec-Bloecke im Register (Stoerer mehrere_specs): nur die Ziel-Spec (= Spec des PDF) darf sich aendern
+            "specs": [{"rolle": blk.rolle, "spez": blk.spez_excel, "revision": blk.rev,
+                       "zeilen_vorher": [min(pos_v[a.id] for a in blk.absaetze if a.id in pos_v),
+                                         max(pos_v[a.id] for a in blk.absaetze if a.id in pos_v)],
+                       "zeilen_nachher": [min(pos_n[a.id] for a in blk.absaetze), max(pos_n[a.id] for a in blk.absaetze)]}
+                      for blk in ctx.bloecke],
             "luecken": [],
             "excel": {"datenstart": DATEN_START, "zeilen_vorher": len(pos_v), "zeilen_nachher": len(pos_n),
                       "zusatzteile": list(ZUSATZTEILE[:4]) + [f"xl/media/image{i + 1}.png" for i in range(ctx.opt["bilder"])]
