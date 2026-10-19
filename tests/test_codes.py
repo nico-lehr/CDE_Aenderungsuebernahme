@@ -73,13 +73,24 @@ def _ae(status, pruefcodes=(), grund=""):
 
 
 def test_grund_einfach_wichtigster_grund_zuerst():
-    assert codes.grund_einfach(_ae(PRUEFEN, ["kurz", "sperre:tabelle"])) == codes.satz("sperre:tabelle")
+    assert codes.grund_einfach(_ae(PRUEFEN, ["kurz", "sperre:tabelle"])) == codes.kurz("sperre:tabelle")
     assert codes.grund_einfach(_ae(NICHT, ["zu_unsicher", "ausserhalb_cde"])) == codes.satz("ausserhalb_cde")
     assert codes.grund_einfach(_ae(PRUEFEN, ["anker_teil", "a1_ziffer"])).startswith("Der alte Text steht in der Excel")
-    assert codes.grund_einfach(_ae(UEBERNOMMEN)).startswith("Wird automatisch eingetragen")
+    assert codes.grund_einfach(_ae(UEBERNOMMEN)).startswith("Wird eingetragen")
     assert codes.grund_einfach(_ae(NICHT, [], "Der alte Text steht in der Excel anders; Bitte prüfen.")) == \
-        "Der alte Text steht in der Excel anders"
+        "Der alte Text steht in der Excel anders."
+    lang = "Der Text ist " + "sehr " * 20 + "lang; Rest."
+    assert codes.grund_einfach(_ae(NICHT, [], lang)) == "Wird nicht eingetragen; bitte die Stelle von Hand prüfen."
     assert codes.grund_einfach(_ae(PRUEFEN)) and codes.grund_einfach(_ae(NICHT))
+
+
+@pytest.mark.parametrize("code", sorted(_quelltext_codes()))
+def test_karten_satz_ist_kurz_und_ohne_kennungen(code):
+    """Welle 3: grund_einfach der Dashboard-Karten -- hoechstens ~15 Woerter, kein Code-Name."""
+    k = codes.kurz(code)
+    assert k and len(k.split()) <= codes.KURZ_MAX_WOERTER and "_" not in k and ":" not in k.replace(": ", ""), (code, k)
+    assert len(codes.grund_einfach(_ae(PRUEFEN, [code])).split()) <= codes.KURZ_MAX_WOERTER
+    assert len(codes.grund_einfach(_ae(UEBERNOMMEN, [code])).split()) <= codes.KURZ_MAX_WOERTER
 
 
 def test_planer_tabellen_kommen_aus_codes():

@@ -49,7 +49,7 @@ def test_normalform_streng_aber_fair():
     assert normalform("„Hallo“  Welt –  ok .")[0] == '"Hallo" Welt - ok.'
     assert normalform("Text­ mit\nUmbruch und ( Klammer )")[0] == "Text mit Umbruch und (Klammer)"
     assert normalform("• Punkt eins")[0] == "Punkt eins"
-    assert normalform("Fläche m² ist groß¹")[0] == "Fläche m ist groß"
+    assert normalform("Fläche m² ist groß¹")[0] == "Fläche m2 ist groß"          # Welle 3: ² ist eine Einheiten-Ziffer
     assert normalform("Gross")[0] != normalform("gross")[0]                 # Gross/Klein zaehlt
     s, m = normalform("a  b")
     assert s == "a b" and m == [0, 1, 3]

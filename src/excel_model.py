@@ -36,7 +36,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterable, Iterator
 
 from openpyxl import load_workbook
 from openpyxl.cell.rich_text import CellRichText, TextBlock
@@ -122,6 +122,17 @@ def listen_label(text: str, rc: dict) -> tuple[str, str, int]:
     if not m:
         return "", "", 0
     return m.group("label"), m.group("polster"), m.end()
+
+
+def spec_norm(text: Any, rc: dict) -> str | None:
+    """Spezifikationsnummer in einheitlicher Form (Punkt 7, Welle 3): Leerzeichen, Unterstrich, Punkt und Bindestrich zaehlen
+    gleich, Zusaetze (z. B. eine Region) und Leerzeichen am Ende sind egal: "11_22_33 " / "11.22.33 EMEA" -> "11 22 33".
+    Muster: excel.register.spec_muster (Ziffergruppen). Kein Spec-Wert -> None."""
+    if text is None:
+        return None
+    m = re.search(rc.get("spec_muster", r"(?<![\d])(\d{2})[ _.\-](\d{2})[ _.\-](\d{2})(?:[ _.\-](\d{2}))?(?![\d])"),
+                  str(text))
+    return " ".join(g for g in m.groups() if g) if m else None
 
 
 def label_art(label: str) -> str:
@@ -226,6 +237,7 @@ class BlattLayout:
     kennwort: str = ""                          # (Zellinhalt: nie in Meldungen oder Vorschauen)
     kopfzeile: int = 0                          # Zeile der Spaltenkoepfe (0 = keine)
     daten_ab: int = 0                           # erste Datenzeile (darueber: Kopfbereich, Kopfzeile, Beispielzeilen)
+    spec_spalte: int | None = None              # Spezifikationsnummer je Zeile (eine CDE kann mehrere Specs enthalten)
 
     def beschreibung(self) -> dict[str, Any]:
         b = lambda c: get_column_letter(c) if c else None  # noqa: E731
@@ -240,6 +252,8 @@ class BlattLayout:
         if self.register:              # nur Spaltenbuchstaben und Zeilennummern (das Kennwort ist ein Zellinhalt)
             d.update(register=True, untergliederung_spalte=b(self.untergliederung_spalte),
                      kennwort_spalte=b(self.kennwort_spalte), kopfzeile=self.kopfzeile, daten_ab=self.daten_ab)
+            if self.spec_spalte:
+                d["spec_spalte"] = b(self.spec_spalte)
         return d
 
 
@@ -589,8 +603,33 @@ class ExcelModell:
         lay.section_spalte, lay.titel_spalte, lay.inhalt_spalte = s_sp, None, g_sp
         lay.untergliederung_spalte, lay.kennwort_spalte, lay.kennwort = f_sp, k_sp, kennwort
         lay.kopfzeile, lay.daten_ab = self._kopfzeile(zellen, daten_ab, rc), daten_ab
+        lay.spec_spalte = self._spec_spalte(zellen, daten_ab, {s_sp, g_sp, f_sp, k_sp}, s_sp, rc)
         self._register_abschluss(blatt, lay, zellen, rc, cfg)
         return True
+
+    @staticmethod
+    def _spec_spalte(zellen: dict[tuple[int, int], str], daten_ab: int, belegt: set, s_sp: int, rc: dict) -> int | None:
+        """Spalte mit der Spezifikationsnummer je Zeile: fast alle Werte sind spec-artig (excel.register.spec_muster,
+        spec_min_anteil); bei mehreren gewinnt die Spalte links der Section-Spalte mit den meisten Zeilen."""
+        je: dict[int, list[bool]] = {}
+        for (r, c), t in zellen.items():
+            if r >= daten_ab and c not in belegt and t.strip():
+                je.setdefault(c, []).append(spec_norm(t, rc) is not None)
+        gut = [c for c, w in je.items() if len(w) >= int(rc.get("min_zeilen", 6))
+               and sum(w) / len(w) >= float(rc.get("spec_min_anteil", 0.8))]
+        return max(gut, key=lambda c: (c < s_sp, sum(je[c]), -c)) if gut else None
+
+    def specs(self, blatt: str) -> dict[str, list[int]]:
+        """Datenzeilen je Spezifikationsnummer (einheitliche Form) eines Registers mit Spec-Spalte; sonst {}."""
+        lay = self.layouts.get(blatt)
+        if lay is None or not lay.register or not lay.spec_spalte:
+            return {}
+        out: dict[str, list[int]] = {}
+        for r in range(lay.daten_ab, lay.max_zeile + 1):
+            sp = spec_norm(self.zellen.get((blatt, r, lay.spec_spalte)), self._rc)
+            if sp is not None:
+                out.setdefault(sp, []).append(r)
+        return out
 
     @staticmethod
     def _sub_rang(v: str) -> int:
@@ -722,12 +761,16 @@ class ExcelModell:
         self._reg_zeilen[key] = rz
         return rz
 
-    def register_polster(self, blatt: str, zeile: int, label: str) -> str:
-        """Polster nach einer neuen Listennummer wie in der naechsten Zeile mit derselben Art Listennummer
-        (Tab oder Folge geschuetzter Leerzeichen); sonst excel.register.polster_standard."""
+    def _zeilen(self, blatt: str, zeilen: Iterable[int] | None) -> list[int]:
         lay = self.layouts[blatt]
+        return sorted(zeilen) if zeilen is not None else list(range(lay.daten_ab, lay.max_zeile + 1))
+
+    def register_polster(self, blatt: str, zeile: int, label: str, zeilen: Iterable[int] | None = None) -> str:
+        """Polster nach einer neuen Listennummer wie in der naechsten Zeile mit derselben Art Listennummer
+        (Tab oder Folge geschuetzter Leerzeichen); sonst excel.register.polster_standard. `zeilen`: nur diese Zeilen ansehen
+        (z. B. die der Spec des PDFs)."""
         art = label_art(label)
-        for r in sorted(range(lay.daten_ab, lay.max_zeile + 1), key=lambda r: (abs(r - zeile), r > zeile)):
+        for r in sorted(self._zeilen(blatt, zeilen), key=lambda r: (abs(r - zeile), r > zeile)):
             rz = self.register_zeile(blatt, r)
             if rz is not None and rz.label and label_art(rz.label) == art:
                 return rz.polster
@@ -736,10 +779,10 @@ class ExcelModell:
     _VERWANDT = {"part": "section", "section": "part", "sub": "sub_titel", "sub_titel": "sub", "liste": "liste_titel",
                  "liste_titel": "liste", "absatz": "sub"}
 
-    def register_vorlage(self, blatt: str, zeile: int, art: str) -> int:
-        """Vorlagezeile fuer eine neue Zeile: die naechste Zeile gleichen Typs (oben zuerst), sonst eines verwandten Typs."""
-        lay = self.layouts[blatt]
-        reihe = sorted(range(lay.daten_ab, lay.max_zeile + 1), key=lambda r: (abs(r - zeile), r > zeile))
+    def register_vorlage(self, blatt: str, zeile: int, art: str, zeilen: Iterable[int] | None = None) -> int:
+        """Vorlagezeile fuer eine neue Zeile: die naechste Zeile gleichen Typs (oben zuerst), sonst eines verwandten Typs;
+        `zeilen`: nur unter diesen Zeilen (Spec des PDFs)."""
+        reihe = sorted(self._zeilen(blatt, zeilen), key=lambda r: (abs(r - zeile), r > zeile))
         for gesucht in (art, self._VERWANDT.get(art, art)):
             for r in reihe:
                 rz = self.register_zeile(blatt, r)
@@ -942,6 +985,8 @@ class ExcelModell:
         if bp.kennwort_spalte:
             werte = Counter(t.strip() for (r, c), t in zellen.items() if c == bp.kennwort_spalte and r >= lay.daten_ab)
             lay.kennwort = werte.most_common(1)[0][0] if werte else ""
+        lay.spec_spalte = self._spec_spalte(zellen, lay.daten_ab, {bp.section_spalte, bp.inhalt_spalte, bp.untergliederung_spalte,
+                                                                    bp.kennwort_spalte}, bp.section_spalte or 0, rc)
         self._rc = rc
         self._register_abschluss(blatt, lay, zellen, rc, cfg)
 

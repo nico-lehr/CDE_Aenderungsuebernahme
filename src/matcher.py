@@ -21,6 +21,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from typing import Any
 
 from .abgleich import _rang
 from .excel_model import ExcelModell, Kandidat
@@ -52,18 +53,24 @@ def _konkurrent(k: Kandidat, kk: Kandidat) -> bool:
 
 
 class Matcher:
-    def __init__(self, xl: ExcelModell, cfg: dict) -> None:
+    def __init__(self, xl: ExcelModell, cfg: dict, erlaubt: Any = None) -> None:
+        """`erlaubt(blatt, zeile)`: nur Kandidaten in diesen Zeilen (Spec-Filter, Welle 3); None = alle."""
         self.xl = xl
         self.cfg = cfg
+        frei = erlaubt or (lambda blatt, zeile: True)
         self.index: dict[str, list[int]] = {}
         for k in xl.kandidaten:
+            if not frei(k.blatt, k.zeile):
+                continue
             for n in set(k.norms):
                 self.index.setdefault(n, []).append(k.id)
         self.n = max(len(xl.kandidaten), 1)
         self._cache: dict[tuple, Treffer | None] = {}
         self._nach_section: dict[str, list[list[int]]] = {}      # Section -> je Blatt eine Liste von Kandidaten
         for (_, sec), ids in xl.nach_blatt_section.items():
-            self._nach_section.setdefault(sec, []).append(ids)
+            ids = [i for i in ids if frei(xl.kandidaten[i].blatt, xl.kandidaten[i].zeile)]
+            if ids:
+                self._nach_section.setdefault(sec, []).append(ids)
 
     def _idf(self, wort: str) -> float:
         return math.log(1 + self.n / max(len(self.index.get(wort, ())), 1))

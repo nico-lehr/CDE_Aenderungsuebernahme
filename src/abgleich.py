@@ -85,7 +85,10 @@ def _aufbau(tokens: Sequence[PdfToken], praefix: str = "G") -> _Aufbau:
         for art, text, opt in _mit_trennstrich(t, _wort_teile(t)):
             roh.append((art, text, opt, i))
         if i + 1 < len(tokens) and t.trenner != "":
-            roh.append(("s", t.trenner or " ", False, i))
+            # markierter Leerraum (PdfToken.trenner_art "d"/"a", ADR 0006): gehoert nur zur alten bzw. neuen Fassung und ist ein
+            # d- bzw. a-Lauf; er zaehlt zum markierten Nachbarwort (links, sonst rechts)
+            art = getattr(t, "trenner_art", "") or "s"
+            roh.append((art, t.trenner or " ", False, i if art == "s" or t.status != KEEP else i + 1))
     # Gruppen: maximale Folge von d/a-Laeufen (Trenner dazwischen unterbrechen nicht, ein k-Lauf schon)
     gruppe_von: list[int] = []
     gruppen: list[list[int]] = []
@@ -396,24 +399,28 @@ class ExaktIndex:
     Ueberschrift ("Nr Titel") -> Fundstellen. Teil-Treffer (PDF-Absatz = zusammenhaengendes Stueck eines laengeren
     Excel-Absatzes an Wortgrenzen, z. B. Seitenumbruch) werden nur in Zellen gesucht, die das seltenste Wort enthalten."""
 
-    def __init__(self, xl: "ExcelModell", cfg: dict | None = None, wort_index: dict[str, list[int]] | None = None) -> None:
+    def __init__(self, xl: "ExcelModell", cfg: dict | None = None, wort_index: dict[str, list[int]] | None = None,
+                 erlaubt: Any = None) -> None:
+        """`erlaubt(blatt, zeile)`: nur diese Excel-Zeilen sind Fundstellen (Spec-Filter, Welle 3); None = alle."""
         self.xl = xl
+        self.erlaubt = erlaubt or (lambda blatt, zeile: True)
         c = _zuordnung_cfg(cfg)
         self.nf_cfg = c.get("normalform")
         self.teil_min = int(c.get("matcher", {}).get("teil_min_woerter", 3))
         self._blatt_nr = {name: i for i, name in enumerate(xl.layouts)}
         self._nach_norms: dict[tuple[str, ...], list["Kandidat"]] = {}
-        for k in xl.kandidaten:
+        kandidaten = [k for k in xl.kandidaten if self.erlaubt(k.blatt, k.zeile)]
+        for k in kandidaten:
             self._nach_norms.setdefault(tuple(k.norms), []).append(k)
         if wort_index is None:
             wort_index = {}
-            for k in xl.kandidaten:
+            for k in kandidaten:
                 for n in set(k.norms):
                     wort_index.setdefault(n, []).append(k.id)
         self.wort = wort_index
         self._nf: dict[tuple[str, int, int], tuple[str, list[int]]] = {}
         self._zell_kand: dict[tuple[str, int, int], "Kandidat"] = {}
-        for k in xl.kandidaten:
+        for k in kandidaten:
             if k.art != "kopf":
                 self._zell_kand.setdefault((k.blatt, k.zeile, k.spalte), k)
         self._cache: dict[tuple, list[Fundstelle]] = {}
@@ -489,7 +496,7 @@ class ExaktIndex:
         zellen: dict[tuple[str, int, int], "Kandidat"] = {}
         for kid in self.wort.get(selten, ()):
             k = self.xl.kandidaten[kid]
-            if k.art == "kopf" or self.xl.layouts[k.blatt].ignoriert:
+            if k.art == "kopf" or self.xl.layouts[k.blatt].ignoriert or not self.erlaubt(k.blatt, k.zeile):
                 continue
             zellen.setdefault((k.blatt, k.zeile, k.spalte), k)
         if not zellen:
@@ -530,7 +537,8 @@ class ExaktIndex:
                 spalten = {lay.inhalt_spalte}
             out = []
             for (b, z, s), t in self.xl.zellen.items():
-                if b != blatt or s not in spalten or (lay is not None and lay.register and z < lay.daten_ab):
+                if b != blatt or s not in spalten or (lay is not None and lay.register and z < lay.daten_ab) \
+                        or not self.erlaubt(b, z):
                     continue
                 for m in re.finditer(r"[^\n]+", t):
                     if m.group().strip():
@@ -556,23 +564,25 @@ class Zuordnung:
 
 
 class _MaxBaum:
-    """Fenwick-Baum fuer Praefix-Maxima (Gewicht, Element)."""
+    """Fenwick-Baum fuer Praefix-Maxima (Gewicht, Kettenanfang, Element). Bei gleichem Gewicht gewinnt die Kette, die SPAETER
+    im PDF beginnt (die kompaktere): ein Inhaltsverzeichnis-Eintrag vor dem Vorspann verliert gegen dieselbe Ueberschrift,
+    auf die im PDF die Folgeabsaetze direkt folgen (Welle 3)."""
 
     def __init__(self, n: int) -> None:
         self.n = n
-        self.b: list[tuple[int, int]] = [(0, -1)] * (n + 1)
+        self.b: list[tuple[int, int, int]] = [(0, -1, -1)] * (n + 1)
 
-    def setze(self, i: int, wert: tuple[int, int]) -> None:
+    def setze(self, i: int, wert: tuple[int, int, int]) -> None:
         i += 1
         while i <= self.n:
-            if wert[0] > self.b[i][0]:
+            if wert[:2] > self.b[i][:2]:
                 self.b[i] = wert
             i += i & -i
 
-    def max_vor(self, i: int) -> tuple[int, int]:      # Maximum ueber Positionen < i
-        best = (0, -1)
+    def max_vor(self, i: int) -> tuple[int, int, int]:      # Maximum ueber Positionen < i
+        best = (0, -1, -1)
         while i > 0:
-            if self.b[i][0] > best[0]:
+            if self.b[i][:2] > best[:2]:
                 best = self.b[i]
             i -= i & -i
         return best
@@ -596,14 +606,14 @@ def reissverschluss(kandidaten: list[list[tuple[Fundstelle, str]]], gewicht_alt:
     schluessel = sorted({f.schluessel for _, f, _ in elemente})
     pos = {s: k for k, s in enumerate(schluessel)}
     baum = _MaxBaum(len(schluessel))
-    dp: list[int] = []
+    dp: list[tuple[int, int]] = []                   # (Gewicht, PDF-Index des Kettenanfangs)
     vor: list[int] = []
     for e, (i, f, art) in enumerate(elemente):
         w = (gewicht_alt if art == "alt" else gewicht_neu) + (1 if len(kandidaten[i]) == 1 else 0)
-        best, prev = baum.max_vor(pos[f.schluessel])
-        dp.append(best + w)
+        best, anfang, prev = baum.max_vor(pos[f.schluessel])
+        dp.append((best + w, anfang if prev >= 0 else i))
         vor.append(prev)
-        baum.setze(pos[f.schluessel], (best + w, e))
+        baum.setze(pos[f.schluessel], (best + w, dp[-1][1], e))
     gewaehlt: dict[int, tuple[Fundstelle, str]] = {}
     if dp:
         e = max(range(len(dp)), key=lambda k: dp[k])
@@ -723,12 +733,16 @@ def _naht_teile(teil: list[Lauf]) -> tuple[str, str, str]:
 
 
 def ops_fuer_spur(laeufe: list[Lauf], fund: Fundstelle, zelltext: Any, cfg: dict | None = None,
-                  seq: int = 0) -> SpurOps:
+                  seq: int = 0, unscharf: bool = False) -> SpurOps:
     """A1 + B fuer einen Absatz an einer Excel-Stelle.
 
     A1: `vergleiche(zustand(laeufe, {}), Excel-Text)` -- nur wenn gleich, gibt es Operationen.
     B : je Aenderung EINE Operation `ersetzen` zwischen den Excel-Positionen der benachbarten k-Stuecke; die Zeichen der
         Excel ausserhalb (auch NBSP/Tab an den Naehten) bleiben, Satzzeichen bleiben richtig angeklebt.
+    unscharf (Welle 3, Nicos Entscheidung "fertiger Vorschlag"): weicht die Excel anderswo im Absatz ab, werden die Zeichen
+        ueber eine Ausrichtung der Normalformen zugeordnet; eine Aenderung bekommt nur dann Operationen, wenn ihr alter Text
+        (d-Laeufe) Zeichen fuer Zeichen in der Excel steht und ihre Nachbarn zugeordnet sind -- nur die markierte Stelle
+        aendert sich, alles andere (auch die Abweichung) bleibt. Nur fuer Vorschlaege ("pruefen"), nie automatisch.
     `zelltext(blatt, zeile, spalte)` liefert den Original-Zelltext."""
     c = _zuordnung_cfg(cfg)
     nf = c.get("normalform", {})
@@ -748,14 +762,17 @@ def ops_fuer_spur(laeufe: list[Lauf], fund: Fundstelle, zelltext: Any, cfg: dict
     X = " ".join(teile)
     v = vergleiche(alt, X, optional, nf or None)
     erg = SpurOps(v, excel_text=X)
-    if not v.gleich:
+    if not v.gleich and not unscharf:
         return erg
-    abb = v.abbildung
+    abb = v.abbildung if v.gleich else _unscharfe_abbildung(alt, X, nf or None)
     ids = list(dict.fromkeys(l.aenderung for l in laeufe if l.aenderung))
     for gid in ids:
         idx = [k for k, l in enumerate(laeufe) if l.aenderung == gid]
         i0, i1 = idx[0], idx[-1]
         probleme: list[str] = []
+        if not v.gleich and not _alt_text_steht_da(laeufe, idx, lage, abb, X, nf or None):
+            erg.probleme[gid] = ["naht_unklar"]
+            continue
         # Nachbar-k-Stuecke mit abgebildeten Zeichen suchen
         iL = next((k for k in range(i0 - 1, -1, -1) if laeufe[k].art == "k"), None)
         iR = next((k for k in range(i1 + 1, len(laeufe)) if laeufe[k].art == "k"), None)
@@ -804,6 +821,38 @@ def ops_fuer_spur(laeufe: list[Lauf], fund: Fundstelle, zelltext: Any, cfg: dict
         if probleme:
             erg.probleme[gid] = list(dict.fromkeys(probleme))
     return erg
+
+
+def _unscharfe_abbildung(pdf: str, excel: str, cfg: dict | None) -> dict[int, int]:
+    """Rohindex PDF -> Rohindex Excel fuer gleiche Zeichen, ueber eine Ausrichtung der Normalformen (difflib)."""
+    from difflib import SequenceMatcher
+    np_, pm = normalform(pdf, cfg)
+    nx, xm = normalform(excel, cfg)
+    abb: dict[int, int] = {}
+    for a, b, n in SequenceMatcher(None, np_, nx, autojunk=False).get_matching_blocks():
+        for d in range(n):
+            if np_[a + d] != " ":
+                abb[pm[a + d]] = xm[b + d]
+    return abb
+
+
+def _alt_text_steht_da(laeufe: list[Lauf], idx: list[int], lage: dict[int, tuple[int, int]], abb: dict[int, int], X: str,
+                       cfg: dict | None) -> bool:
+    """Steht der alte Text einer Aenderung (ihre d-Laeufe) Zeichen fuer Zeichen an der zugeordneten Excel-Stelle, und sind
+    die Nachbarzeichen (vor und hinter der Aenderung) zugeordnet? Sonst keine sichere Stelle fuer einen Vorschlag."""
+    for k in idx:
+        if laeufe[k].art != "d" or k not in lage:
+            continue
+        a, e = lage[k]
+        ziel = [abb.get(p) for p in range(a, e) if not laeufe[k].text[p - a].isspace()]
+        if any(z is None for z in ziel):
+            return False
+        if ziel and normalform(X[ziel[0]:ziel[-1] + 1], cfg)[0].replace(" ", "") != \
+                normalform(laeufe[k].text, cfg)[0].replace(" ", ""):
+            return False
+    vorn = [p for k in range(0, idx[0]) if k in lage and laeufe[k].art == "k" for p in range(*lage[k])]
+    hinten = [p for k in range(idx[-1] + 1, len(laeufe)) if k in lage and laeufe[k].art == "k" for p in range(*lage[k])]
+    return (not vorn or any(p in abb for p in vorn[-3:])) and (not hinten or any(p in abb for p in hinten[:3]))
 
 
 def _teilgruppen(laeufe: list[Lauf], i0: int, i1: int) -> list[tuple[int, int]]:
