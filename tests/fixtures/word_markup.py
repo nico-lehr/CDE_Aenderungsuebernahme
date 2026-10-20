@@ -751,6 +751,45 @@ def _familie_umbruch_nummer(ctx: Kontext) -> None:
         a.umbruch_erzwingen = True
 
 
+# ====================================================================== Stoerer ab Seed 401 (nachbau_word)
+UMBRUCH_LEERZEICHEN_AB = 401      # Regel 29: Paare der Seeds 301-360 (und alle anderen Korpora) aendern sich dadurch nie
+EINHEITEN = ["mm", "kW", "bar", "kg", "cm", "Hz", "ms", "kV"]
+STOERER_UMBRUCH_LEERZEICHEN = "umbruch_leerzeichen_ersetzung"
+
+
+def _familie_umbruch_leerzeichen(ctx: Kontext) -> None:
+    """Stoerer "umbruch_leerzeichen_ersetzung" (ab Seed 401, nur Korpus nachbau_word): Ein Wert steht in der Excel und im alten
+    Word-Text OHNE Leerzeichen vor der Einheit ("12mm"). Word ersetzt ihn durch "15 " (das Leerzeichen gehoert zur Einfuegung, neu:
+    "15 mm"), und der Zeilenumbruch faellt genau hinter die Ersetzung. Am Umbruch zeichnet das PDF kein Leerzeichen, man sieht
+    nicht, ob es markiert ist: es sieht aus wie ein gemeinsames Leerzeichen, und der alte Absatz wuerde um ein Leerzeichen zu lang
+    ("12 mm"). Die Excel stimmt mit dem alten Word-Text Zeichen fuer Zeichen ueberein (keine Abweichung der Excel): Soll ist
+    "uebernommen" (anders als bei excel_abweichung, wo die Excel vom PDF abweicht und nur ein Vorschlag entsteht). Eigener
+    Zufallsstrom fuer die Auswahl; der Text kommt mit ctx.satz() aus dem gemeinsamen Strom (die Paare dieser Seeds sind neu)."""
+    r = random.Random(ctx.seed * 41 + 11)
+    kand = [a for a in ctx.absaetze if a.art in ("sub", "liste") and a.status is None and not a.edits and a.excel_alt is None
+            and a.label_alt == a.label_neu]
+    r.shuffle(kand)
+    ziel = r.randint(2, 4)
+    for a in kand:
+        if ziel <= 0:
+            break
+        for _versuch in range(300):
+            wert, neu_wert = r.sample(["12", "16", "25", "40", "63", "80", "100", "125", "150", "250"], 2)
+            einheit = r.choice(EINHEITEN)
+            vorne = " ".join([r.choice(["Alle", "Die", "Sämtliche", "Weitere"])] + [r.choice(FUELL) for _ in range(r.randint(3, 11))])
+            text = f"{vorne} {wert}{einheit} {ctx.satz()}"
+            s0 = len(vorne) + 1
+            probe = Absatz(a.id, a.art, a.ebene, text, edits=[Edit(s0, s0 + len(wert), neu_wert + " ", _autor(ctx), "zahl_ersetzt_leerzeichen")])
+            anzeige = "".join(t for _art, t, _au, _g in probe.stuecke())
+            zeilen, _n = _zeilen_von(anzeige, a.ebene)
+            if any(z.endswith(wert + neu_wert) and n.startswith(einheit) for z, n in zip(zeilen, zeilen[1:])):
+                a.text, a.edits = text, probe.edits
+                a.stoerer.append(STOERER_UMBRUCH_LEERZEICHEN)
+                ctx.markiere(STOERER_UMBRUCH_LEERZEICHEN)
+                ziel -= 1
+                break
+
+
 # ====================================================================== Excel-Inhalt je Absatz
 def _mit_abweichung(a: Absatz) -> Absatz:
     """Kopie des Absatzes mit dem Excel-Text an der Stelle der Abweichung; die Aenderungen dahinter ruecken mit."""
@@ -1710,6 +1749,8 @@ def baue_kontext(seed: int, cfg: dict[str, Any] | None = None, korpus: str = KOR
     if korpus == KORPUS_TEST or cfg.get("nur_test"):
         _familie_silbentrennung(ctx)
         _familie_umbruch_nummer(ctx)
+    if (korpus == KORPUS and seed >= UMBRUCH_LEERZEICHEN_AB) or cfg.get("umbruch_leerzeichen"):
+        _familie_umbruch_leerzeichen(ctx)             # nur neue Seeds: Paare aelterer Seeds (301-360) bleiben bytegleich
     ziel = Block("ziel", ctx.absaetze, o["spez_excel"], o["spez_variante"], "A.3.0", o["datum"])
     ctx.bloecke = _fremde_specs(ctx, ziel) if cfg.get("mehrere_specs", seed % 2 == 0) else [ziel]
     _excel_werte(ctx)

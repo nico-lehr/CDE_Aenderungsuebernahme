@@ -9,16 +9,22 @@ Nur erfundene Daten (Regel 16). Die Mappe und das Word-PDF entstehen im Test (te
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import pdfplumber
 import pytest
 from openpyxl import load_workbook
 
 from src import markierung as mk
+from src import messen
 from src.applier import uebernehmen
 from src.excel_model import ExcelModell
 from src.models import PRUEFEN, UEBERNOMMEN
 from src.pdf_reader import analysiere_pdf
 from src.planner import plane
 from tests._word_pdf import EBENEN, RECHTS, WordDok, breite
+from tests.fixtures import word_markup as wm
+from tests.fixtures.generator import erzeuge_paar
 from tests.test_register import GRUND, G, _EBENE, _label_art, register_mappe, stuecke
 
 VOKABULAR = "Das Gehaeuse steht auf einem Sockel aus Beton und ist gegen Feuchte und Frost gut geschuetzt".split()
@@ -39,13 +45,13 @@ def _fuelltext(platz: float) -> str:
 
 
 def _fall(tmp_path, vorn: str, mitte: list[tuple], rest: str, excel_mitte: str, umbruch: bool = True,
-          excel_rest: str | None = None):
+          excel_rest: str | None = None, zeile2: list[tuple] | None = None):
     """Das kleine Register GRUND (tests/test_register.py); der Listenpunkt "1." unter "B." (Zeile 12) ist der Zielabsatz mit
-    Umbruch hinter der Aenderung `mitte` (Zeile 1 endet mit ihr, Zeile 2 beginnt mit `rest`).
+    Umbruch hinter der Aenderung `mitte` (Zeile 1 endet mit ihr, Zeile 2 beginnt mit `zeile2` und `rest`).
     -> (Plan, ExcelModell, Excel-Datei, PdfAnalyse, Excel-Text des Listenpunkts ohne Nummer)"""
     fuell = _fuelltext(RECHTS - EBENEN[EBENE_TEXT] - breite(vorn) - sum(breite(st[0]) for st in mitte)) if umbruch else ""
     zeile1 = [(fuell + vorn, "k")] + mitte
-    zeilen = [zeile1, [(rest, "k")]] if umbruch else [zeile1 + [(rest, "k")]]
+    zeilen = [zeile1, (zeile2 or []) + [(rest, "k")]] if umbruch else [zeile1 + [(rest, "k")]]
     excel_b = fuell + vorn + excel_mitte + (rest if excel_rest is None else excel_rest)
     d = WordDok()
     for i, (art, label, text) in enumerate(GRUND):
@@ -147,3 +153,120 @@ def test_ohne_umbruch_bleibt_fehlendes_leerzeichen_eine_abweichung(tmp_path):
                                          excel_rest="mm im Betrieb.")
     (ae,) = plan.aenderungen
     assert ae.status == PRUEFEN and "excel_weicht_ab" in ae.pruefcodes and "a1_leerraum" in ae.pruefcodes, (ae.status, ae.pruefcodes)
+
+
+# ================================================================================================ Spiegelfall
+@pytest.mark.markierung_an
+@pytest.mark.legende_neu
+def test_spiegelfall_gestrichenes_leerzeichen_am_umbruch_wird_nie_still_falsch(tmp_path):
+    """Spiegelbild: Excel "15 mm", Word streicht "15 " (das Leerzeichen am Umbruch gehoert zur Streichung) und schreibt "12" direkt
+    vor "mm" -> neu "12mm". Die Excel hat das Leerzeichen, "gemeinsam" und "nur alt" geben denselben alten Absatz: die Excel kann
+    sie nicht unterscheiden, also bleibt es bei "gemeinsam" (die Auslegung "nur neu" passt nicht). Der Ablauf bleibt wie bisher:
+    entweder steht das Ergebnis richtig da, oder es ist ein Fall zum Pruefen (die Gegenprobe haelt die Datei unveraendert). Nie
+    automatisch uebernommen und falsch."""
+    plan, xl, xlsx, pdf, excel_b = _fall(tmp_path, "betraegt ", [("15", "d")], "mm im Betrieb.", "15 ", zeile2=[("12", "n")])
+    out = tmp_path / "out.xlsx"
+    uebernehmen(plan.aenderungen, xlsx, out, xl=xl, absaetze=plan.absaetze, pdf=pdf)
+    (ae,) = plan.aenderungen
+    st = mk.stuecke_aus_zelle(load_workbook(str(out), rich_text=True)["Abgleich"].cell(ZEILE_B, G))
+    if ae.status == UEBERNOMMEN:
+        assert mk.ansicht(st, "alt") == _zelle(excel_b) and mk.ansicht(st, "neu") == _zelle(excel_b).replace("15 mm", "12mm")
+    else:
+        assert ae.status == PRUEFEN and any(c.startswith("gegenprobe") for c in ae.pruefcodes), (ae.status, ae.pruefcodes)
+        assert load_workbook(str(out), rich_text=True)["Abgleich"].cell(ZEILE_B, G).value == _zelle(excel_b)    # Zelle unveraendert
+
+
+def test_mehrdeutige_trenner_und_auslegung_einzeln():
+    """Bausteine: `_Aufbau.mehrdeutig` nennt den unmarkierten Trenner am Umbruch neben der Ersetzung; `auslegung_waehlen` nimmt
+    "nur neu" nur, wenn der alte Absatz damit (und nur damit) passt."""
+    from src.abgleich import Spur, _aufbau, auslegung_waehlen
+    from src.models import ADD, DEL, KEEP, MOD, PdfBlock, PdfToken
+
+    def tok(old, new, status, x, y, teile=None):
+        return PdfToken(old, new, status, 1, (x, y, x + 20, y + 8), trenner=" ", teile=teile or [])
+    toks = [tok("Wert", "Wert", KEEP, 100, 100), tok("12", "15", MOD, 130, 100, [(DEL, "12"), (ADD, "15")]),
+            tok("mm", "mm", KEEP, 100, 110)]                            # "mm" steht in der naechsten Zeile
+    block = PdfBlock(0, 1, "absatz", toks, (0, 0, 0, 0))
+    sp = Spur(1, [block])
+    assert sp.aufbau.mehrdeutig == [1] and sp.alt == "Wert 12 mm"
+    assert not auslegung_waehlen(sp, lambda s: s.alt == "Wert 12 mm")                  # "gemeinsam" passt: bleibt
+    assert sp.alt == "Wert 12 mm" and not sp.auslegung
+    assert auslegung_waehlen(sp, lambda s: s.alt == "Wert 12mm")                       # nur "nur neu" passt
+    assert sp.alt == "Wert 12mm" and sp.neu == "Wert 15 mm" and sp.auslegung == {1: "a"}
+    sp2 = Spur(2, [block])
+    assert not auslegung_waehlen(sp2, lambda s: True)                                  # mehrere passen: keine Wahl
+    assert not auslegung_waehlen(sp2, lambda s: False)                                 # keine passt: keine Wahl
+    assert sp2.auslegung == {} and sp2.alt == "Wert 12 mm"
+    toks3 = [tok("Wert", "Wert", KEEP, 100, 100), tok("12", "15", MOD, 130, 100, [(DEL, "12"), (ADD, "15")]),
+             tok("mm", "mm", KEEP, 160, 100)]                                          # gleiche Zeile: nichts auszulegen
+    assert _aufbau(toks3).mehrdeutig == []
+
+
+# ================================================================================================ Generator v3: Stoerer
+KLEIN = {"basis": "word_markup", "name": "klein", "zeilen": (45, 60)}
+STOERER = "umbruch_leerzeichen_ersetzung"
+# Regel 29: Paare der Seeds < 401 aendern sich durch den neuen Stoerer nie (Hashes des Paars Seed 371, KLEIN, vor dem Stoerer erzeugt)
+HASHES_371 = {"aenderungen.pdf": "454f44fc0b3d7fe931313aa54aad1168023fafd6ca29c2572a4a00793597ae5a",
+              "erwartet.json": "c98aaf30bb497c63cb72cea6ba638bc24f57c00ce32c4477532187ecb993fb36",
+              "vorher.xlsx": "82775dd2dc85dd2fad0cc3de1f2fea408e225e0dea504b066a7ea8d1a0523a0d",
+              "nachher.xlsx": "ad30b6d90052d9b8ee1c6407b02481cd0d12b74553dee3bb7dcf7a9e7f8ccdcc"}
+
+
+def test_stoerer_wirkt_nur_ab_seed_401_im_korpus_nachbau_word():
+    assert wm.UMBRUCH_LEERZEICHEN_AB == 401 and wm.STOERER_UMBRUCH_LEERZEICHEN == STOERER
+    for seed in (301, 360, 371):
+        assert STOERER not in wm.baue_kontext(seed, KLEIN).stoerer                 # bestehende Seeds: nie
+    assert STOERER not in wm.baue_kontext(405, KLEIN, "nachbau_test").stoerer       # andere Korpora: nie
+    gefunden = [s for s in range(401, 412) if STOERER in wm.baue_kontext(s, KLEIN).stoerer]
+    assert len(gefunden) >= 8, gefunden                                              # ab 401 fast immer (2 bis 4 Absaetze je Paar)
+    assert STOERER in wm.baue_kontext(371, {**KLEIN, "umbruch_leerzeichen": True}).stoerer      # nur fuer Tests des Generators
+
+
+def test_paar_seed_371_bleibt_bytegleich(tmp_path):
+    """Waechter (Regel 29): der Stoerer aendert bestehende Paare nicht."""
+    p = erzeuge_paar(371, KLEIN, tmp_path / "nachbau_word", "nachbau_word")
+    for n, h in HASHES_371.items():
+        assert hashlib.sha256((p / n).read_bytes()).hexdigest() == h, n
+
+
+def test_stoerer_paar_aufbau_und_wahrheit(tmp_path):
+    from tests.test_nachbau_word import _laeufe
+    cfg = {**KLEIN, "umbruch_leerzeichen": True}
+    p = wm.erzeuge(371, tmp_path / "fam", "nachbau_word", cfg, name="fam")
+    e = json.loads((p / "erwartet.json").read_text(encoding="utf-8"))
+    assert STOERER in e["stoerer"]
+    mit = [x for x in e["aenderungen"] if STOERER in x["stoerer"]]
+    assert 2 <= len(mit) <= 4
+    assert all(x["soll_status"] == "uebernommen" and x["typ"] == "text_ersetzt" and x["woerter"] == 2 for x in mit)
+    absaetze = [a for a in wm.baue_kontext(371, cfg).absaetze if STOERER in a.stoerer]
+    assert len(absaetze) == len(mit)
+    vorher = load_workbook(p / "vorher.xlsx")[e["hauptblatt"]]
+    nachher = load_workbook(p / "nachher.xlsx", rich_text=True)[e["hauptblatt"]]
+    pos = {x["absatz"]: (x["zeile"], x["nachher_zeile"]) for x in mit}
+    with pdfplumber.open(p / "aenderungen.pdf") as pdf:
+        woerter = [w for pg in pdf.pages for w in pg.extract_words(keep_blank_chars=False)]
+    for a in absaetze:
+        (ed,) = a.edits
+        wert, einheit = a.text[ed.start:ed.ende], a.text[ed.ende:].split()[0]
+        zv, zn = pos[a.id]
+        zelle = vorher.cell(zv, 7).value
+        assert wert + einheit in zelle and (wert + " " + einheit) not in zelle                                 # Excel: "12mm"
+        assert ed.neu == ed.neu.strip() + " " and ed.neu.strip().isdigit()                                    # Einfuegung "15 "
+        # Umbruch dahinter: die Einheit steht in der Zeile darunter, weiter links (am Zeilenanfang)
+        ende = [w for w in woerter if w["text"].endswith(wert + ed.neu.strip())]
+        assert any(abs(u["top"] - (w["top"] + 10.0)) < 3 and u["x0"] < w["x0"] and u["text"].startswith(einheit)
+                   for w in ende for u in woerter), (wert, einheit)
+        laeufe = _laeufe(nachher.cell(zn, 7))
+        assert ("alt", wert) in laeufe and ("neu", ed.neu) in laeufe
+
+
+@pytest.mark.legende_neu
+def test_stoerer_paar_wird_gemessen_ohne_stille_fehler_und_automatisch(tmp_path):
+    """Echtes Tool am Paar mit dem Stoerer: keine stillen Fehler, kein Kollateral, alle Absaetze mit Stoerer laufen automatisch."""
+    ziel = tmp_path / "nachbau_word"
+    p = wm.erzeuge(371, ziel, "nachbau_word", {**KLEIN, "umbruch_leerzeichen": True}, name="fam")
+    (ziel / "KORPUS.json").write_text(json.dumps({"generator_version": "3", "korpus": "nachbau_word", "seeds": [371],
+                                                  "legende": "auto", "nachher_format": "markiert"}), encoding="utf-8")
+    r = messen.messe_paar(p)
+    assert "abgestuerzt" not in r and r["stille_fehler"] == 0 and r["kollateral"] == 0 and r["bilanz_stimmt"] is True
+    assert not any(c.startswith("a1_leerraum") for c in r.get("pruefcodes", {})), r.get("pruefcodes")
