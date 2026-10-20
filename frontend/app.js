@@ -1,6 +1,7 @@
 /* CDE-Änderungsübernahme – Dashboard (reines JavaScript, keine Abhängigkeiten, keine externen Quellen).
    Drei Schritte statt vieler Reiter: 1 Dateien · 2 Prüfen · 3 Fertig. Vorbild: „Überarbeiten“ in Word und Review-Werkzeuge
    für Anforderungen: eine Liste, gleiche Farben wie im Ergebnis, eine Entscheidung je Punkt, Tastatur, Technik versteckt.
+   Vertrauensmodus: Dokument-Ampel und Stichprobe („Passt“ / „Falsch“) kommen vom Server; das Dashboard zeigt sie und meldet nur die Klicks.
    Regel 8: reine Darstellung. Das Dashboard zeigt, was die API liefert (Kategorie und Zusammenfassung kommen vom Server);
    es rechnet nichts Fachliches nach. Alle Texte aus Daten werden über textContent gesetzt (nie als HTML).
    Alle Aufrufe gehen an relative /api/-Pfade (keine festen Adressen oder Ports). */
@@ -10,13 +11,19 @@
   // ------------------------------------------------------------------ Texte (einfaches Deutsch)
   const INFO = {
     pruefen: { titel: 'Was heißt „Bitte prüfen“?', text: 'Hier ist sich das Tool nicht sicher, zum Beispiel weil die Excel an der Stelle etwas anders aussieht als das PDF. Ohne dein „Übernehmen“ wird davon nichts eingetragen. Die Vorschau zeigt, wie die Zelle danach in der Excel aussieht: hellblau durchgestrichen fällt weg, rot kommt dazu.' },
+    stichprobe: { titel: 'Was ist die Stichprobe?', text: 'Aus den Änderungen, die das Tool selbst einträgt, wird eine kleine, feste Auswahl zum Ansehen vorgelegt (mindestens 3, sonst etwa jede zehnte). „Passt“ zählt als Bestätigung, „Falsch“ trägt die Änderung nicht ein und wird vermerkt. So lernst du Schritt für Schritt, wie weit du dem Tool vertrauen kannst. Gespeichert werden nur Kennungen, nie Texte aus deinen Dokumenten.' },
     archiv: { titel: 'Archivieren', text: 'Archivierte Abgleiche bleiben vollständig auf diesem Rechner erhalten (Dateien, Prüfung, erstellte Excel-Dateien). Sie stehen nur nicht mehr unter „Zuletzt“. Mit „Archivierte anzeigen“ findest du sie wieder und kannst sie wiederherstellen.' },
   };
   const LEGENDE = {
     linie: 'Linie entscheidet (Word-Änderungsverfolgung: unterstrichen = neu, durchgestrichen = entfällt)',
     farbe: 'Farbe und Strich (von Hand markiert: durchgestrichen = entfällt, farbig = neu)',
     alt: 'Blau = neu, Rot = entfällt (ältere Testdaten)',
+    docx: 'Word-Änderungsverfolgung direkt gelesen (kein PDF, keine Farben)',
   };
+  const AMPEL_NAME = { gruen: 'grün', gelb: 'gelb', rot: 'rot' };
+  const AMPEL_ZEICHEN = { gruen: '✓', gelb: '!', rot: '✕' };
+  const SP_STATUS = { passt: 'Passt', falsch: 'Falsch – wird nicht eingetragen' };
+  const TXT_DATEI_HIER = 'Hierher ziehen oder klicken (.docx bevorzugt, auch .pdf)';
   const ART = {
     text_ersetzt: 'Text ersetzt', text_eingefuegt: 'Text eingefügt', text_geloescht: 'Text entfällt',
     absatz_neu: 'Absatz neu', absatz_geloescht: 'Absatz entfällt', section_neu: 'Section neu', section_geloescht: 'Section entfällt',
@@ -47,6 +54,9 @@
     schritt: 'dateien', plan: null, ergebnis: null, ergebnisse: [],
     entscheid: new Map(),         // Vorschlag-ID -> 'ja' | 'nein'
     abwahl: new Set(),            // automatische Änderungen, die NICHT eingetragen werden sollen
+    stichprobe: new Map(),        // Stichproben-ID -> 'passt' | 'falsch' ('falsch' wählt die Änderung zugleich ab)
+    pauschal: new Set(),          // Vorschläge, die über „Alle übernehmen“ freigegeben wurden (nicht einzeln angesehen)
+    ampelSchluessel: '', ampelNr: 0, ampelZeit: null, ampelZeichen: '',
     files: { pdf: null, xlsx: null }, zeigeArchiv: false, zuletztAlle: false, suche: '', autoLimit: AUTO_SEITE,
   };
   const $ = (id) => document.getElementById(id);
@@ -85,10 +95,15 @@
     if (a.bereich === 'ausserhalb') return 'ausserhalb';
     return a.status === 'pruefen' ? 'pruefen' : 'nicht';
   }
+  const istDocx = () => !!(state.plan && state.plan.quelle_art === 'docx');      // Word: keine Seiten, kein PDF-Ausschnitt
   const aenderungen = () => liste(state.plan && state.plan.aenderungen);
   const vorschlaege = () => aenderungen().filter((a) => kat(a) === 'pruefen');
   const automatische = () => aenderungen().filter((a) => kat(a) === 'automatisch');
   const nichtEingetragen = () => aenderungen().filter((a) => kat(a) === 'ausserhalb' || kat(a) === 'nicht');
+  function stichprobeKarten() {                         // die Stichprobe des Servers: automatisch eingetragene Änderungen, in Planreihenfolge
+    const ids = new Set(liste(state.plan && state.plan.stichprobe));
+    return automatische().filter((a) => ids.has(a.id));
+  }
   function zusammenfassung() {
     const z = state.plan && state.plan.zusammenfassung;
     if (z && typeof z === 'object') return z;
@@ -244,10 +259,12 @@
 
   // ------------------------------------------------------------------ Schritt 1: Dateien
   function dateiGewaehlt(art, datei) {
-    const okPdf = art === 'pdf' && /\.pdf$/i.test(datei.name);
+    const okPdf = art === 'pdf' && /\.(docx|pdf)$/i.test(datei.name);
     const okXlsx = art === 'xlsx' && /\.(xlsx|xlsm)$/i.test(datei.name);
     if (!okPdf && !okXlsx) {
-      toastFehler(art === 'pdf' ? 'Bitte eine PDF-Datei wählen.' : 'Bitte eine .xlsx-Datei wählen (alte .xls-Dateien bitte in Excel als .xlsx speichern).');
+      toastFehler(art === 'pdf'
+        ? (/\.doc$/i.test(datei.name) ? 'Alte Word-Dateien (.doc) kann das Tool nicht lesen. Bitte in Word als .docx speichern.' : 'Bitte ein Word-Dokument (.docx) oder eine PDF-Datei wählen.')
+        : 'Bitte eine .xlsx-Datei wählen (alte .xls-Dateien bitte in Excel als .xlsx speichern).');
       return;
     }
     state.files[art] = datei;
@@ -267,7 +284,7 @@
 
   function dateienZuruecksetzen() {
     state.files = { pdf: null, xlsx: null };
-    for (const [dz, sub, inp, t] of [['dz-pdf', 'dz-pdf-sub', 'file-pdf', 'Hierher ziehen oder klicken'], ['dz-xlsx', 'dz-xlsx-sub', 'file-xlsx', 'Hierher ziehen oder klicken (.xlsx)']]) {
+    for (const [dz, sub, inp, t] of [['dz-pdf', 'dz-pdf-sub', 'file-pdf', TXT_DATEI_HIER], ['dz-xlsx', 'dz-xlsx-sub', 'file-xlsx', 'Hierher ziehen oder klicken (.xlsx)']]) {
       $(dz).classList.remove('filled');
       $(sub).textContent = t;
       $(inp).value = '';
@@ -278,9 +295,10 @@
   async function abgleichen() {
     if (!(state.files.pdf && state.files.xlsx)) return;
     const fd = new FormData();
-    fd.append('pdf', state.files.pdf);
+    fd.append('datei', state.files.pdf);                // Word oder PDF: die Endung entscheidet auf dem Server
     fd.append('excel', state.files.xlsx);
-    busy(true, 'PDF wird gelesen …', 'Das dauert etwa 15 Sekunden. In die Excel wird dabei noch nichts geschrieben.');
+    busy(true, /\.docx$/i.test(state.files.pdf.name) ? 'Word-Dokument wird gelesen …' : 'PDF wird gelesen …',
+      'Das dauert etwa 15 Sekunden. In die Excel wird dabei noch nichts geschrieben.');
     let plan;
     try { plan = await api('/lauf', { method: 'POST', body: fd }); } catch (e) { busy(false); meldeFehler(e); ladeZuletzt(); return; }
     busy(false);
@@ -364,6 +382,8 @@
     state.ergebnisse = liste(plan.ergebnisse);
     state.entscheid = new Map();
     state.abwahl = new Set();
+    state.stichprobe = new Map();
+    state.pauschal = new Set();
     state.suche = '';
     state.autoLimit = AUTO_SEITE;
     $('suche-auto').value = '';
@@ -374,7 +394,11 @@
     if (letzte) {                                      // die Entscheidungen der letzten Excel wieder vorbelegen
       const v = new Set(vorschlaege().map((a) => a.id)), au = new Set(automatische().map((a) => a.id));
       for (const id of liste(letzte.freigaben)) if (v.has(id)) state.entscheid.set(id, 'ja');
+      for (const id of liste(letzte.abgelehnt)) if (v.has(id)) state.entscheid.set(id, 'nein');
       for (const id of liste(letzte.abwahl)) if (au.has(id)) state.abwahl.add(id);
+      const sp = new Set(liste(state.plan.stichprobe)), st = letzte.stichprobe || {};
+      for (const id of liste(st.passt)) if (sp.has(id) && au.has(id) && !state.abwahl.has(id)) state.stichprobe.set(id, 'passt');
+      for (const id of liste(st.falsch)) if (sp.has(id) && state.abwahl.has(id)) state.stichprobe.set(id, 'falsch');
     }
     zeichnePruefen();
     if (letzte) zeichneFertig();
@@ -387,6 +411,9 @@
     state.ergebnisse = [];
     state.entscheid = new Map();
     state.abwahl = new Set();
+    state.stichprobe = new Map();
+    state.pauschal = new Set();
+    state.ampelSchluessel = '';
     dateienZuruecksetzen();
     $('fachleute').open = false;
     zeigeSchritt('dateien');
@@ -395,7 +422,7 @@
   // ------------------------------------------------------------------ Darstellung einer Änderung
   function ortText(a) {
     const s = text(a.section);
-    const teile = [s ? (/^\d/.test(s) ? `Section ${s}` : s) : `Seite ${hatWort(a.seite)}`];
+    const teile = [s ? (/^\d/.test(s) ? `Section ${s}` : s) : (istDocx() ? 'Im Word-Dokument' : `Seite ${hatWort(a.seite)}`)];
     const z = text(a.ziel);
     let m = /Zeile\s+(\d+)\s*\(neu\)\s*$/.exec(z);
     if (m) teile.push(`neue Zeile ${m[1]}`);
@@ -454,6 +481,7 @@
   }
 
   function bildPdf(a) {
+    if (istDocx()) return null;                         // Word hat keine Seiten: nur der Text (Ergebnis wie in der Excel), kein PDF-Ausschnitt
     return h('figure', { class: 'im-pdf' }, h('figcaption', {}, `Im PDF · Seite ${hatWort(a.seite)}`),
       h('img', { loading: 'lazy', alt: `Ausschnitt aus dem PDF, Seite ${hatWort(a.seite)}`,
         src: `/api/lauf/${lauf(state.plan.run_id)}/vorschau/${encodeURIComponent(a.id)}.png`,
@@ -536,8 +564,102 @@
       h('div', { class: 'karte-kopf' }, h('h3', { id: tid }, ortText(a)), h('p', { class: 'karte-status', id: sid }, statusText(e))),
       vorschau(a),
       grundZeile(a),
-      h('div', { class: 'karte-unten' }, bildPdf(a),
+      h('div', { class: 'karte-unten' + (istDocx() ? ' ohne-bild' : '') }, bildPdf(a),
         h('div', { class: 'entscheid-knoepfe', role: 'group', 'aria-label': 'Entscheidung' }, knopf('ja', 'Übernehmen'), knopf('nein', 'Nicht übernehmen')))));
+  }
+
+  // ------------------------------------------------------------------ Stichprobe (Vertrauensmodus): automatisch Eingetragenes kurz ansehen
+  function karteStichprobe(a) {
+    const e = state.stichprobe.get(a.id) || '';
+    const tid = 'sk-' + sicher(a.id), sid = 'ss-' + sicher(a.id);
+    const knopf = (wert, beschriftung) => h('button', { class: `btn btn-secondary entscheid ${wert}`, type: 'button', 'data-wert': wert,
+      'aria-pressed': e === wert ? 'true' : 'false', 'aria-describedby': tid, onclick: () => stichprobeEntscheide(a.id, wert, false) }, beschriftung);
+    // Schlank gehalten: der Text wie in der Excel und zwei Knöpfe; PDF-Ausschnitt und Grund liegen eingeklappt dabei
+    return h('li', {}, h('article', { class: 'karte karte-sp', tabindex: '0', 'data-id': a.id, 'data-art': 'stichprobe', 'data-entscheid': e || 'offen',
+      'aria-labelledby': tid, 'aria-describedby': sid },
+      h('div', { class: 'karte-kopf' }, h('h3', { id: tid }, ortText(a)), h('p', { class: 'karte-status', id: sid }, stichprobeStatus(e))),
+      vorschau(a),
+      h('div', { class: 'sp-unten' },
+        h('details', { class: 'mini' }, h('summary', {}, istDocx() ? 'Grund ansehen' : 'Im PDF ansehen'), bildPdf(a), grundZeile(a)),
+        h('div', { class: 'entscheid-knoepfe', role: 'group', 'aria-label': 'Stichprobe: Entscheidung' }, knopf('passt', 'Passt'), knopf('falsch', 'Falsch')))));
+  }
+
+  function stichprobeStatus(e) {
+    if (e === 'passt') return [h('span', { 'aria-hidden': 'true' }, '✓'), SP_STATUS.passt];
+    if (e === 'falsch') return [h('span', { 'aria-hidden': 'true' }, '✕'), SP_STATUS.falsch];
+    return [h('span', { 'aria-hidden': 'true' }, '●'), 'Noch nicht angesehen'];
+  }
+
+  function aktualisiereStichprobeKarte(id) {
+    const k = karteZu('karten-stichprobe', id);
+    if (!k) return;
+    const e = state.stichprobe.get(id) || '';
+    k.dataset.entscheid = e || 'offen';
+    for (const b of k.querySelectorAll('.entscheid')) b.setAttribute('aria-pressed', b.dataset.wert === e ? 'true' : 'false');
+    k.querySelector('.karte-status').replaceChildren(...stichprobeStatus(e));
+  }
+
+  function zeichneStichprobeKopf() {
+    const l = stichprobeKarten();
+    const angesehen = l.filter((a) => state.stichprobe.has(a.id)).length;
+    $('stichprobe-stand').textContent = `${angesehen} von ${l.length} angesehen`;
+  }
+
+  function zeichneStichprobe() {
+    const l = stichprobeKarten();
+    $('klapp-stichprobe').hidden = !l.length;
+    $('anzahl-stichprobe').textContent = String(l.length);
+    $('karten-stichprobe').replaceChildren(...l.map(karteStichprobe));
+    $('klapp-stichprobe').open = l.some((a) => !state.stichprobe.has(a.id));       // schon alles angesehen: eingeklappt
+    zeichneStichprobeKopf();
+  }
+
+  // „Falsch“ wählt die Änderung ab (wie „Trotzdem nicht eintragen“) und wird als Ablehnung vermerkt; ein zweiter Klick hebt es auf.
+  function stichprobeEntscheide(id, wert, weiter) {
+    if (state.stichprobe.get(id) === wert && !weiter) state.stichprobe.delete(id);
+    else state.stichprobe.set(id, wert);
+    setzeAbwahl(id, state.stichprobe.get(id) === 'falsch', true);
+    aktualisiereStichprobeKarte(id);
+    zeichneStichprobeKopf();
+    zeichneFortschritt();
+    if (weiter) naechsteOffene(id);
+  }
+
+  // ------------------------------------------------------------------ Dokument-Ampel (Regeln und Texte kommen vom Server)
+  function zeichneAmpel(a) {
+    const el = $('ampel');
+    if (!a || !AMPEL_NAME[a.stufe]) { el.hidden = true; return; }
+    const gruende = liste(a.gruende).map(text).filter(Boolean);
+    const zeichen = [a.stufe, text(a.satz), ...gruende].join('|');
+    el.hidden = false;
+    if (zeichen === state.ampelZeichen) return;          // nur neu zeichnen (und ansagen), wenn sich etwas ändert
+    state.ampelZeichen = zeichen;
+    el.dataset.stufe = a.stufe;
+    $('ampel-symbol').textContent = AMPEL_ZEICHEN[a.stufe];
+    $('ampel-stufe').textContent = `Dokument-Ampel ${AMPEL_NAME[a.stufe]}: `;
+    $('ampel-satz').textContent = text(a.satz);
+    $('ampel-gruende').replaceChildren(...gruende.map((g) => h('li', {}, g)));
+  }
+
+  // Stand der Entscheidungen -> Ampel vom Server (die Regeln stehen nur dort). Nur wenn sich die Zahlen ändern, kurz verzögert.
+  function ampelZahlen() {
+    const bitte = vorschlaege();
+    return { offen: bitte.filter((a) => !state.entscheid.has(a.id)).length,
+      stichprobeOffen: stichprobeKarten().filter((a) => !state.stichprobe.has(a.id)).length };
+  }
+  function planeAmpel() {
+    if (!state.plan) return;
+    const z = ampelZahlen(), schluessel = `${state.plan.run_id}|${z.offen}|${z.stichprobeOffen}`;
+    if (schluessel === state.ampelSchluessel) return;
+    state.ampelSchluessel = schluessel;
+    const nr = ++state.ampelNr, id = state.plan.run_id;
+    clearTimeout(state.ampelZeit);
+    state.ampelZeit = setTimeout(async () => {
+      try {
+        const a = await api(`/lauf/${lauf(id)}/ampel?offen=${z.offen}&stichprobe_offen=${z.stichprobeOffen}`);
+        if (nr === state.ampelNr && state.plan && state.plan.run_id === id) zeichneAmpel(a);
+      } catch (_) { /* die Ampel bleibt, wie sie war */ }
+    }, 120);
   }
 
   function karteZu(listeId, id) { return [...$(listeId).querySelectorAll('.karte')].find((k) => k.dataset.id === id) || null; }
@@ -554,16 +676,18 @@
   function entscheide(id, wert, weiter) {
     if (state.entscheid.get(id) === wert && !weiter) state.entscheid.delete(id);    // erneuter Klick hebt die Entscheidung auf
     else state.entscheid.set(id, wert);
+    state.pauschal.delete(id);                                                      // einzeln entschieden
     aktualisiereKarte(id);
     zeichneFortschritt();
     if (weiter) naechsteOffene(id);
   }
 
-  function naechsteOffene(id) {
-    const karten = [...$('karten-bitte').querySelectorAll('.karte')];
+  const istOffen = (k) => !(k.dataset.art === 'stichprobe' ? state.stichprobe : state.entscheid).has(k.dataset.id);
+  function naechsteOffene(id) {                          // erst die Stichprobe, dann „Bitte prüfen“ (Reihenfolge wie auf der Seite)
+    const karten = [...$('schritt-pruefen').querySelectorAll('#karten-stichprobe .karte, #karten-bitte .karte')].filter((k) => k.offsetParent !== null);
     const i = karten.findIndex((k) => k.dataset.id === id);
     const reihe = [...karten.slice(i + 1), ...karten.slice(0, Math.max(i, 0))];
-    const ziel = reihe.find((k) => !state.entscheid.has(k.dataset.id));
+    const ziel = reihe.find(istOffen);
     if (ziel) fokusKarte(ziel);
     else if (karten[i + 1]) fokusKarte(karten[i + 1]);
     else $('btn-excel').focus();
@@ -585,17 +709,23 @@
     const karte = h('article', { class: 'karte kompakt' + (ab ? ' abgewaehlt' : ''), tabindex: '0', 'data-id': a.id, 'data-partner': String(partner), 'aria-labelledby': tid },
       h('div', { class: 'karte-kopf' }, h('h3', { id: tid }, ortText(a)), h('label', { class: 'schalter' }, cb, 'Trotzdem nicht eintragen')),
       vorschau(a), hinweis,
-      h('details', { class: 'mini' }, h('summary', {}, 'Im PDF ansehen'), bildPdf(a), grundZeile(a)));
+      h('details', { class: 'mini' }, h('summary', {}, istDocx() ? 'Grund ansehen' : 'Im PDF ansehen'), bildPdf(a), grundZeile(a)));
     return h('li', {}, karte);
   }
 
-  function setzeAbwahl(id, an) {
+  function setzeAbwahl(id, an, vonStichprobe = false) {
     if (an) state.abwahl.add(id); else state.abwahl.delete(id);
     const k = karteZu('karten-auto', id);
     if (k) {
       k.classList.toggle('abgewaehlt', an);
       k.querySelector('input[type=checkbox]').checked = an;
       k.querySelector('.gruppe-hinweis').hidden = !(an && Number(k.dataset.partner) > 0);
+    }
+    if (!vonStichprobe && karteZu('karten-stichprobe', id)) {      // dieselbe Änderung in der Stichprobe: abwählen = „Falsch“
+      if (an) state.stichprobe.set(id, 'falsch');
+      else if (state.stichprobe.get(id) === 'falsch') state.stichprobe.delete(id);
+      aktualisiereStichprobeKarte(id);
+      zeichneStichprobeKopf();
     }
     zeichneFortschritt();
   }
@@ -634,6 +764,10 @@
     const bitte = vorschlaege();
     $('anzahl-bitte').textContent = String(bitte.length);
     $('karten-bitte').replaceChildren(...bitte.map(karteBitte));
+    zeichneStichprobe();
+    state.ampelZeichen = '';
+    zeichneAmpel(p.ampel);
+    state.ampelSchluessel = `${p.run_id}|${bitte.length}|${stichprobeKarten().length}`;     // Ausgangslage: noch nichts entschieden
     $('btn-spec-andere').setAttribute('aria-expanded', 'false');
     zeichneSpec();
     $('bitte-leer').hidden = bitte.length > 0;
@@ -659,6 +793,8 @@
       `${bitte.length} bitte prüfen (${erledigt} erledigt)`];
     const draussen = zahl(z.ausserhalb) + zahl(z.nicht);
     if (draussen) teile.push(`${draussen} nicht in der CDE`);
+    const sp = stichprobeKarten(), spOffen = sp.filter((a) => !state.stichprobe.has(a.id)).length;
+    if (sp.length) teile.push(`Stichprobe ${sp.length - spOffen} von ${sp.length} angesehen`);
     $('fortschritt-satz').textContent = teile.join(' · ');
     const balken = $('fortschritt');
     balken.hidden = !bitte.length;
@@ -675,9 +811,11 @@
     }
     if (offen) saetze.push(`${offen === 1 ? '1 Vorschlag ist' : `${offen} Vorschläge sind`} noch offen und ${offen === 1 ? 'wird' : 'werden'} nicht eingetragen.`);
     else if (bitte.length) saetze.push('Alle Vorschläge sind entschieden.');
+    if (spOffen) saetze.push(`In der Stichprobe ${spOffen === 1 ? 'ist 1 Änderung' : `sind ${spOffen} Änderungen`} noch nicht angesehen (das hält nichts auf).`);
     saetze.push(`Eingetragen ${automatische().length - abw + ja === 1 ? 'wird 1 Änderung' : `werden ${automatische().length - abw + ja} Änderungen`}.`);
     if (state.ergebnisse.length) saetze.push(`Zu diesem Abgleich gibt es schon ${pl(state.ergebnisse.length, 'Excel', 'Excel-Dateien')}; eine neue kommt dazu, die frühere bleibt.`);
     $('excel-hinweis').textContent = saetze.join(' ');
+    planeAmpel();
   }
 
   async function excelErstellen() {
@@ -690,6 +828,11 @@
     }
     const freigaben = vorschlaege().filter((a) => state.entscheid.get(a.id) === 'ja').map((a) => a.id);
     const abwahl = automatische().filter((a) => state.abwahl.has(a.id)).map((a) => a.id);
+    // Nur fürs Freigabe-Protokoll (ändert nichts am Eintragen): ausdrücklich Abgelehntes, pauschal Freigegebenes, Stichprobe Passt/Falsch
+    const abgelehnt = vorschlaege().filter((a) => state.entscheid.get(a.id) === 'nein').map((a) => a.id);
+    const pauschal = freigaben.filter((id) => state.pauschal.has(id));
+    const stichprobe = { passt: [], falsch: [] };
+    for (const a of stichprobeKarten()) { const e = state.stichprobe.get(a.id); if (e) stichprobe[e].push(a.id); }
     if (automatische().length - abwahl.length + freigaben.length <= 0) {
       toastFehler('Es gibt nichts einzutragen. Gib mindestens einen Vorschlag mit „Übernehmen“ frei.');
       return;
@@ -699,7 +842,7 @@
     let res;
     try {
       res = await api(`/lauf/${lauf(id)}/uebernehmen`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ freigaben, abwahl }) });
+        body: JSON.stringify({ freigaben, abwahl, abgelehnt, pauschal, stichprobe }) });
     } catch (e) { busy(false); meldeFehler(e); return; }
     state.ergebnis = res;
     try { state.ergebnisse = liste((await api('/lauf/' + lauf(id))).ergebnisse); }
@@ -753,14 +896,19 @@
       const b = (state.schritt === 'fertig' && state.ergebnis && state.ergebnis.bilanz) || state.plan.bilanz || {};
       if (b.stimmt === false) {
         out.push(['bilanz', banner('rot', 'Die Bilanz stimmt nicht',
-          'Die im PDF markierten Wörter passen nicht zu den gefundenen Änderungen. Es kann etwas verloren gegangen sein. Bitte das Ergebnis nicht verwenden und den Fehler melden.')]);
+          `Die im ${istDocx() ? 'Word-Dokument' : 'PDF'} markierten Wörter passen nicht zu den gefundenen Änderungen. Es kann etwas verloren gegangen sein. Bitte das Ergebnis nicht verwenden und den Fehler melden.`)]);
       }
       const luecken = liste(state.plan.luecken);
       if (b.vollstaendig === false || luecken.length) {
-        const seiten = [...new Set(luecken.map((l) => l.seite).filter((s) => typeof s === 'number'))].sort((x, y) => x - y);
-        const wo = seiten.length ? `${seiten.length === 1 ? 'Seite' : 'den Seiten'} ${seiten.join(', ')}` : 'einigen Seiten';
-        out.push([`luecken${seiten.join(',')}`, banner('gelb', 'PDF unvollständig gelesen',
-          `Auf ${wo} konnte das Tool nicht alles lesen. Dort kann eine Änderung fehlen. Bitte diese Seiten im PDF selbst ansehen.`)]);
+        const seiten = [...new Set(luecken.map((l) => l.seite).filter((s) => typeof s === 'number' && s > 0))].sort((x, y) => x - y);
+        if (istDocx()) {
+          out.push(['luecken-docx', banner('gelb', 'Word-Dokument unvollständig gelesen',
+            'An einigen Stellen konnte das Tool nicht alles lesen. Dort kann eine Änderung fehlen. Bitte diese Stellen im Word-Dokument selbst ansehen.')]);
+        } else {
+          const wo = seiten.length ? `${seiten.length === 1 ? 'Seite' : 'den Seiten'} ${seiten.join(', ')}` : 'einigen Seiten';
+          out.push([`luecken${seiten.join(',')}`, banner('gelb', 'PDF unvollständig gelesen',
+            `Auf ${wo} konnte das Tool nicht alles lesen. Dort kann eine Änderung fehlen. Bitte diese Seiten im PDF selbst ansehen.`)]);
+        }
       }
     }
     const schluessel = out.map((x) => x[0]).join('|');
@@ -791,15 +939,16 @@
     const warn = liste(e && e.warnungen ? e.warnungen : p.warnungen);
     const teile = [
       h('h3', {}, 'Abgleich'),
-      dl([['Lauf-ID', p.run_id], ['PDF', p.pdf_name], ['Excel', p.excel_name], ['PDF-Seiten', p.seiten], ['Archiviert', p.archiviert ? 'ja' : 'nein'],
-        e ? ['Ergebnis-Ordner', e.ordner] : null]),
+      dl([['Lauf-ID', p.run_id], [istDocx() ? 'Word-Dokument' : 'PDF', p.pdf_name], ['Excel', p.excel_name], istDocx() ? null : ['PDF-Seiten', p.seiten],
+        ['Archiviert', p.archiviert ? 'ja' : 'nein'], e ? ['Ergebnis-Ordner', e.ordner] : null,
+        liste(p.stichprobe).length ? ['Stichprobe', liste(p.stichprobe).join(', ')] : null]),
       h('h3', {}, e ? 'Wort-Bilanz (nach dem Eintragen)' : 'Wort-Bilanz'),
       dl([['Wörter im PDF markiert', b.woerter_im_pdf], ['davon eingetragen', b.woerter_uebernommen], ['davon Vorschlag', b.woerter_pruefen],
         ['davon nicht eingetragen', b.woerter_nicht_uebernommen], ['bewusst ignoriert (Kopf-/Fußzeile)', b.woerter_ignoriert],
         ['Bilanz stimmt', jaNein(b.stimmt)], ['PDF vollständig gelesen', jaNein(b.vollstaendig)], ['Lücken beim Lesen', b.luecken],
         ['Abweichungen nach dem Eintragen', b.nachkontrolle_abweichungen]]),
       h('h3', {}, 'Lücken: Stellen, die nicht gelesen werden konnten'),
-      luecken.length ? h('ul', { class: 'einfach-liste' }, luecken.map((x) => h('li', {}, `Seite ${hatWort(x.seite)} · ${LUECKE_ART[x.art] || text(x.art) || 'Sonstiges'}`,
+      luecken.length ? h('ul', { class: 'einfach-liste' }, luecken.map((x) => h('li', {}, `${istDocx() ? 'Im Word-Dokument' : `Seite ${hatWort(x.seite)}`} · ${LUECKE_ART[x.art] || text(x.art) || 'Sonstiges'}`,
         text(x.beschreibung) ? ` – ${text(x.beschreibung)}` : '', zahl(x.woerter) ? ` (${pl(zahl(x.woerter), 'Wort', 'Wörter')})` : ''))) : h('p', { class: 'hint' }, 'Keine.'),
       h('h3', {}, 'Hinweise zum Abgleich'),
       warn.length ? h('ul', { class: 'einfach-liste' }, warn.map((x) => h('li', {}, text(x)))) : h('p', { class: 'hint' }, 'Keine.'),
@@ -823,7 +972,7 @@
       h('h3', {}, `Alle Änderungen (${l.length})`),
       l.length ? tabelle('Alle Änderungen', ['Nr.', 'Status', 'Art', 'Seite', 'Section', 'Stelle', 'Sicherheit', 'Prüfcodes', 'Hinweise', 'Wirkung', 'Jetzt in der Excel'],
         l.map((a) => [text(a.id), (STATUS[a.status] || text(a.status)) + (a.bereich === 'ausserhalb' ? ' (außerhalb der CDE)' : '') + (a.bestaetigt ? ', freigegeben' : ''),
-          ART[a.typ] || text(a.typ), hatWort(a.seite), text(a.section) || '–', text(a.ziel) || '–',
+          ART[a.typ] || text(a.typ), istDocx() ? '–' : hatWort(a.seite), text(a.section) || '–', text(a.ziel) || '–',
           `${text(a.konfidenz) || '–'}${a.score ? ` (${Math.round(zahl(a.score) * 100)} %)` : ''}`,
           liste(a.pruefcodes).join(', ') || '–', liste(a.hinweise).join(' · ') || '–',
           [WIRKUNG[a.wirkung] || text(a.wirkung), a.nachkontrolle === 'abweichung' ? 'Nachkontrolle weicht ab' : ''].filter(Boolean).join(', ') || '–',
@@ -880,7 +1029,8 @@
       ev.preventDefault();
       if (!karte) { springe(null, 1); return; }             // erst eine Karte wählen, nie blind entscheiden
       const id = karte.dataset.id;
-      if (karte.classList.contains('kompakt')) { setzeAbwahl(id, taste === 'n'); springe(karte, 1); }
+      if (karte.dataset.art === 'stichprobe') stichprobeEntscheide(id, taste === 'a' ? 'passt' : 'falsch', true);
+      else if (karte.classList.contains('kompakt')) { setzeAbwahl(id, taste === 'n'); springe(karte, 1); }
       else entscheide(id, taste === 'a' ? 'ja' : 'nein', true);
     }
   }
@@ -904,7 +1054,7 @@
     });
     $('btn-zuletzt-alle').addEventListener('click', () => { state.zuletztAlle = !state.zuletztAlle; ladeZuletzt(); });
     $('btn-alle-ja').addEventListener('click', () => {
-      for (const a of vorschlaege()) { state.entscheid.set(a.id, 'ja'); aktualisiereKarte(a.id); }
+      for (const a of vorschlaege()) { state.entscheid.set(a.id, 'ja'); state.pauschal.add(a.id); aktualisiereKarte(a.id); }
       zeichneFortschritt();
     });
     $('btn-tasten').addEventListener('click', hilfeAuf);

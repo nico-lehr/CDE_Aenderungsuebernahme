@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from openpyxl import load_workbook
 
-from src import cli, config, runs
+from src import cli, config, protokoll, runs
 from src.api.app import app
 from tests.fixtures.szenario import erzeuge
 from tests.test_register import GRUND, wort_pdf
@@ -133,17 +133,40 @@ const [basis, pdf, xlsx] = process.argv.slice(2);
   await p.waitForSelector('#schritt-pruefen:not([hidden]) #karten-bitte .karte', { timeout: 60000 });
   aus.karten = await p.locator('#karten-bitte .karte').count();
   aus.satz_vorher = await p.textContent('#fortschritt-satz');
+  // Vertrauensmodus: Dokument-Ampel oben, Stichprobe (eingeklappter Block nur wenn vorhanden) steht VOR „Bitte prüfen“
+  aus.ampel_vorher = await p.getAttribute('#ampel', 'data-stufe');
+  aus.ampel_satz = await p.textContent('#ampel-satz');
+  aus.sp_karten = await p.locator('#karten-stichprobe .karte').count();
+  aus.sp_offen = await p.evaluate(() => document.getElementById('klapp-stichprobe').open);
+  aus.sp_zuerst = await p.evaluate(() => !!(document.getElementById('klapp-stichprobe').compareDocumentPosition(document.getElementById('bereich-bitte')) & Node.DOCUMENT_POSITION_FOLLOWING));
   await p.keyboard.press('?');
   aus.hilfe_offen = await p.evaluate(() => document.getElementById('hilfe').open);
   await p.keyboard.press('Escape');
   aus.hilfe_zu = await p.evaluate(() => !document.getElementById('hilfe').open);
-  await p.keyboard.press('j');                                  // erste Karte wählen
+  await p.keyboard.press('j');                                  // erste Karte wählen: die erste der Stichprobe
   aus.fokus_karte = await p.evaluate(() => document.activeElement.classList.contains('karte'));
+  aus.erste_ist_stichprobe = await p.evaluate(() => !!document.activeElement.closest('#karten-stichprobe'));
+  await p.keyboard.press('a');                                  // Stichprobe: Passt (springt zur nächsten offenen Karte)
+  aus.sp1 = await p.getAttribute('#karten-stichprobe li:nth-child(1) .karte', 'data-entscheid');
+  aus.sp_stand = await p.textContent('#stichprobe-stand');
+  await p.keyboard.press('n');                                  // zweite Karte: Falsch (wählt die Änderung ab)
+  aus.sp2 = await p.getAttribute('#karten-stichprobe li:nth-child(2) .karte', 'data-entscheid');
+  aus.sp2_abgewaehlt = await p.evaluate(() => {
+    const id = document.querySelector('#karten-stichprobe li:nth-child(2) .karte').dataset.id;
+    return [...document.querySelectorAll('#karten-auto .karte')].find((k) => k.dataset.id === id).classList.contains('abgewaehlt');
+  });
+  aus.ampel_mitte = await p.getAttribute('#ampel', 'data-stufe');
+  await p.keyboard.press('a');                                  // dritte Karte: Passt -> weiter zur ersten offenen Karte unter „Bitte prüfen“
+  aus.sp3 = await p.getAttribute('#karten-stichprobe li:nth-child(3) .karte', 'data-entscheid');
+  aus.fokus_bitte = await p.evaluate(() => !!document.activeElement.closest('#karten-bitte'));
   await p.keyboard.press('a');                                  // übernehmen
   aus.gedrueckt = await p.getAttribute('#karten-bitte .karte .entscheid.ja', 'aria-pressed');
   aus.entscheid = await p.getAttribute('#karten-bitte .karte', 'data-entscheid');
   aus.satz_nachher = await p.textContent('#fortschritt-satz');
   aus.balken = await p.getAttribute('#fortschritt', 'aria-valuenow');
+  // alles entschieden und die Stichprobe angesehen: die Ampel (Regeln kommen vom Server) wird grün
+  await p.waitForFunction(() => document.getElementById('ampel').dataset.stufe === 'gruen', null, { timeout: 15000 });
+  aus.ampel_nachher = await p.textContent('#ampel-satz');
   await p.click('#btn-excel');
   await p.waitForSelector('#schritt-fertig:not([hidden])', { timeout: 60000 });
   aus.fertig_titel = await p.textContent('#titel-fertig');
@@ -202,9 +225,14 @@ def test_browser_karte_per_taste_freigeben_und_excel_erstellen(paar, tmp_path, m
     assert "absturz" not in aus, aus
     assert aus["fehler"] == [], f"Konsolenfehler: {aus['fehler']}"
     assert aus["schritt1"] and aus["aktuell1"] == "step"
-    assert aus["karten"] == 1 and "1 bitte prüfen (0 erledigt)" in aus["satz_vorher"]
+    assert aus["karten"] == 1 and "1 bitte prüfen (0 erledigt)" in aus["satz_vorher"] and "Stichprobe 0 von 3 angesehen" in aus["satz_vorher"]
+    assert aus["ampel_vorher"] == "gelb" and aus["ampel_satz"] == "Bitte ein paar Punkte ansehen."
+    assert aus["sp_karten"] == 3 and aus["sp_offen"] and aus["sp_zuerst"]
     assert aus["hilfe_offen"] and aus["hilfe_zu"]
-    assert aus["fokus_karte"] and aus["gedrueckt"] == "true" and aus["entscheid"] == "ja"
+    # J wählt die erste Karte (die Stichprobe steht zuerst); A = Passt, N = Falsch (wählt ab), springt jeweils weiter
+    assert aus["fokus_karte"] and aus["erste_ist_stichprobe"] and aus["sp1"] == "passt" and aus["sp_stand"] == "1 von 3 angesehen"
+    assert aus["sp2"] == "falsch" and aus["sp2_abgewaehlt"] and aus["ampel_mitte"] == "gelb" and aus["sp3"] == "passt" and aus["fokus_bitte"]
+    assert aus["gedrueckt"] == "true" and aus["entscheid"] == "ja" and aus["ampel_nachher"] == "Alles sicher eingetragen."
     assert "(1 erledigt)" in aus["satz_nachher"] and aus["balken"] == "1"
     assert aus["aktuell3"] == "step" and aus["fertig_titel"] == "Fertig." and "Änderungen eingetragen" in aus["fertig_satz"]
     assert aus["fertig_fokus"] == "titel-fertig"
@@ -213,7 +241,12 @@ def test_browser_karte_per_taste_freigeben_und_excel_erstellen(paar, tmp_path, m
     (lauf,) = runs.liste()
     plan = runs.lade_plan(lauf["run_id"])
     (vorschlag,) = [a["id"] for a in plan["aenderungen"] if a["status"] == "pruefen"]
-    assert runs.ergebnisse(lauf["run_id"])[0]["freigaben"] == [vorschlag]
+    erg = runs.ergebnisse(lauf["run_id"])[0]
+    assert erg["freigaben"] == [vorschlag] and len(erg["abwahl"]) == 1 and erg["stichprobe"]["falsch"] == erg["abwahl"]
+    assert len(erg["stichprobe"]["passt"]) == 2 and set(erg["stichprobe"]["passt"] + erg["stichprobe"]["falsch"]) == set(plan["stichprobe"])
+    zeilen, _ = protokoll.lese_entscheidungen(runs.lauf_dir(lauf["run_id"]) / "entscheidungen.jsonl")
+    assert {z["id"]: z["entscheidung"] for z in zeilen}[erg["abwahl"][0]] == "abgelehnt"           # „Falsch“ im Freigabe-Protokoll
+    assert sum(1 for z in zeilen if z["entscheidung"] == "bestaetigt") == 2
 
 
 # ---------------------------------------------------------------------------------------------------------------- 4. Spec
@@ -413,3 +446,79 @@ def test_browser_unklare_spec_blockiert_excel_erstellen_bis_eine_gewaehlt_ist(sp
     assert "44 55 66" in aus["spec_text"] and "Zeilen" in aus["spec_text"] and aus["wahl_zu"]
     assert aus["andere"] == "false" and aus["andere_offen"] == "true" and aus["wahl_offen"] and aus["aktuell"] == "44 55 66"
     assert "eingetragen" in aus["fertig"]
+
+
+# ---------------------------------------------------------------------------------------------------------------- 5. Word-Eingabe
+# Das Word-Lesen kommt von einem anderen Helfer (src/docx_reader.py); hier ein Fake wie in tests/test_vertrauen.py.
+from tests.test_vertrauen import _docx_datei, docx_leser  # noqa: E402,F401  (docx_leser ist eine Fixture)
+
+_NODE_DOCX = r"""
+const { chromium } = require('playwright');
+const [basis, docx, xlsx] = process.argv.slice(2);
+(async () => {
+  let b;
+  try { b = await chromium.launch(); } catch (e) { console.log(JSON.stringify({ kein_browser: String(e).slice(0, 200) })); return; }
+  const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
+  const fehler = [];
+  p.on('console', (m) => { if (m.type() === 'error') fehler.push(m.text()); });
+  p.on('pageerror', (e) => fehler.push(String(e)));
+  const aus = { fehler };
+  await p.goto(basis + '/');
+  await p.waitForFunction(() => document.getElementById('pill-text').textContent.includes('Port'));
+  aus.accept = await p.getAttribute('#file-pdf', 'accept');
+  await p.setInputFiles('#file-pdf', docx);
+  aus.dz_sub = await p.textContent('#dz-pdf-sub');
+  await p.setInputFiles('#file-xlsx', xlsx);
+  await p.click('#btn-abgleichen');
+  await p.waitForSelector('#schritt-pruefen:not([hidden]) #karten-bitte .karte', { timeout: 60000 });
+  aus.lauf_name = await p.textContent('#lauf-name');
+  aus.bilder = await p.locator('.im-pdf, #schritt-pruefen img').count();
+  aus.text = await p.evaluate(() => document.getElementById('schritt-pruefen').innerText);
+  aus.sp_karten = await p.locator('#karten-stichprobe .karte').count();
+  aus.vorschau_da = await p.locator('#karten-bitte .karte .vorschau').count();
+  aus.orte = await p.$$eval('#karten-bitte .karte h3', (l) => l.map((x) => x.textContent));
+  await p.click('#fachleute summary');
+  await p.waitForFunction(() => document.getElementById('fachleute-inhalt').textContent.length > 0);      // das Klapp-Ereignis kommt etwas später
+  aus.fachleute = await p.textContent('#fachleute-inhalt');
+  await p.keyboard.press('Escape');
+  await p.click('#btn-excel');
+  await p.waitForSelector('#schritt-fertig:not([hidden])', { timeout: 60000 });
+  aus.fertig = await p.textContent('#fertig-satz');
+  await b.close();
+  console.log(JSON.stringify(aus));
+})().catch((e) => { console.log(JSON.stringify({ absturz: String(e) })); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(not _playwright_da(), reason="node mit Playwright nicht vorhanden")
+def test_browser_word_dokument_zeigt_nur_den_text_ohne_pdf_ausschnitt(paar, tmp_path, monkeypatch, docx_leser):
+    from werkzeug.serving import make_server
+
+    docx = _docx_datei(tmp_path / "Änderungen.docx")
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    monkeypatch.setitem(config.lade("server"), "port", server.server_port)
+    faden = threading.Thread(target=server.serve_forever, daemon=True)
+    faden.start()
+    skript = tmp_path / "docx.js"
+    skript.write_text(_NODE_DOCX, encoding="utf-8")
+    try:
+        r = subprocess.run([_node(), str(skript), f"http://127.0.0.1:{server.server_port}", str(docx), str(paar["alt"])],
+                           capture_output=True, text=True, env=_node_umgebung(), timeout=180)
+    finally:
+        server.shutdown()
+        faden.join(10)
+    zeilen = [z for z in r.stdout.splitlines() if z.startswith("{")]
+    assert zeilen, f"keine Ausgabe vom Browser-Skript: {r.stdout[-500:]} {r.stderr[-500:]}"
+    aus = json.loads(zeilen[-1])
+    if "kein_browser" in aus:
+        pytest.skip(f"Chromium nicht startbar: {aus['kein_browser']}")
+    assert "absturz" not in aus, aus
+    assert aus["fehler"] == [], f"Konsolenfehler: {aus['fehler']}"
+    assert ".docx" in aus["accept"] and "✓ Änderungen.docx" in aus["dz_sub"] and aus["lauf_name"].startswith("Änderungen.docx")
+    # Word: nur der Text (Ergebnis wie in der Excel), kein PDF-Ausschnitt, keine „Seite 0“, kein „PDF“ in den Karten
+    assert aus["bilder"] == 0 and "Seite 0" not in aus["text"] and "Im PDF" not in aus["text"] and "PDF-Ausschnitt" not in aus["text"]
+    assert aus["vorschau_da"] == 1 and aus["sp_karten"] == 3 and all(o.startswith("Section") or o.startswith("Im Word-Dokument") for o in aus["orte"])
+    assert "Word-Dokument" in aus["fachleute"] and "PDF-Seiten" not in aus["fachleute"] and "Word-Änderungsverfolgung direkt gelesen" in aus["fachleute"]
+    assert "eingetragen" in aus["fertig"]
+    (lauf,) = runs.liste()
+    assert runs.lade_plan(lauf["run_id"])["quelle_art"] == "docx"

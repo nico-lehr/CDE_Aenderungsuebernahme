@@ -1,9 +1,10 @@
 """Laeufe: ein Lauf = ein PDF + eine Excel, analysiert und (nach Freigabe) uebernommen.
 
 Ordner je Lauf (data/runs/<id>/), append-only (Regel 29):
-  eingabe/            Kopien von PDF und Excel (Originale bleiben unberuehrt)
+  eingabe/            Kopien von Aenderungsdokument (Word .docx oder PDF) und Excel (Originale bleiben unberuehrt)
   lauf.json           Namen der Eingaben (wird zuletzt, atomar geschrieben)
-  plan.json           Analyse (Aenderungen, Bilanz, Aufbau, Farben), atomar geschrieben
+  plan.json           Analyse (Aenderungen, Bilanz, Aufbau, Farben, quelle_art, stichprobe), atomar geschrieben
+  entscheidungen.jsonl Freigabe-Protokoll (Vertrauensmodus): eine Zeile je Entscheidung, nur Kennungen, nur angehaengt
   analyse_fehler.json Nur wenn die Analyse fehlschlug: einfache Meldung, Lauf und Eingaben bleiben
   archiviert.json     Nur wenn der Lauf archiviert ist (Marker; Wiederherstellen benennt ihn um)
   ergebnis_001/       je Uebernahme ein NEUER Ordner: aktualisierte Excel + Protokoll;
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -27,14 +29,15 @@ from typing import Any
 
 from . import config
 from .applier import uebernehmen
-from . import layouts
+from . import layouts, vertrauen
 from .fehler import NichtGefunden, NutzerFehler
 from .gegenprobe import absaetze_aus_liste
 from .excel_model import ExcelModell, profil_kontext
 from .models import GELESENE_SCHEMAS, PRUEFEN, UEBERNOMMEN
 from .pdf_reader import analysiere_pdf
 from .planner import plane
-from .protokoll import aenderung_aus_dict, bilanz, schreibe_json, schreibe_xlsx
+from .protokoll import (ENTSCHEIDUNGEN, aenderung_aus_dict, bilanz, entscheidung_zeile, haenge_entscheidungen_an,
+                        schreibe_json, schreibe_xlsx)
 
 _ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
 _ERGEBNIS = re.compile(r"ergebnis_(\d{3})")
@@ -42,6 +45,8 @@ _ERGEBNIS = re.compile(r"ergebnis_(\d{3})")
 _RESERVIERT = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 _PLAN_PFLICHT = ("aenderungen", "bilanz", "excel_sha256", "pdf_name", "excel_name")
 _VERSUCHE = 50                                   # Wiederholungen bei Namenskollisionen
+
+log = logging.getLogger("cde.runs")
 
 MELDUNG_BESCHAEDIGT = "Der Lauf ist beschädigt."
 MELDUNG_NEUERE_VERSION = ("Dieser Lauf stammt aus einer neueren Programmversion (Schema-Version {v}). "
@@ -163,6 +168,78 @@ def _sicherer_name(name: str, fallback: str) -> str:
 
 
 # ---------------------------------------------------------------------------------------------
+# Das Dokument mit den Aenderungen: Word (.docx, bevorzugt) oder PDF
+# ---------------------------------------------------------------------------------------------
+AENDERUNGS_ENDUNGEN = (".docx", ".pdf")
+MELDUNG_ENDUNG = "Die Änderungsdatei muss ein Word-Dokument (.docx) oder ein PDF sein."
+MELDUNG_DOC_ALT = "Alte Word-Dateien (.doc) können nicht gelesen werden. Bitte in Word als .docx speichern."
+MELDUNG_KEIN_PDF = "Die Datei ist kein gültiges PDF und konnte nicht gelesen werden. Bitte das Dokument noch einmal als PDF speichern."
+MELDUNG_KEIN_DOCX = ("Die Datei ist kein gültiges Word-Dokument (.docx) und konnte nicht gelesen werden. Ist sie beschädigt oder mit "
+                     "einem Passwort geschützt? Bitte in Word als .docx speichern.")
+MELDUNG_KEIN_DOCX_LESER = "Word-Dokumente (.docx) kann diese Programmversion noch nicht lesen. Bitte als PDF speichern."
+
+
+def quelle_art_von(name: str) -> str:
+    """"docx" oder "pdf" nach der Endung des gespeicherten Dateinamens (alles Aeltere ist ein PDF)."""
+    return "docx" if Path(name or "").suffix.lower() == ".docx" else "pdf"
+
+
+def pruefe_aenderungsendung(name: str) -> str:
+    """Endung (".docx" oder ".pdf", klein) des Dokuments mit Aenderungen; sonst NutzerFehler (400) in einfachem Deutsch."""
+    endung = Path(name or "").suffix.lower()
+    if endung == ".doc":
+        raise NutzerFehler(MELDUNG_DOC_ALT, 400)
+    if endung not in AENDERUNGS_ENDUNGEN:
+        raise NutzerFehler(MELDUNG_ENDUNG, 400)
+    return endung
+
+
+def _ist_docx(pfad: Path) -> bool:
+    """Ein Word-Dokument ist ein ZIP mit [Content_Types].xml und word/document.xml (nur das Inhaltsverzeichnis wird gelesen)."""
+    try:
+        with zipfile.ZipFile(pfad) as z:
+            return {"[Content_Types].xml", "word/document.xml"} <= set(z.namelist())
+    except (zipfile.BadZipFile, OSError):
+        return False
+
+
+def pruefe_aenderungsdatei(pfad: str | Path, name: str | None = None) -> str:
+    """Prueft Endung (nach `name`, sonst nach dem Pfad) UND Inhalt des Dokuments mit Aenderungen. Gibt "pdf" oder "docx" zurueck.
+    PDF: beginnt mit %PDF-. Word: ZIP mit [Content_Types].xml und word/document.xml. Sonst NutzerFehler (400)."""
+    endung = pruefe_aenderungsendung(name if name else Path(pfad).name)
+    if endung == ".pdf":
+        try:
+            with open(pfad, "rb") as f:
+                ok = f.read(5) == b"%PDF-"
+        except OSError:
+            ok = False
+        if not ok:
+            raise NutzerFehler(MELDUNG_KEIN_PDF, 400)
+        return "pdf"
+    if not _ist_docx(Path(pfad)):
+        raise NutzerFehler(MELDUNG_KEIN_DOCX, 400)
+    return "docx"
+
+
+def lade_analyse(pfad: str | Path):
+    """Liest das Dokument mit den Aenderungen und liefert die Analyse (PdfAnalyse): nach Endung .pdf mit pdf_reader, .docx mit
+    docx_reader (Import erst hier). Eine Analyse aus Word hat legende_modus "docx", Seite 0 und keine Bildkoordinaten."""
+    p = Path(pfad)
+    endung = p.suffix.lower()
+    if endung == ".pdf":
+        return analysiere_pdf(p)
+    if endung == ".docx":
+        try:
+            from .docx_reader import analysiere_docx
+        except ModuleNotFoundError as e:
+            if e.name != f"{__package__}.docx_reader":
+                raise
+            raise NutzerFehler(MELDUNG_KEIN_DOCX_LESER, 400) from None
+        return analysiere_docx(p)
+    raise NutzerFehler(MELDUNG_ENDUNG, 400)
+
+
+# ---------------------------------------------------------------------------------------------
 # Lauf anlegen / analysieren
 # ---------------------------------------------------------------------------------------------
 def _reserviere(eltern: Path, name_fn) -> Path:
@@ -181,7 +258,7 @@ def neuer_lauf(pdf_pfad: str | Path, excel_pfad: str | Path, pdf_name: str = "",
     pdf_roh, excel_roh = pdf_name or Path(pdf_pfad).name, excel_name or Path(excel_pfad).name
     pruefe_dateiname(pdf_roh)
     pruefe_dateiname(excel_roh)
-    pdf_name = _sicherer_name(pdf_roh, "aenderungen.pdf")
+    pdf_name = _sicherer_name(pdf_roh, "aenderungen.docx" if Path(pdf_pfad).suffix.lower() == ".docx" else "aenderungen.pdf")
     excel_name = _sicherer_name(excel_roh, "cde.xlsx")
     d = _reserviere(runs_dir(), lambda: f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}")
     try:
@@ -189,7 +266,8 @@ def neuer_lauf(pdf_pfad: str | Path, excel_pfad: str | Path, pdf_name: str = "",
         shutil.copy2(pdf_pfad, d / "eingabe" / pdf_name)
         shutil.copy2(excel_pfad, d / "eingabe" / excel_name)
         _schreibe_text_atomar(d / "lauf.json", json.dumps(
-            {"pdf": pdf_name, "excel": excel_name, "angelegt": datetime.now().isoformat(timespec="seconds")},
+            {"pdf": pdf_name, "excel": excel_name, "quelle_art": quelle_art_von(pdf_name),
+             "angelegt": datetime.now().isoformat(timespec="seconds")},
             ensure_ascii=False))
     except BaseException:
         shutil.rmtree(d, ignore_errors=True)         # noch kein Lauf (lauf.json fehlt): nichts von Wert
@@ -203,6 +281,7 @@ def _info(d: Path) -> dict[str, Any]:
         if not isinstance(info.get(k), str) or not info[k] or Path(info[k]).name != info[k]:
             raise _beschaedigt()
     info.setdefault("angelegt", "")
+    info["quelle_art"] = quelle_art_von(info["pdf"])            # aeltere Laeufe kennen das Feld nicht: es sind PDFs
     return info
 
 
@@ -253,7 +332,7 @@ def analysiere(run_id: str, profil: str | None = None, spec: str | None = None) 
         except layouts.ProfilFehler as e:
             raise LaufFehler(e.meldung, 409, "profil") from None
     pdf, excel = d / "eingabe" / info["pdf"], d / "eingabe" / info["excel"]
-    pa = analysiere_pdf(pdf)
+    pa = lade_analyse(pdf)
     try:
         xl = ExcelModell(excel, prof)
     except layouts.ProfilFehler as e:                # das Profil passt nicht zur Excel: schon einfaches Deutsch
@@ -283,7 +362,10 @@ def analysiere(run_id: str, profil: str | None = None, spec: str | None = None) 
         # Spec-Filter (Welle 3): Spec des PDFs in der CDE ({erkannt, quelle, zeilen, kandidaten, pdf}; None = keine Spec-Spalte)
         # und alle Specs der CDE (Name, Zeilenzahl, von, bis). Nur Nummern und Zeilen, kein Dokumenttext.
         "spec": plan.spec, "specs": specs_der_cde(xl),
+        # Vertrauensmodus: Word oder PDF (pdf_name bleibt der Feldname fuer beide) und die Stichprobe (nur IDs, fest aus der Lauf-ID)
+        "quelle_art": info["quelle_art"],
     }
+    daten["stichprobe"] = vertrauen.ziehe_stichprobe(run_id, daten["aenderungen"])
     _schreibe_json_atomar(d / "plan.json", daten)
     return daten
 
@@ -356,6 +438,9 @@ def lade_plan(run_id: str) -> dict[str, Any]:
     daten = _lese_plan(d)                            # fehlt plan.json, gibt es KEINE Neuanalyse mehr
     daten.setdefault("spec", None)                   # Plaene vor dem Spec-Filter kennen weder Spec noch Spec-Liste
     daten.setdefault("specs", [])
+    daten.setdefault("quelle_art", quelle_art_von(daten.get("pdf_name") if isinstance(daten.get("pdf_name"), str) else ""))
+    st = daten.get("stichprobe")                     # Plaene vor dem Vertrauensmodus haben keine Stichprobe
+    daten["stichprobe"] = [x for x in st if isinstance(x, str)] if isinstance(st, list) else []
     daten["ergebnisse"] = _ergebnisse_in(d)
     daten["archiviert"] = (d / "archiviert.json").exists()
     return daten
@@ -372,9 +457,12 @@ def _ergebnis_lesen(e: Path) -> dict[str, Any] | None:
     try:
         daten = _lese_json(j)
         pruefe_schema(daten)
+        sp = daten.get("stichprobe") if isinstance(daten.get("stichprobe"), dict) else {}
         return {"ordner": e.name, "bilanz": daten["bilanz"], "excel": daten["ergebnis_name"],
                 "erstellt": daten["erstellt"], "freigaben": daten.get("freigaben", []),
-                "abwahl": daten.get("abwahl", [])}         # aeltere Ergebnisse kennen keine Abwahl
+                "abwahl": daten.get("abwahl", []),         # aeltere Ergebnisse kennen keine Abwahl
+                "abgelehnt": daten.get("abgelehnt", []),   # ... und keine Ablehnung, keine Stichprobe (Vertrauensmodus)
+                "stichprobe": {"passt": _ids_aus(sp.get("passt")), "falsch": _ids_aus(sp.get("falsch"))}}
     except (LaufFehler, KeyError):
         return None
 
@@ -440,11 +528,75 @@ def _id_liste(werte: list[str] | None) -> set[str]:
     return {str(x) for x in (werte or [])}
 
 
-def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None, abwahl: list[str] | None = None) -> dict[str, Any]:
+def _ids_aus(werte: Any) -> list[str]:
+    return [x for x in werte if isinstance(x, str)] if isinstance(werte, list) else []
+
+
+def _pruefe_entscheidungen(plan: dict[str, Any], bekannt: dict[str, Any], freig: set[str], abw: set[str], abl: set[str],
+                           pausch: set[str], passt: set[str], falsch: set[str]) -> None:
+    """Prueft die Entscheidungen des Menschen gegeneinander und gegen den Plan (NutzerFehler 400 mit einfachem Satz)."""
+    unbekannt = (freig | abw | abl | pausch | passt | falsch) - set(bekannt)
+    if unbekannt:
+        raise NutzerFehler(f"Unbekannte Änderungs-IDs: {sorted(unbekannt)}", 400)
+    if freig & abw:
+        raise NutzerFehler(f"Eine Änderung kann nicht zugleich freigegeben und abgewählt sein: {sorted(freig & abw)}", 400)
+    nicht_auto = sorted(x for x in abw if bekannt[x].status != UEBERNOMMEN)
+    if nicht_auto:
+        raise NutzerFehler(f"Abwählen geht nur bei automatisch eingetragenen Änderungen: {nicht_auto}", 400)
+    kein_vorschlag = sorted(x for x in abl if bekannt[x].status != PRUEFEN)
+    if kein_vorschlag:
+        raise NutzerFehler(f"Ablehnen geht nur bei Vorschlägen: {kein_vorschlag}", 400)
+    if abl & freig:
+        raise NutzerFehler(f"Eine Änderung kann nicht zugleich freigegeben und abgelehnt sein: {sorted(abl & freig)}", 400)
+    if pausch - freig:
+        raise NutzerFehler(f"Pauschal übernehmen geht nur bei freigegebenen Vorschlägen: {sorted(pausch - freig)}", 400)
+    stichprobe = set(_ids_aus(plan.get("stichprobe")))
+    fremd = sorted((passt | falsch) - stichprobe)
+    if fremd:
+        raise NutzerFehler(f"Das gehört nicht zur Stichprobe dieses Laufs: {fremd}", 400)
+    if passt & falsch:
+        raise NutzerFehler(f"Eine Änderung der Stichprobe kann nicht zugleich passen und falsch sein: {sorted(passt & falsch)}", 400)
+    if falsch - abw:
+        raise NutzerFehler(f"Was in der Stichprobe als falsch gilt, muss auch abgewählt sein: {sorted(falsch - abw)}", 400)
+    if passt & abw:
+        raise NutzerFehler(f"Eine abgewählte Änderung kann in der Stichprobe nicht „passt“ sein: {sorted(passt & abw)}", 400)
+
+
+def _entscheidungen_des_menschen(run_id: str, ergebnis: str, plan: dict[str, Any], freig: set[str], abw: set[str], abl: set[str],
+                                 pausch: set[str], passt: set[str], falsch: set[str]) -> list[dict[str, Any]]:
+    """Eine Zeile je Entscheidung fuers Freigabe-Protokoll (nur Kennungen und Pruefcodes, nie Text aus Dokumenten, Regel 16).
+    Offene Vorschlaege (weder freigegeben noch abgelehnt) und nicht eingetragene Aenderungen sind keine Entscheidung."""
+    stichprobe = set(_ids_aus(plan.get("stichprobe")))
+    zeilen = []
+    for a in plan["aenderungen"]:
+        i, codes = a.get("id"), [c for c in a.get("pruefcodes") or [] if isinstance(c, str)]
+        if a.get("status") == UEBERNOMMEN:
+            art = "stichprobe" if i in stichprobe else "automatisch"
+            if i in abw:
+                entscheidung = "abgelehnt" if i in falsch else "abgewaehlt"
+            else:
+                entscheidung = "bestaetigt" if i in passt else "uebernommen"
+        elif kategorie(a) == "pruefen" and i in freig:
+            art, entscheidung = ("vorschlag" if i in pausch else "pruefen"), "uebernommen"
+        elif kategorie(a) == "pruefen" and i in abl:
+            art, entscheidung = "pruefen", "abgelehnt"
+        else:
+            continue
+        zeilen.append(entscheidung_zeile(run_id, ergebnis, i, art, entscheidung, codes))
+    return zeilen
+
+
+def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None, abwahl: list[str] | None = None, *,
+                     abgelehnt: list[str] | None = None, pauschal: list[str] | None = None,
+                     stichprobe_passt: list[str] | None = None, stichprobe_falsch: list[str] | None = None) -> dict[str, Any]:
     """Traegt die sicheren Aenderungen und die freigegebenen Vorschlaege in eine NEUE Excel ein (eigener Ergebnis-Ordner).
     `freigaben`: IDs von Vorschlaegen ("pruefen"), die ein Mensch freigibt. `abwahl`: IDs automatischer Aenderungen
     ("uebernommen"), die ein Mensch NICHT eingetragen haben will (gekoppelte Aenderungen fallen mit weg, siehe Applier).
-    Unbekannte IDs, eine Abwahl von etwas nicht Automatischem und dieselbe ID in beiden Listen sind Fehler (400)."""
+    Unbekannte IDs, eine Abwahl von etwas nicht Automatischem und dieselbe ID in beiden Listen sind Fehler (400).
+    Nur fuers Freigabe-Protokoll (Vertrauensmodus, aendern nichts am Eintragen): `abgelehnt` = Vorschlaege, die der Mensch
+    ausdruecklich nicht uebernimmt; `pauschal` = freigegebene Vorschlaege, die er nicht einzeln angesehen hat; `stichprobe_passt` /
+    `stichprobe_falsch` = Stichproben-Karten mit "Passt" bzw. "Falsch" (Falsch muss auch in `abwahl` stehen).
+    Die Entscheidungen werden an entscheidungen.jsonl des Laufs ANGEHAENGT, sobald die Excel erstellt ist."""
     d = lauf_dir(run_id)
     plan = _lese_plan(d)
     info = _info(d)
@@ -457,15 +609,8 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None, abwahl: li
     except (KeyError, TypeError, ValueError, AttributeError):
         raise _beschaedigt() from None
     freig, abw = _id_liste(freigaben), _id_liste(abwahl)
-    bekannt = {a.id: a for a in aenderungen}
-    unbekannt = (freig | abw) - set(bekannt)
-    if unbekannt:
-        raise NutzerFehler(f"Unbekannte Änderungs-IDs: {sorted(unbekannt)}", 400)
-    if freig & abw:
-        raise NutzerFehler(f"Eine Änderung kann nicht zugleich freigegeben und abgewählt sein: {sorted(freig & abw)}", 400)
-    nicht_auto = sorted(x for x in abw if bekannt[x].status != UEBERNOMMEN)
-    if nicht_auto:
-        raise NutzerFehler(f"Abwählen geht nur bei automatisch eingetragenen Änderungen: {nicht_auto}", 400)
+    abl, pausch, passt, falsch = _id_liste(abgelehnt), _id_liste(pauschal), _id_liste(stichprobe_passt), _id_liste(stichprobe_falsch)
+    _pruefe_entscheidungen(plan, {a.id: a for a in aenderungen}, freig, abw, abl, pausch, passt, falsch)
     ordner = _neuer_ergebnis_ordner(d)
     try:
         stamm = Path(info["excel"]).stem
@@ -480,20 +625,29 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None, abwahl: li
             # werden (nie gruen); luecken_geprueft=False sagt das ausdruecklich.
             bil.update(vollstaendig=None, luecken=None, luecken_geprueft=False)
         warn = list(plan.get("warnungen", [])) + res.warnungen
-        xinfo = {"pdf_name": info["pdf"], "excel_name": info["excel"], "ergebnis_name": ziel.name}
+        xinfo = {"pdf_name": info["pdf"], "excel_name": info["excel"], "ergebnis_name": ziel.name, "quelle_art": info["quelle_art"]}
         schreibe_xlsx(ordner / "aenderungsprotokoll.xlsx", xinfo, aenderungen, bil, plan.get("layout", []), warn,
                       plan.get("farben", []), plan.get("luecken", []), plan.get("spec"))
         _schreibe_json_atomar(ordner / "ergebnis.json", {   # zuletzt: erst damit zaehlt das Ergebnis
             "run_id": run_id, "erstellt": datetime.now().isoformat(timespec="seconds"), "ergebnis_name": ziel.name,
             "freigaben": sorted(freig), "abwahl": sorted(abw), "bilanz": bil, "warnungen": warn,
+            "abgelehnt": sorted(abl), "pauschal": sorted(pausch),
+            "stichprobe": {"passt": sorted(passt), "falsch": sorted(falsch)},
             "eingabe": {"pdf": info["pdf"], "excel": info["excel"], "pdf_sha256": plan.get("pdf_sha256", ""),
                         "excel_sha256": plan["excel_sha256"]},
             "aenderungen": [a.zu_dict() for a in aenderungen]})
     except BaseException:
         shutil.rmtree(ordner, ignore_errors=True)    # eigener, noch unfertiger Ordner (ohne ergebnis.json)
         raise
+    try:                                             # Freigabe-Protokoll: erst jetzt, wo das Ergebnis wirklich zaehlt; nur anhaengen
+        haenge_entscheidungen_an(d / ENTSCHEIDUNGEN, _entscheidungen_des_menschen(
+            run_id, ordner.name, plan, freig, abw, abl, pausch, passt, falsch))
+    except OSError:
+        log.exception("Freigabe-Protokoll von Lauf %s konnte nicht ergaenzt werden", run_id)
+        warn.append("Das Freigabe-Protokoll (entscheidungen.jsonl) konnte nicht ergänzt werden. Die Excel ist trotzdem fertig.")
     return {"ordner": ordner.name, "excel": ziel.name, "bilanz": bil, "warnungen": warn,
-            "freigaben": sorted(freig), "abwahl": sorted(abw),
+            "freigaben": sorted(freig), "abwahl": sorted(abw), "abgelehnt": sorted(abl),
+            "stichprobe": {"passt": sorted(passt), "falsch": sorted(falsch)},
             "aenderungen": [a.zu_dict() for a in aenderungen]}
 
 

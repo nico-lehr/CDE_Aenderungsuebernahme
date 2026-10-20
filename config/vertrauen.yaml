@@ -1,0 +1,23 @@
+# config/vertrauen.yaml -- Vertrauensmodus: Stichprobe, Dokument-Ampel, Auswertung (Regel 28: keine Schwellen im Code).
+# Nico lernt dem Tool schrittweise zu vertrauen. Nichts hier aendert, WAS das Tool einträgt: Die Stichprobe fragt nach,
+# die Ampel fasst zusammen, die Auswertung gibt nur eine Empfehlung. Das Tool automatisiert nie von selbst mehr (Regel 27).
+
+vertrauen:
+  aktiv: true               # false = keine Stichprobe ziehen
+  stichprobe_anteil: 0.10   # so viel Anteil der automatisch eingetragenen Aenderungen kommt in die Stichprobe ...
+  stichprobe_min: 3         # ... mindestens so viele (hoechstens alle); Auswahl fest aus der Lauf-ID, bei Wiederholung gleich
+
+# Dokument-Ampel oben im Schritt "Pruefen".
+#   rot  : Bilanz stimmt nicht, PDF/Word nicht ganz gelesen (Luecken), Spec unklar, oder zu viele offene Punkte
+#   gelb : es gibt offene Punkte (unentschiedene Vorschlaege, nicht eingetragene Aenderungen) oder die Stichprobe ist noch nicht angesehen
+#   gruen: sonst
+ampel:
+  rot_offene_je_100: 40     # mehr als so viele offene Punkte je 100 Aenderungen = rot (gemessen: typisch rund 30 je 100)
+  offen_code_praefixe:      # Pruefcodes mit diesem Anfang zaehlen wie ein offener Punkt (Konsens zweier Leser u. a.)
+    - konsens_
+
+# python -m src.cli vertrauen: Empfehlung je Pruefcode (nur ein Hinweis, das Tool aendert nichts von selbst).
+auswertung:
+  min_angesehen: 20         # so viele von einem Menschen angesehene Entscheidungen braucht ein Code mindestens ...
+  freigabe_ab: 0.98         # ... dazu mindestens diese Freigabequote (Anteil 0..1) ...
+  ablehnung_max: 0.02       # ... und hoechstens diese Ablehnquote

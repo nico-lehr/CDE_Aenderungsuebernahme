@@ -345,6 +345,23 @@ summary:focus-visible, [tabindex]:focus-visible, label:focus-visible {
 .balken { height: 8px; border-radius: 999px; background: var(--grey-150); overflow: hidden; margin-top: 14px; }
 .balken-fuellung { height: 100%; width: 0; border-radius: 999px; background: var(--green); transition: width 0.4s var(--ease); }
 
+/* ====================================================================== Dokument-Ampel (Vertrauensmodus; Farben nur als Status) */
+.ampel { display: flex; align-items: flex-start; gap: 14px; padding: 12px 16px; margin-bottom: 16px; border-radius: 12px; border: 1px solid transparent; border-left-width: 6px; }
+.ampel-symbol { flex: none; width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; }
+.ampel-text { min-width: 0; flex: 1; }
+.ampel-satz { font-size: 17px; font-weight: 700; letter-spacing: -0.2px; }
+.ampel-gruende { margin: 4px 0 0; padding-left: 18px; font-size: 14px; color: var(--ink); }
+.ampel-gruende:empty { display: none; }
+.ampel[data-stufe="gruen"] { background: var(--green-wash); border-color: var(--green); }
+.ampel[data-stufe="gruen"] .ampel-satz { color: var(--green); }
+.ampel[data-stufe="gruen"] .ampel-symbol { background: var(--green); color: var(--white); }
+.ampel[data-stufe="gelb"] { background: var(--amber-wash); border-color: var(--amber); }
+.ampel[data-stufe="gelb"] .ampel-satz { color: var(--amber); }
+.ampel[data-stufe="gelb"] .ampel-symbol { background: var(--amber); color: var(--white); }
+.ampel[data-stufe="rot"] { background: var(--red-wash); border-color: var(--red); }
+.ampel[data-stufe="rot"] .ampel-satz { color: var(--red); }
+.ampel[data-stufe="rot"] .ampel-symbol { background: var(--red-solid); color: var(--on-accent); }
+
 /* ====================================================================== Spec (nur bei einer CDE mit mehreren Specs) */
 .spec-zone { margin: -16px 0 32px; }
 .spec-zeile { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 0 4px; }
@@ -380,13 +397,15 @@ summary:focus-visible, [tabindex]:focus-visible, label:focus-visible {
 }
 .karte:hover { box-shadow: var(--shadow-md); }
 .karte:focus-visible { outline-offset: 3px; }
-.karte[data-entscheid="ja"] { border-left-color: var(--green); }
+.karte[data-entscheid="ja"], .karte[data-entscheid="passt"] { border-left-color: var(--green); }
 .karte[data-entscheid="nein"] { border-left-color: var(--grey-300); }
+.karte[data-entscheid="falsch"] { border-left-color: var(--red); }
 .karte-kopf { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .karte-kopf h3 { font-size: 15px; }
 .karte-status { font-size: 13px; font-weight: 600; color: var(--amber); display: inline-flex; align-items: center; gap: 6px; }
-.karte[data-entscheid="ja"] .karte-status { color: var(--green); }
+.karte[data-entscheid="ja"] .karte-status, .karte[data-entscheid="passt"] .karte-status { color: var(--green); }
 .karte[data-entscheid="nein"] .karte-status { color: var(--grey-500); }
+.karte[data-entscheid="falsch"] .karte-status { color: var(--red); }
 .vorschau {
   font-size: 15px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; background: var(--grey-50); border: 1px solid var(--grey-150);
   border-radius: 8px; padding: 12px 16px; margin: 0;
@@ -405,8 +424,10 @@ summary:focus-visible, [tabindex]:focus-visible, label:focus-visible {
 .grund-label { margin-right: 6px; }
 .entscheid-knoepfe { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .entscheid { min-width: 132px; }
-.entscheid.ja[aria-pressed="true"] { background: var(--green); border-color: var(--green); color: var(--white); }
+.entscheid.ja[aria-pressed="true"], .entscheid.passt[aria-pressed="true"] { background: var(--green); border-color: var(--green); color: var(--white); }
 .entscheid.nein[aria-pressed="true"] { background: var(--grey-500); border-color: var(--grey-500); color: var(--white); }
+.entscheid.falsch[aria-pressed="true"] { background: var(--red-solid); border-color: var(--red-solid); color: var(--on-accent); }
+.karte-unten.ohne-bild { grid-template-columns: minmax(0, 1fr); }          /* Word: kein PDF-Ausschnitt, nur die Knöpfe */
 
 /* Kompakte Karten (automatisch eingetragen) */
 .karten.kompakt { gap: 8px; }
@@ -436,6 +457,15 @@ summary:focus-visible, [tabindex]:focus-visible, label:focus-visible {
 .klapp[open] > summary::before { transform: rotate(45deg); }
 .klapp > summary:hover { background: var(--grey-100); }
 .klapp-inhalt { padding: 0 24px 24px; }
+.karte.karte-sp { padding: 14px 18px; }
+.karte-sp .karte-kopf { margin-bottom: 8px; }
+.karte-sp .vorschau { font-size: 14px; padding: 8px 12px; }
+.sp-unten { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px 24px; margin-top: 8px; }
+.sp-unten .mini { flex: 1 1 280px; min-width: 0; margin-top: 0; }
+.sp-unten .entscheid-knoepfe { flex: none; }
+.klapp-meta { margin-left: auto; font-size: 13px; font-weight: 500; color: var(--grey-500); font-variant-numeric: tabular-nums; }
+.stichprobe .titel-zeile { align-items: flex-start; flex-wrap: nowrap; margin-bottom: 12px; }
+.stichprobe .titel-zeile .hint { flex: 1; min-width: 0; }
 .fachleute { margin-top: 48px; }
 .fachleute > summary { font-size: 14px; color: var(--grey-500); }
 .fachleute h3 { font-size: 14px; margin: 24px 0 8px; }

@@ -17,7 +17,7 @@
     <img class="brand-mark" src="favicon.svg" alt="" width="34" height="34">
     <div class="brand-text">
       <span class="brand-name">CDE-Änderungsübernahme</span>
-      <span class="brand-sub">Änderungen aus dem PDF in die CDE-Excel · lokal</span>
+      <span class="brand-sub">Änderungen aus Word oder PDF in die CDE-Excel · lokal</span>
     </div>
   </div>
   <div class="header-actions">
@@ -49,14 +49,14 @@
   <section class="schritt-bereich" id="schritt-dateien" aria-labelledby="titel-dateien">
     <div class="intro">
       <h1 id="titel-dateien" tabindex="-1">Änderungen in die CDE übernehmen</h1>
-      <p>Lege das PDF mit den Änderungen und deine CDE-Excel ab. Deine Original-Dateien bleiben unverändert.</p>
+      <p>Lege das Word-Dokument (oder PDF) mit den Änderungen und deine CDE-Excel ab. Deine Original-Dateien bleiben unverändert.</p>
     </div>
     <div class="drop-grid">
       <label class="dropzone" id="dz-pdf" tabindex="0" role="button" aria-describedby="dz-pdf-sub">
-        <input type="file" id="file-pdf" accept=".pdf,application/pdf" hidden>
+        <input type="file" id="file-pdf" accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
         <span class="dropzone-icon" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg></span>
-        <span class="dropzone-title">PDF mit Änderungen</span>
-        <span class="dropzone-sub" id="dz-pdf-sub">Hierher ziehen oder klicken</span>
+        <span class="dropzone-title">Word oder PDF mit Änderungen</span>
+        <span class="dropzone-sub" id="dz-pdf-sub">Hierher ziehen oder klicken (.docx bevorzugt, auch .pdf)</span>
       </label>
       <label class="dropzone" id="dz-xlsx" tabindex="0" role="button" aria-describedby="dz-xlsx-sub">
         <input type="file" id="file-xlsx" accept=".xlsx,.xlsm" hidden>
@@ -92,6 +92,14 @@
     </div>
 
     <div class="fortschritt-box">
+      <!-- Dokument-Ampel: kommt vom Server (Regeln in config/vertrauen.yaml), das Dashboard zeigt sie nur -->
+      <div class="ampel" id="ampel" data-stufe="gelb" role="status" aria-live="polite" hidden>
+        <span class="ampel-symbol" id="ampel-symbol" aria-hidden="true"></span>
+        <div class="ampel-text">
+          <p class="ampel-satz"><span class="sr-only" id="ampel-stufe"></span><span id="ampel-satz"></span></p>
+          <ul class="ampel-gruende" id="ampel-gruende" aria-label="Gründe für die Ampel"></ul>
+        </div>
+      </div>
       <p class="fortschritt-satz" id="fortschritt-satz" aria-live="polite"></p>
       <div class="balken" id="fortschritt" role="progressbar" aria-label="Geprüfte Vorschläge" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
         <div class="balken-fuellung" id="fortschritt-fuellung"></div>
@@ -111,6 +119,18 @@
         <p class="hint">Das startet einen neuen Abgleich mit denselben Dateien. Der jetzige bleibt unter „Zuletzt“ erhalten.</p>
       </div>
     </section>
+
+    <!-- Stichprobe (Vertrauensmodus): nur sichtbar, wenn der Lauf eine hat. Automatisch Eingetragenes kurz ansehen: Passt / Falsch -->
+    <details class="klapp stichprobe" id="klapp-stichprobe" open hidden>
+      <summary><span class="klapp-titel">Bitte kurz ansehen (Stichprobe)</span> <span class="zahl-pill" id="anzahl-stichprobe">0</span><span class="klapp-meta" id="stichprobe-stand"></span></summary>
+      <div class="klapp-inhalt">
+        <div class="titel-zeile">
+          <p class="hint">Das Tool hat diese Änderungen selbst eingetragen. Schau kurz, ob sie stimmen: „Passt“ oder „Falsch“. „Falsch“ trägt die Änderung nicht ein.</p>
+          <button class="info-icon" type="button" data-info="stichprobe" aria-haspopup="dialog" aria-expanded="false" aria-label="Erklärung: Stichprobe">i</button>
+        </div>
+        <ol class="karten" id="karten-stichprobe" aria-label="Stichprobe: automatisch eingetragene Änderungen"></ol>
+      </div>
+    </details>
 
     <section class="bereich" id="bereich-bitte" aria-labelledby="titel-bitte">
       <div class="bereich-kopf">
@@ -195,8 +215,8 @@
   <dl class="tasten">
     <dt><kbd>J</kbd> oder <kbd>↓</kbd></dt><dd>nächste Änderung</dd>
     <dt><kbd>K</kbd> oder <kbd>↑</kbd></dt><dd>vorige Änderung</dd>
-    <dt><kbd>A</kbd></dt><dd>übernehmen (weiter zur nächsten)</dd>
-    <dt><kbd>N</kbd></dt><dd>nicht übernehmen (weiter zur nächsten)</dd>
+    <dt><kbd>A</kbd></dt><dd>übernehmen, in der Stichprobe „Passt“ (weiter zur nächsten)</dd>
+    <dt><kbd>N</kbd></dt><dd>nicht übernehmen, in der Stichprobe „Falsch“ (weiter zur nächsten)</dd>
     <dt><kbd>?</kbd></dt><dd>diese Hilfe</dd>
     <dt><kbd>Esc</kbd></dt><dd>schließen</dd>
   </dl>
