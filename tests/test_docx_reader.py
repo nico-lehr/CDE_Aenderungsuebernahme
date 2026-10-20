@@ -450,6 +450,23 @@ def test_kaputtes_zip_alte_doc_fehlendes_dokument_und_passwort(tmp_path):
         analysiere_docx(doctype)
 
 
+def test_passwort_im_zip_und_strict_namespace(tmp_path):
+    from tests._docx_bau import W
+    pw = tmp_path / "zipw.docx"
+    with zipfile.ZipFile(pw, "w") as zf:
+        zf.writestr("word/document.xml", "<x/>")
+    roh = bytearray(pw.read_bytes())
+    for kopf, versatz in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):          # Bit 0 der Flags: Eintrag ist verschluesselt
+        roh[roh.index(kopf) + versatz] |= 0x1
+    pw.write_bytes(bytes(roh))
+    with pytest.raises(NutzerFehler, match="Passwort"):
+        analysiere_docx(pw)
+    b = DocxBau().absatz("Die Pumpe {-foerdert-}{+hebt+} Wasser.")
+    strict = b.speichern(tmp_path / "s.docx", extra={"word/document.xml": b.dokument_xml().replace(
+        W, "http://purl.oclc.org/ooxml/wordprocessingml/main")})
+    assert _tok(analysiere_docx(strict), "hebt").status == MOD
+
+
 def test_fehlertexte_sind_einfach_und_ohne_pfade(tmp_path):
     kaputt = tmp_path / "geheim_name.docx"
     kaputt.write_bytes(b"nein")

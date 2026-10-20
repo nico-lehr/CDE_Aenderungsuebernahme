@@ -107,6 +107,9 @@ class _Paket:
         if name not in self.namen:
             return None
         info = self.zf.getinfo(name)
+        if info.flag_bits & 0x1:
+            raise _fehler("Die Word-Datei ist mit einem Passwort geschützt. Bitte in Word das Passwort entfernen und die Datei "
+                          "erneut hochladen.", "docx_passwort")
         if info.file_size > float(self.dcfg.get("max_teil_mb", 64)) * 1024 * 1024:
             raise _fehler("Die Word-Datei enthält einen unerwartet großen Teil und wird aus Sicherheitsgründen nicht gelesen.",
                           "docx_zu_gross")
@@ -748,6 +751,9 @@ class _Leser:
             self.z.zaehler["format_tabelle"] += 1
         for tr in tbl:
             if _ln(tr) != "tr":
+                if _ln(tr) not in ("tblPr", "tblGrid", "bookmarkStart", "bookmarkEnd", "proofErr", "permStart", "permEnd",
+                                   "commentRangeStart", "commentRangeEnd", "tblPrEx"):
+                    self.z.unbekannt[_name_ok(_ln(tr))] += 1
                 continue
             zs = ""
             trpr = _kind(tr, "trPr")
@@ -1015,6 +1021,8 @@ def _analysiere(pfad: str | Path, cfg: dict | None) -> tuple[PdfAnalyse, DocxZah
     paket = _oeffne(pfad, dcfg)
     try:
         return _lies(paket, Path(pfad), cfg)
+    except RecursionError:
+        raise _fehler("Die Word-Datei ist ungewöhnlich tief verschachtelt und wird nicht gelesen.", "docx_zu_gross")
     finally:
         paket.zf.close()
 
