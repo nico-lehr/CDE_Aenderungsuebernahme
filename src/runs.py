@@ -29,7 +29,7 @@ from typing import Any
 
 from . import config
 from .applier import uebernehmen
-from . import layouts, vertrauen
+from . import konsens, layouts, vertrauen
 from .fehler import NichtGefunden, NutzerFehler
 from .gegenprobe import absaetze_aus_liste
 from .excel_model import ExcelModell, profil_kontext
@@ -344,6 +344,7 @@ def analysiere(run_id: str, profil: str | None = None, spec: str | None = None) 
             raise NutzerFehler(str(e), 400) from e
         raise
     plan = plane(pa, xl, spec=spec)
+    konsens.bildprobe_anwenden(plan.aenderungen, pa, pdf=pdf)      # zweiter Pruefweg (nur PDF): Abweichung -> "pruefen"
     bil = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
     if (d / "plan.json").exists():                   # gleichzeitige Analyse desselben Laufs: die erste gewinnt
         raise LaufFehler("Dieser Lauf wurde schon analysiert. Eine Analyse wird nicht überschrieben. "

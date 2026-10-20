@@ -43,7 +43,7 @@ from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 from openpyxl.utils.cell import coordinate_from_string
 
-from . import config
+from . import config, konsens
 from .applier import uebernehmen
 from .excel_model import ExcelModell
 from .models import ADD, DEL, MOD, NICHT, PRUEFEN, SCHEMA_VERSION, UEBERNOMMEN
@@ -2439,6 +2439,7 @@ def _messe_paar(ordner: Path, mit_vorschlaegen: bool, ergebnis_kopie: Path | Non
         pa = analysiere_pdf(pdf)
         xl = ExcelModell(vorher)
         plan = plane(pa, xl)
+        konsens.bildprobe_anwenden(plan.aenderungen, pa, pdf=pdf)
         bil_plan = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
         vor_status = {a.id: a.status for a in plan.aenderungen}
         aend_auto = copy.deepcopy(plan.aenderungen)
@@ -3482,6 +3483,7 @@ def messe_nachher(ordner: Path, einstellungen: dict[str, str] | None = None, max
         stats = baue_vorher_zurueck(nachher, rueck)
         pa = analysiere_pdf(pdf)
         plan = plane(pa, ExcelModell(rueck))
+        konsens.bildprobe_anwenden(plan.aenderungen, pa, pdf=pdf)
         bil_plan = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
         vor_status = {a.id: a.status for a in plan.aenderungen}
         aend = copy.deepcopy(plan.aenderungen)
