@@ -18,12 +18,12 @@ from src.applier import uebernehmen
 from src.docx_reader import analysiere_docx, docx_zahlen, vergleiche_mit_pdf
 from src.excel_model import ExcelModell
 from src.fehler import NutzerFehler
-from src.models import ADD, DEL, KEEP, MOD, NICHT, PRUEFEN, UEBERNOMMEN
+from src.models import ADD, DEL, KEEP, MOD, NICHT, UEBERNOMMEN
 from src.pdf_reader import analysiere_pdf
 from src.planner import plane
 from src.protokoll import bilanz
 from tests._docx_bau import DocxBau, register_docx
-from tests.test_register import GRUND, G, _ae, _ops, alt_von, excel_absaetze, register_mappe, wort_pdf
+from tests.test_register import GRUND, G, excel_absaetze, register_mappe, wort_pdf
 
 pytestmark = pytest.mark.legende_neu          # das Word-PDF der Kreuzprobe wird mit der Standard-Legende gelesen
 
@@ -62,10 +62,6 @@ def _fassungen(block) -> tuple[str, str]:
             alt += t.trenner if art != "a" else ""
             neu += t.trenner if art != "d" else ""
     return alt.replace("\xa0", " "), neu.replace("\xa0", " ")
-
-
-def _text(b: DocxBau, markup: str, **kw):
-    b.absatz(markup, **kw)
 
 
 # =================================================================================================
