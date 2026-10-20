@@ -62,3 +62,24 @@ ohne sichtbar markiertes Leerzeichen gehört ihr das unsichtbare am Umbruch (dav
 unmarkiertes steht); Trenner am Umbruch im Inneren einer Gruppe gehören ihr. Ersetzungen („altneu“) bekommen kein markiertes
 Leerzeichen; zwischen „alt“ und „neu“ nur, wenn das Leerzeichen hinter „neu“ sichtbar markiert ist. Der Text ändert sich dadurch nie,
 nur die Zuordnung des Leerzeichens zu alter bzw. neuer Fassung.
+
+## Nachtrag 20.10.2026 – Leerzeichen am Umbruch neben einer Ersetzung: die Excel entscheidet nur bei echter Mehrdeutigkeit (Welle 6)
+Auf zwei echten Beispielen waren 9 von 14 offenen Karten eine falsche Abweichung (`excel_weicht_ab` + `a1_leerraum`), obwohl der Excel-Absatz
+Zeichen für Zeichen der alte PDF-Absatz war. Form: Eine Ersetzung ("12" gestrichen, "15" neu) endet am Zeilenende, danach folgt am Umbruch ein
+unmarkierter Trenner und das nächste Wort ("mm"). Der alte Absatz der Excel hat dort **kein** Leerzeichen ("12mm"): das Leerzeichen gehört zur
+Einfuegung ("15 "), im PDF ist das nicht zu sehen (am Umbruch wird kein Leerzeichen gezeichnet). `_umbruch_gruppe` liest ihn bewusst als
+gemeinsamen Leerraum, der alte Absatz hatte dann ein Leerzeichen zu viel.
+- **Regel:** Ein Trenner, der nur wegen eines Zeilen-/Seitenumbruchs mehrdeutig ist (unmarkiert, `_umbruch`, neben einem d-/a-Lauf: `_Aufbau.mehrdeutig`),
+  wird ausgelegt als gemeinsam (bisher), nur neu oder nur alt. `abgleich.auslegung_waehlen` (aufgerufen vom Planer vor den Labels und vor
+  `_zuordnen`) nimmt eine andere Auslegung als "gemeinsam" **nur**, wenn mit ihr der alte Absatz Zeichen für Zeichen (Normalform, wie bisher)
+  an einer Excel-Stelle steht und mit keiner anderen. Kein oder mehr als ein Treffer, mehr als `planer.umbruch_auslegung_max` Trenner (3) oder
+  kein Umbruch ⇒ alles bleibt wie bisher (Regel 27). Danach läuft die Spur als exakter Treffer (A1, A3, zweiter Prüfweg).
+- **Grenze (ehrlich):** "gemeinsam" und "nur alt" geben denselben alten Absatz, die Excel kann sie nicht unterscheiden. Gehört das Leerzeichen am
+  Umbruch in Wirklichkeit zur Streichung und hat die Excel es, bleibt es bei "gemeinsam"; ein dann falscher neuer Zustand fällt in der Gegenprobe
+  (A3, `gegenprobe_text`) auf und wird zu "Bitte prüfen" (Test `test_spiegelfall_...`). "Nur alt" wird deshalb nie gewählt.
+- **Markierung:** `markierung.markiere_ops` färbt ein Leerzeichen am Rand eines eingefügten Textes rot (statt normal), wenn die Excel dort
+  keinen Leerraum hat (Zeichen davor und dahinter ohne Leerraum); sonst stünde es auch in der alten Ansicht und die Nachkontrolle des Plans
+  lehnte "12mm" → "15 mm" ab. Die Projektion aus dem PDF (`projiziere`) ist unverändert.
+- **Generator v3:** neuer Störer `umbruch_leerzeichen_ersetzung` (`tests/fixtures/word_markup.py`), nur im Korpus `nachbau_word` für Seeds >= 401
+  (Regel 29: Paare der Seeds 301-360 und alle anderen Korpora bleiben bytegleich). Soll: automatisch übernommen (die Excel weicht nicht ab).
+

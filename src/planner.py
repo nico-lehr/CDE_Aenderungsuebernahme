@@ -24,7 +24,7 @@ from . import config
 from . import markierung as mk
 from .excel_model import REGISTER_UEBERSCHRIFT, Kandidat, ExcelModell, zahl_als_text
 from .abgleich import (ExaktIndex, Label, _aufbau, _positionen, _unscharfe_abbildung, Fundstelle, Spur, Zuordnung, _woerter_norm,
-                       ganz_loeschen, label_der_spur, ops_fuer_spur, reissverschluss, spuren, umbenennen)
+                       auslegung_waehlen, ganz_loeschen, label_der_spur, ops_fuer_spur, reissverschluss, spuren, umbenennen)
 from .gegenprobe import normalform, vergleiche, zustand, zustand_mit_optional
 from .matcher import Matcher, Treffer
 from .models import (ADD, DEL, HOCH, KEEP, MITTEL, MOD, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN,
@@ -467,6 +467,11 @@ class _Planer:
         self.spuren = spuren(self.pdf, self.idx, self.cfg)
         # ADR 0006: CDE-Register in der Mappe -> Labels der PDF-Absaetze (Sub-Section, Section, Part stehen in eigenen Spalten)
         self._register = any(l.register for l in self.xl.layouts.values())
+        # Leerzeichen am Umbruch neben einer Aenderung: die Excel entscheidet nur bei echter Mehrdeutigkeit (vor den Labels:
+        # die Auslegung aendert die Laeufe)
+        maximal = int(_planer_cfg(self.cfg).get("umbruch_auslegung_max", 3))
+        for sp in self.spuren if maximal > 0 else []:
+            auslegung_waehlen(sp, self._alt_passt, maximal)
         self._labels = [label_der_spur(sp) if self._register else Label() for sp in self.spuren]
         self.zuo = self._zuordnen()
         self._zugeordnet = self._zugeordnete_zeilen()
@@ -546,6 +551,18 @@ class _Planer:
                 cands += [c for c in self._register_kandidaten(i) if (c[0].blatt, c[0].zellen) not in schon]
             alle.append(self._filtern(sp, cands))
         return reissverschluss(alle)
+
+    def _alt_passt(self, sp: Spur) -> bool:
+        """Steht der alte Zustand der Spur (in ihrem Aufbau) Zeichen fuer Zeichen an einer Excel-Stelle? Wie `_zuordnen`: bei einem
+        Label in eigener Spalte (Sub-Section, Section, Part) zaehlt der Text ohne Label an einer Zeile mit passendem Label."""
+        alt, opt = zustand_mit_optional(sp.laeufe, set())
+        cands: list[tuple[Fundstelle, str]] = [(f, "alt") for f in self.idx.finde(alt, opt)] if alt.strip() else []
+        lab = label_der_spur(sp) if self._register else Label()
+        if lab.art in ("sub", "section", "part") and lab.alt:
+            koerper, opt_k = zustand_mit_optional(sp.laeufe[lab.n:], set())
+            if koerper.strip():
+                cands += [(f, "alt") for f in self.idx.finde(koerper, opt_k) if self._label_passt(f, lab.art, lab.alt)]
+        return bool(self._filtern(sp, cands))
 
     # ------------------------------------------------------------ CDE-Register (ADR 0006 Punkt 5)
     def _register_kandidaten(self, i: int) -> list[tuple[Fundstelle, str]]:

@@ -15,9 +15,10 @@ Keine Dokumentinhalte in Codes/Gruenden fuer Berichte (Regel 16).
 from __future__ import annotations
 
 import bisect
+import itertools
 import re
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
 from . import config
 from .gegenprobe import _RANG, Vergleich, normalform, vergleiche, zustand, zustand_mit_optional
@@ -77,6 +78,8 @@ class _Aufbau:
     gruppen: list[list[int]]              # Lauf-Indizes je Aenderung (Gruppe); ID = praefix + Nummer (ab 1)
     gruppen_token: list[list[int]]        # Token-Indizes je Gruppe
     zaehl_token: list[list[int]]          # Token, die in dieser Gruppe als markierte Woerter zaehlen (jedes genau einmal)
+    mehrdeutig: list[int] = field(default_factory=list)   # Token-Index (Wort VOR dem Trenner) der unmarkierten Trenner am Umbruch
+                                                          # neben einer Aenderung, deren Zugehoerigkeit das PDF nicht zeigt
 
 
 def _umbruch(a: PdfToken, b: PdfToken) -> bool:
@@ -88,13 +91,37 @@ def _umbruch(a: PdfToken, b: PdfToken) -> bool:
     return hoehe > 0 and b.bbox[1] >= a.bbox[1] + 0.5 * hoehe
 
 
-def _umbruch_leerraum(roh: list[tuple[str, str, bool, int]], ist_trenner: list[bool], tokens: Sequence[PdfToken]) -> None:
+def _markiere(roh: list[tuple[str, str, bool, int]], tokens: Sequence[PdfToken], x: int, art: str) -> None:
+    """Der Trenner `roh[x]` wird ein d- bzw. a-Lauf; er zaehlt zum markierten Nachbarwort (links, sonst rechts)."""
+    i = roh[x][3]
+    roh[x] = (art, roh[x][1], roh[x][2], i if tokens[i].status != KEEP else i + 1)
+
+
+def _mehrdeutige_trenner(roh: list[tuple[str, str, bool, int]], ist_trenner: list[bool], tokens: Sequence[PdfToken]) -> list[int]:
+    """Token-Index (Wort vor dem Trenner) jedes Trenners, der nur wegen eines Zeilen- oder Seitenumbruchs mehrdeutig ist: unmarkiert
+    (nach den Regeln von `_umbruch_leerraum`), am Umbruch (dort zeichnet das PDF kein Leerzeichen) und neben einem d-/a-Lauf. Er kann
+    zu beiden Fassungen gehoeren (gemeinsam), nur zur neuen (Teil der Einfuegung) oder nur zur alten (Teil der Streichung)."""
+    out: list[int] = []
+    for x, (art, _, _, i) in enumerate(roh):
+        if art != "s" or not ist_trenner[x] or not (i + 1 < len(tokens) and _umbruch(tokens[i], tokens[i + 1])):
+            continue
+        if (x > 0 and roh[x - 1][0] in ("d", "a")) or (x + 1 < len(roh) and roh[x + 1][0] in ("d", "a")):
+            out.append(i)
+    return out
+
+
+def _umbruch_leerraum(roh: list[tuple[str, str, bool, int]], ist_trenner: list[bool], tokens: Sequence[PdfToken],
+                      auslegung: dict[int, str] | None = None) -> list[int]:
     """Word markiert das Leerzeichen an einer Einfuegung bzw. Streichung mit (` {+neu+}` oder `{+neu +}`). Am Zeilenumbruch
     steht im PDF kein Leerzeichen, das PDF zeigt dort nichts Markiertes. Fuer jede Gruppe aus nur d- oder nur a-Laeufen gilt
     deshalb: ein Trenner im Inneren der Gruppe gehoert ihr (d vor a: zur Streichung); eine Einfuegung bzw. Streichung hat
     genau ein markiertes Leerzeichen -- sichtbar markiert ist keins, dann nimmt sie das unsichtbare am Umbruch, davor
     sonst dahinter. Sichtbar nicht markierter Leerraum bleibt unmarkiert (Ersetzung "altneu"). Aendert nur die Art der
-    Trenner in `roh`; der Text bleibt gleich."""
+    Trenner in `roh`; der Text bleibt gleich.
+
+    Zurueck kommen die Trenner, die dabei unmarkiert (gemeinsam) bleiben, obwohl sie am Umbruch neben einer Aenderung stehen
+    (`_mehrdeutige_trenner`). `auslegung` ({Token-Index: "a" | "d"}) legt solche Trenner anders aus: nur neu bzw. nur alt
+    (die Wahl trifft `auslegung_waehlen` anhand der Excel)."""
     n = len(roh)
     k = 0
     while k < n:
@@ -108,6 +135,11 @@ def _umbruch_leerraum(roh: list[tuple[str, str, bool, int]], ist_trenner: list[b
             j += 1
         _umbruch_gruppe(roh, ist_trenner, tokens, k, letzter)
         k = j
+    mehrdeutig = _mehrdeutige_trenner(roh, ist_trenner, tokens)
+    for x, (art, _, _, i) in enumerate(roh):
+        if art == "s" and ist_trenner[x] and i in mehrdeutig and (auslegung or {}).get(i) in ("a", "d"):
+            _markiere(roh, tokens, x, (auslegung or {})[i])
+    return mehrdeutig
 
 
 def _umbruch_gruppe(roh: list[tuple[str, str, bool, int]], ist_trenner: list[bool], tokens: Sequence[PdfToken],
@@ -121,8 +153,7 @@ def _umbruch_gruppe(roh: list[tuple[str, str, bool, int]], ist_trenner: list[boo
         return i + 1 < len(tokens) and _umbruch(tokens[i], tokens[i + 1])
 
     def markiere(x: int, art: str) -> None:
-        i = roh[x][3]
-        roh[x] = (art, roh[x][1], roh[x][2], i if tokens[i].status != KEEP else i + 1)
+        _markiere(roh, tokens, x, art)
 
     wort_markiert = ist_trenner[letzter]            # "alt neu " mit sichtbar markiertem Leerzeichen hinter dem neuen Wort
     for x in range(k, letzter + 1):                                   # Trenner im Inneren der Gruppe
@@ -145,7 +176,7 @@ def _umbruch_gruppe(roh: list[tuple[str, str, bool, int]], ist_trenner: list[boo
         markiere(rechts, art)
 
 
-def _aufbau(tokens: Sequence[PdfToken], praefix: str = "G") -> _Aufbau:
+def _aufbau(tokens: Sequence[PdfToken], praefix: str = "G", auslegung: dict[int, str] | None = None) -> _Aufbau:
     roh: list[tuple[str, str, bool, int]] = []
     ist_trenner: list[bool] = []                  # parallel zu roh: Lauf ist der Trenner hinter einem Wort
     for i, t in enumerate(tokens):
@@ -158,7 +189,7 @@ def _aufbau(tokens: Sequence[PdfToken], praefix: str = "G") -> _Aufbau:
             art = getattr(t, "trenner_art", "") or "s"
             roh.append((art, t.trenner or " ", False, i if art == "s" or t.status != KEEP else i + 1))
             ist_trenner.append(True)
-    _umbruch_leerraum(roh, ist_trenner, tokens)
+    mehrdeutig = _umbruch_leerraum(roh, ist_trenner, tokens, auslegung)
     # Gruppen: maximale Folge von d/a-Laeufen (Trenner dazwischen unterbrechen nicht, ein k-Lauf schon)
     gruppe_von: list[int] = []
     gruppen: list[list[int]] = []
@@ -192,7 +223,7 @@ def _aufbau(tokens: Sequence[PdfToken], praefix: str = "G") -> _Aufbau:
                 gi = min(range(len(gruppen)), key=lambda g: min(abs(i - j) for j in gruppen_token[g]))
                 zaehl[gi].append(i)
                 gezaehlt.add(i)
-    return _Aufbau(laeufe, lauf_token, gruppen, gruppen_token, zaehl)
+    return _Aufbau(laeufe, lauf_token, gruppen, gruppen_token, zaehl, mehrdeutig)
 
 
 def laeufe_aus_tokens(tokens: Sequence[PdfToken], praefix: str = "G") -> list[Lauf]:
@@ -216,6 +247,7 @@ class Spur:
     bloecke: list[PdfBlock]
     codes: list[str] = field(default_factory=list)         # Auffaelligkeiten des ganzen Absatzes (z. B. fortsetzung_unklar)
     _a: _Aufbau | None = field(default=None, repr=False)
+    auslegung: dict[int, str] = field(default_factory=dict)   # gewaehlte Auslegung von Trennern am Umbruch ({Token-Index: "a"})
 
     @property
     def tokens(self) -> list[PdfToken]:
@@ -224,7 +256,7 @@ class Spur:
     @property
     def aufbau(self) -> _Aufbau:
         if self._a is None:
-            self._a = _aufbau(self.tokens, f"S{self.nr}G")
+            self._a = _aufbau(self.tokens, f"S{self.nr}G", self.auslegung or None)
         return self._a
 
     @property
@@ -265,6 +297,32 @@ class Spur:
                 return b
             i -= len(b.tokens)
         return self.bloecke[-1]
+
+
+def auslegung_waehlen(sp: Spur, passt: Callable[[Spur], bool], maximal: int = 3) -> bool:
+    """Die Excel entscheidet nur bei echter Mehrdeutigkeit (Auftrag ZUORDNEN, Welle 6).
+
+    Am Zeilen- oder Seitenumbruch zeichnet das PDF kein Leerzeichen, also sieht man nicht, ob ein unmarkierter Trenner neben einer
+    Aenderung zu beiden Fassungen gehoert (gemeinsam, so liest `_aufbau` ihn), nur zur neuen (Teil der Einfuegung: "12" -> "15 " mit
+    "12mm" in der Excel) oder nur zur alten (Teil der Streichung). Probiert werden alle Auslegungen der Trenner (`_Aufbau.mehrdeutig`,
+    hoechstens `maximal`); `passt(Spur)` sagt, ob der alte Zustand dieser Auslegung Zeichen fuer Zeichen (Normalform) an einer
+    Excel-Stelle steht. Eine andere Auslegung als "gemeinsam" wird nur genommen, wenn mit ihr der alte Zustand passt und mit keiner
+    anderen. "Nur alt" gibt denselben alten Zustand wie "gemeinsam" (die Excel kann beide nicht unterscheiden): passt "gemeinsam",
+    bleibt alles wie bisher; "nur alt" wird deshalb nie gewaehlt und nicht probiert. Kein Treffer oder mehrere: nichts aendert sich.
+    True, wenn die Spur danach anders aufgebaut ist."""
+    basis = sp.aufbau
+    if sp.auslegung or not sp.hat_aenderung or not basis.mehrdeutig or len(basis.mehrdeutig) > maximal:
+        return False
+    treffer: list[tuple[dict[int, str], _Aufbau]] = []
+    for wahl in itertools.product((False, True), repeat=len(basis.mehrdeutig)):
+        aus = {i: "a" for i, nur_neu in zip(basis.mehrdeutig, wahl) if nur_neu}
+        ab = _aufbau(sp.tokens, f"S{sp.nr}G", aus or None) if aus else basis
+        if passt(Spur(sp.nr, sp.bloecke, list(sp.codes), ab, aus)):
+            treffer.append((aus, ab))
+    if len(treffer) != 1 or not treffer[0][0]:
+        return False
+    sp.auslegung, sp._a = treffer[0]
+    return True
 
 
 def _fortsetzung_raten(bl: list[PdfBlock], i: int, satzende: str) -> str:
