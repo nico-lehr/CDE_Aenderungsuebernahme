@@ -64,8 +64,9 @@ Leerzeichen; zwischen „alt“ und „neu“ nur, wenn das Leerzeichen hinter �
 nur die Zuordnung des Leerzeichens zu alter bzw. neuer Fassung.
 
 ## Nachtrag 20.10.2026 – Leerzeichen am Umbruch neben einer Ersetzung: die Excel entscheidet nur bei echter Mehrdeutigkeit (Welle 6)
-Auf zwei echten Beispielen waren 9 von 14 offenen Karten eine falsche Abweichung (`excel_weicht_ab` + `a1_leerraum`), obwohl der Excel-Absatz
-Zeichen für Zeichen der alte PDF-Absatz war. Form: Eine Ersetzung ("12" gestrichen, "15" neu) endet am Zeilenende, danach folgt am Umbruch ein
+**Berichtigung:** Dieser Fall wurde zuerst für die Ursache von 9 von 14 offenen Karten auf zwei echten Beispielen gehalten. Die Nachmessung
+zeigt, dass dort der Trenner mitten in der Zeile liegt (kein Umbruch); die echten Karten sind unverändert und sind eine echte
+Leerzeichen-Abweichung der Excel (siehe docs/status.md, Welle 6 Stufe 2). Die Regel unten bleibt für den Umbruch-Fall richtig. Form des Umbruch-Falls: Eine Ersetzung ("12" gestrichen, "15" neu) endet am Zeilenende, danach folgt am Umbruch ein
 unmarkierter Trenner und das nächste Wort ("mm"). Der alte Absatz der Excel hat dort **kein** Leerzeichen ("12mm"): das Leerzeichen gehört zur
 Einfuegung ("15 "), im PDF ist das nicht zu sehen (am Umbruch wird kein Leerzeichen gezeichnet). `_umbruch_gruppe` liest ihn bewusst als
 gemeinsamen Leerraum, der alte Absatz hatte dann ein Leerzeichen zu viel.
