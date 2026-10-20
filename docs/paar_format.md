@@ -153,7 +153,9 @@ kommentare, formatiert, umbrueche_im_absatz}). Je Änderung zusätzlich:
 Typische Störer-Kennungen: `markup_leiste`/`nur_inline`, `sprechblase_formatiert`, `sprechblase_kommentar`, `kopf_fuss_aenderung`,
 `vorspann`, `bearbeiter_hinweise`, `inhaltsverzeichnis`, `seitenumbruch_im_absatz`, `listennummer_gruen`, `absatz_neu`, `absatz_geloescht`,
 `subsection_neu`, `subsection_doppelbuchstabe`, `klammer_zeichengenau`, `platzhalter_gelb`, `excel_abweichung`,
-`excel_abweichung_ohne_aenderung`, `alte_markierung_cd`, `zweite_autorfarbe`, `ueberschrift_aenderung`, `listenebenen`, `fette_zelle`.
+`excel_abweichung_ohne_aenderung`, `alte_markierung_cd`, `zweite_autorfarbe`, `ueberschrift_aenderung`, `listenebenen`, `fette_zelle`,
+`umbruch_leerzeichen_ersetzung` (nur Seeds >= 401 im Korpus `nachbau_word`: Wert und Einheit ohne Leerzeichen "12mm" in der Excel, Word ersetzt
+den Wert durch "15 ", der Zeilenumbruch fällt hinter die Ersetzung; Soll `uebernommen`).
 
 ### Messung (Auftrag 003): Legende und Format je Korpus, Format-Treue, Rückbau-Messung
 * **Legende/Format je Korpus:** `messen` liest `legende` und `nachher_format` aus der `KORPUS.json` des Paar-Ordners (Vorrang: Aufruf

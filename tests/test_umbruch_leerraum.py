@@ -24,7 +24,6 @@ from src.pdf_reader import analysiere_pdf
 from src.planner import plane
 from tests._word_pdf import EBENEN, RECHTS, WordDok, breite
 from tests.fixtures import word_markup as wm
-from tests.fixtures.generator import erzeuge_paar
 from tests.test_register import GRUND, G, _EBENE, _label_art, register_mappe, stuecke
 
 VOKABULAR = "Das Gehaeuse steht auf einem Sockel aus Beton und ist gegen Feuchte und Frost gut geschuetzt".split()
@@ -205,11 +204,21 @@ def test_mehrdeutige_trenner_und_auslegung_einzeln():
 # ================================================================================================ Generator v3: Stoerer
 KLEIN = {"basis": "word_markup", "name": "klein", "zeilen": (45, 60)}
 STOERER = "umbruch_leerzeichen_ersetzung"
-# Regel 29: Paare der Seeds < 401 aendern sich durch den neuen Stoerer nie (Hashes des Paars Seed 371, KLEIN, vor dem Stoerer erzeugt)
-HASHES_371 = {"aenderungen.pdf": "454f44fc0b3d7fe931313aa54aad1168023fafd6ca29c2572a4a00793597ae5a",
-              "erwartet.json": "c98aaf30bb497c63cb72cea6ba638bc24f57c00ce32c4477532187ecb993fb36",
-              "vorher.xlsx": "82775dd2dc85dd2fad0cc3de1f2fea408e225e0dea504b066a7ea8d1a0523a0d",
-              "nachher.xlsx": "ad30b6d90052d9b8ee1c6407b02481cd0d12b74553dee3bb7dcf7a9e7f8ccdcc"}
+# Regel 29: Paare der Seeds < 401 aendern sich durch den neuen Stoerer nie. Hashes des LOGISCHEN MODELLS (Absaetze, Texte, Aenderungen,
+# Stoerer) einiger Seeds, vor dem Stoerer erzeugt -- unabhaengig von Bibliotheksversionen (anders als die Bytes der PDF-/Excel-Dateien;
+# "scripts/erzeuge_paare.py --seeds 301-360" erzeugt bytegleiche Paare, einmalig geprueft).
+MODELL_HASHES = {(301, False): "8edf9de69737dd980fb1da2e8cba8298d356dd726712e42f57c4c864cac0f03f",
+                 (330, False): "8c69cdadee5978b0178ccf3f3cc16798726700feb690659dcf1540e98e218311",
+                 (360, False): "5b04d1c6f9ae4d10c830d6cedd447e9c0596353b2b28382303d25a8ce2ee7a57",
+                 (371, True): "48e9527237dd2a01faa253eff50dfff1af40c961a0ea32925f6b10f4eb7156c6",
+                 (385, True): "ed76287960f34542c4c4b7a062d9daf264540f157058a54b2aef9d654bb31f6d"}
+
+
+def _modell_hash(seed: int, klein: bool) -> str:
+    ctx = wm.baue_kontext(seed, KLEIN if klein else None)
+    daten = [[a.id, a.art, a.text, [(e.start, e.ende, e.neu, e.autor, e.art) for e in a.edits], a.excel_alt, sorted(a.stoerer),
+              a.label_alt, a.label_neu, a.status] for a in ctx.absaetze]
+    return hashlib.sha256(json.dumps([daten, sorted(ctx.stoerer)], ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def test_stoerer_wirkt_nur_ab_seed_401_im_korpus_nachbau_word():
@@ -222,11 +231,10 @@ def test_stoerer_wirkt_nur_ab_seed_401_im_korpus_nachbau_word():
     assert STOERER in wm.baue_kontext(371, {**KLEIN, "umbruch_leerzeichen": True}).stoerer      # nur fuer Tests des Generators
 
 
-def test_paar_seed_371_bleibt_bytegleich(tmp_path):
-    """Waechter (Regel 29): der Stoerer aendert bestehende Paare nicht."""
-    p = erzeuge_paar(371, KLEIN, tmp_path / "nachbau_word", "nachbau_word")
-    for n, h in HASHES_371.items():
-        assert hashlib.sha256((p / n).read_bytes()).hexdigest() == h, n
+def test_modell_der_seeds_unter_401_bleibt_unveraendert():
+    """Waechter (Regel 29): der Stoerer aendert das Modell bestehender Seeds nicht (also auch nicht ihre Paare)."""
+    for (seed, klein), h in MODELL_HASHES.items():
+        assert _modell_hash(seed, klein) == h, seed
 
 
 def test_stoerer_paar_aufbau_und_wahrheit(tmp_path):
