@@ -446,3 +446,78 @@ def test_browser_unklare_spec_blockiert_excel_erstellen_bis_eine_gewaehlt_ist(sp
     assert "44 55 66" in aus["spec_text"] and "Zeilen" in aus["spec_text"] and aus["wahl_zu"]
     assert aus["andere"] == "false" and aus["andere_offen"] == "true" and aus["wahl_offen"] and aus["aktuell"] == "44 55 66"
     assert "eingetragen" in aus["fertig"]
+
+
+# ---------------------------------------------------------------------------------------------------------------- 5. Word-Eingabe
+# Das Word-Lesen kommt von einem anderen Helfer (src/docx_reader.py); hier ein Fake wie in tests/test_vertrauen.py.
+from tests.test_vertrauen import _docx_datei, docx_leser  # noqa: E402,F401  (docx_leser ist eine Fixture)
+
+_NODE_DOCX = r"""
+const { chromium } = require('playwright');
+const [basis, docx, xlsx] = process.argv.slice(2);
+(async () => {
+  let b;
+  try { b = await chromium.launch(); } catch (e) { console.log(JSON.stringify({ kein_browser: String(e).slice(0, 200) })); return; }
+  const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
+  const fehler = [];
+  p.on('console', (m) => { if (m.type() === 'error') fehler.push(m.text()); });
+  p.on('pageerror', (e) => fehler.push(String(e)));
+  const aus = { fehler };
+  await p.goto(basis + '/');
+  await p.waitForFunction(() => document.getElementById('pill-text').textContent.includes('Port'));
+  aus.accept = await p.getAttribute('#file-pdf', 'accept');
+  await p.setInputFiles('#file-pdf', docx);
+  aus.dz_sub = await p.textContent('#dz-pdf-sub');
+  await p.setInputFiles('#file-xlsx', xlsx);
+  await p.click('#btn-abgleichen');
+  await p.waitForSelector('#schritt-pruefen:not([hidden]) #karten-bitte .karte', { timeout: 60000 });
+  aus.lauf_name = await p.textContent('#lauf-name');
+  aus.bilder = await p.locator('.im-pdf, #schritt-pruefen img').count();
+  aus.text = await p.evaluate(() => document.getElementById('schritt-pruefen').innerText);
+  aus.sp_karten = await p.locator('#karten-stichprobe .karte').count();
+  aus.vorschau_da = await p.locator('#karten-bitte .karte .vorschau').count();
+  aus.orte = await p.$$eval('#karten-bitte .karte h3', (l) => l.map((x) => x.textContent));
+  await p.click('#fachleute summary');
+  aus.fachleute = await p.textContent('#fachleute-inhalt');
+  await p.keyboard.press('Escape');
+  await p.click('#btn-excel');
+  await p.waitForSelector('#schritt-fertig:not([hidden])', { timeout: 60000 });
+  aus.fertig = await p.textContent('#fertig-satz');
+  await b.close();
+  console.log(JSON.stringify(aus));
+})().catch((e) => { console.log(JSON.stringify({ absturz: String(e) })); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(not _playwright_da(), reason="node mit Playwright nicht vorhanden")
+def test_browser_word_dokument_zeigt_nur_den_text_ohne_pdf_ausschnitt(paar, tmp_path, monkeypatch, docx_leser):
+    from werkzeug.serving import make_server
+
+    docx = _docx_datei(tmp_path / "Änderungen.docx")
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    monkeypatch.setitem(config.lade("server"), "port", server.server_port)
+    faden = threading.Thread(target=server.serve_forever, daemon=True)
+    faden.start()
+    skript = tmp_path / "docx.js"
+    skript.write_text(_NODE_DOCX, encoding="utf-8")
+    try:
+        r = subprocess.run([_node(), str(skript), f"http://127.0.0.1:{server.server_port}", str(docx), str(paar["alt"])],
+                           capture_output=True, text=True, env=_node_umgebung(), timeout=180)
+    finally:
+        server.shutdown()
+        faden.join(10)
+    zeilen = [z for z in r.stdout.splitlines() if z.startswith("{")]
+    assert zeilen, f"keine Ausgabe vom Browser-Skript: {r.stdout[-500:]} {r.stderr[-500:]}"
+    aus = json.loads(zeilen[-1])
+    if "kein_browser" in aus:
+        pytest.skip(f"Chromium nicht startbar: {aus['kein_browser']}")
+    assert "absturz" not in aus, aus
+    assert aus["fehler"] == [], f"Konsolenfehler: {aus['fehler']}"
+    assert ".docx" in aus["accept"] and "✓ Änderungen.docx" in aus["dz_sub"] and aus["lauf_name"].startswith("Änderungen.docx")
+    # Word: nur der Text (Ergebnis wie in der Excel), kein PDF-Ausschnitt, keine „Seite 0“, kein „PDF“ in den Karten
+    assert aus["bilder"] == 0 and "Seite 0" not in aus["text"] and "Im PDF" not in aus["text"] and "PDF-Ausschnitt" not in aus["text"]
+    assert aus["vorschau_da"] == 1 and aus["sp_karten"] == 3 and all(o.startswith("Section") or o.startswith("Im Word-Dokument") for o in aus["orte"])
+    assert "Word-Dokument" in aus["fachleute"] and "PDF-Seiten" not in aus["fachleute"] and "Word-Änderungsverfolgung direkt gelesen" in aus["fachleute"]
+    assert "eingetragen" in aus["fertig"]
+    (lauf,) = runs.liste()
+    assert runs.lade_plan(lauf["run_id"])["quelle_art"] == "docx"

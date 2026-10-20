@@ -403,6 +403,8 @@ def test_css_kontraste_text_auf_flaeche(thema):
         # Spec-Auswahl: Zeilenzahl auf Hover (blau), Titel auf dem gelben Hinweis, aktuelle Spec auf Grün
         ("--grey-500", "--rr-blue-light"), ("--ink", "--rr-blue-light"), ("--ink", "--green-wash"),
         ("--ink", "--amber-wash"),
+        # Dokument-Ampel: Beschriftung im Kreis (Weiß auf Gelb/Grün) und Gründe auf dem roten Wash; Falsch gedrückt
+        ("--white", "--amber"), ("--ink", "--red-wash"), ("--on-accent", "--red-solid"),
     ]
     schlecht = []
     for vorn, hinten in paare:
@@ -459,3 +461,47 @@ def _node() -> str | None:
 def test_app_js_syntax_mit_node():
     r = subprocess.run([_node(), "--check", str(FRONTEND / "app.js")], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
+
+
+# ----------------------------------------------------------------------------------------------
+# Vertrauensmodus (Dokument-Ampel, Stichprobe) und Eingabe Word oder PDF
+# ----------------------------------------------------------------------------------------------
+def test_ampel_im_schritt_pruefen_ist_ein_ansage_bereich_und_kommt_vom_server():
+    ampel = _finde(id="ampel")[0]
+    assert ampel.get("role") == "status" and ampel.get("aria-live") == "polite" and "hidden" in ampel, "ohne Daten nichts anzeigen"
+    assert next(t for t, a in SEITE.elemente if a is _finde(id="ampel-gruende")[0]) == "ul" and _finde(id="ampel-gruende")[0].get("aria-label")
+    assert _finde(id="ampel-symbol")[0].get("aria-hidden") == "true", "das Symbol allein sagt nichts: der Satz steht daneben"
+    assert "sr-only" in (_finde(id="ampel-stufe")[0].get("class") or ""), "die Stufe steht auch für Screenreader da"
+    ids = HTML_IDS
+    assert ids.index("titel-pruefen") < ids.index("ampel") < ids.index("fortschritt-satz"), "Die Ampel steht oben im Schritt Prüfen"
+    for stufe in ("gruen", "gelb", "rot"):
+        assert f'.ampel[data-stufe="{stufe}"]' in CSS
+    # Regel 8: keine Ampel-Regeln im Dashboard; es fragt den Server (Schwellen stehen in config/vertrauen.yaml)
+    assert "/ampel?offen=" in JS and "rot_offene_je_100" not in JS and "stichprobe_offen=" in JS
+    assert "Dokument-Ampel" in JS
+
+
+def test_stichprobe_ist_ein_einklappbarer_block_vor_bitte_pruefen_und_nur_sichtbar_wenn_vorhanden():
+    block = _finde(id="klapp-stichprobe")[0]
+    assert next(t for t, a in SEITE.elemente if a is block) == "details" and "hidden" in block
+    assert HTML_IDS.index("klapp-stichprobe") < HTML_IDS.index("bereich-bitte"), "Die Stichprobe steht zuerst"
+    assert "Bitte kurz ansehen (Stichprobe)" in HTML
+    liste = _finde(id="karten-stichprobe")[0]
+    assert next(t for t, a in SEITE.elemente if a is liste) == "ol" and liste.get("aria-label")
+    for wort in ("'Passt'", "'Falsch'", "'passt'", "'falsch'", "stichprobeEntscheide", "stichprobe: { titel:"):
+        assert wort in JS, f"Fehlt in app.js: {wort}"
+    # A/N gelten in der Stichprobe als Passt/Falsch; J/K laufen über alle Karten, die Stichprobe zuerst
+    assert "karte.dataset.art === 'stichprobe'" in JS and "#karten-stichprobe .karte, #karten-bitte .karte" in JS
+    assert "Falsch" in HTML and ".entscheid.falsch" in CSS and ".entscheid.passt" in CSS
+
+
+def test_word_oder_pdf_als_eingabe_und_kein_pdf_ausschnitt_bei_word():
+    feld = _finde(id="file-pdf")[0]
+    assert ".docx" in feld["accept"] and ".pdf" in feld["accept"]
+    assert "Word oder PDF mit Änderungen" in HTML
+    assert "/\\.(docx|pdf)$/i" in JS and "fd.append('datei'" in JS
+    assert "Alte Word-Dateien (.doc)" in JS
+    # Word hat keine Seiten: kein Ausschnitt, kein „Seite 0“, kein PDF-Wort in der Karte
+    assert "istDocx()" in JS and "if (istDocx()) return null" in JS.split("function bildPdf")[1][:200]
+    assert "Im Word-Dokument" in JS and "ohne-bild" in JS and ".karte-unten.ohne-bild" in CSS
+    assert "docx:" in JS and "legende_modus" in JS

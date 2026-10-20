@@ -574,12 +574,13 @@
     const tid = 'sk-' + sicher(a.id), sid = 'ss-' + sicher(a.id);
     const knopf = (wert, beschriftung) => h('button', { class: `btn btn-secondary entscheid ${wert}`, type: 'button', 'data-wert': wert,
       'aria-pressed': e === wert ? 'true' : 'false', 'aria-describedby': tid, onclick: () => stichprobeEntscheide(a.id, wert, false) }, beschriftung);
-    return h('li', {}, h('article', { class: 'karte', tabindex: '0', 'data-id': a.id, 'data-art': 'stichprobe', 'data-entscheid': e || 'offen',
+    // Schlank gehalten: der Text wie in der Excel und zwei Knöpfe; PDF-Ausschnitt und Grund liegen eingeklappt dabei
+    return h('li', {}, h('article', { class: 'karte karte-sp', tabindex: '0', 'data-id': a.id, 'data-art': 'stichprobe', 'data-entscheid': e || 'offen',
       'aria-labelledby': tid, 'aria-describedby': sid },
       h('div', { class: 'karte-kopf' }, h('h3', { id: tid }, ortText(a)), h('p', { class: 'karte-status', id: sid }, stichprobeStatus(e))),
       vorschau(a),
-      grundZeile(a),
-      h('div', { class: 'karte-unten' + (istDocx() ? ' ohne-bild' : '') }, bildPdf(a),
+      h('div', { class: 'sp-unten' },
+        h('details', { class: 'mini' }, h('summary', {}, istDocx() ? 'Grund ansehen' : 'Im PDF ansehen'), bildPdf(a), grundZeile(a)),
         h('div', { class: 'entscheid-knoepfe', role: 'group', 'aria-label': 'Stichprobe: Entscheidung' }, knopf('passt', 'Passt'), knopf('falsch', 'Falsch')))));
   }
 
