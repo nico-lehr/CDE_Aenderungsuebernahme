@@ -164,6 +164,31 @@ def test_leerzeichen_im_gestrichenen_text_wird_mit_gestrichen(tmp_path):
     assert auto == [("normal", "Die Anlage gilt fuer alle Pumpen im Kel ler und im Werk.")]
 
 
+def test_einheit_und_abkuerzung_ohne_leerzeichen_bleiben_unveraendert(tmp_path):
+    """Einheit ("25mm") und Abkuerzung ("z.B.") ohne Leerzeichen weit weg von der Aenderung: haeufige Abweichungen in echten
+    Tabellen. Nur Leerzeichen sind anders -> a1_leerraum, Vorschlag, die Excel behaelt ihre Schreibweise."""
+    excel = "Die Nennweite von 25mm gilt z.B. fuer alle Pumpen im Keller und im Werk."
+    pdf = [[("Die Nennweite von 25 mm gilt z. B. fuer alle Pumpen im ", "k"), ("Keller", "d"), ("Hof", "n"), (" und im Werk.", "k")]]
+    plan, frei, auto = _lauf(tmp_path, pdf, excel)
+    a = _genau_ein_vorschlag(plan)
+    assert "a1_leerraum" in a.pruefcodes
+    assert a.grund_einfach == "Die Excel weicht hier vom alten PDF-Text ab (nur Leerzeichen). Vorschlag bitte prüfen."
+    assert frei == [("normal", "Die Nennweite von 25mm gilt z.B. fuer alle Pumpen im "), ("alt", "Keller"), ("neu", "Hof"),
+                    ("normal", " und im Werk.")]
+    assert auto == [("normal", excel)]
+
+
+def test_leerzeichen_im_gestrichenen_wert_wird_mit_gestrichen(tmp_path):
+    """Das PDF streicht "25 mm" und schreibt "30 mm"; die Excel hat "25mm". Gestrichen wird die Stelle der Excel ("25mm")."""
+    pdf = [[("Die Nennweite von ", "k"), ("25 mm", "d"), ("30 mm", "n"), (" gilt fuer alle Pumpen im Keller und im Werk.", "k")]]
+    plan, frei, auto = _lauf(tmp_path, pdf, "Die Nennweite von 25mm gilt fuer alle Pumpen im Keller und im Werk.")
+    a = _genau_ein_vorschlag(plan)
+    assert "a1_leerraum" in a.pruefcodes
+    assert frei == [("normal", "Die Nennweite von "), ("alt", "25mm"), ("neu", "30 mm"),
+                    ("normal", " gilt fuer alle Pumpen im Keller und im Werk.")]
+    assert auto == [("normal", "Die Nennweite von 25mm gilt fuer alle Pumpen im Keller und im Werk.")]
+
+
 def test_genau_gleicher_text_mit_anderem_polster_bleibt_automatisch(tmp_path):
     """Gegenprobe: Tab, geschuetztes und doppeltes Leerzeichen sind in der Normalform GLEICH -- das ist keine Abweichung, die
     Aenderung wird wie bisher automatisch eingetragen."""
