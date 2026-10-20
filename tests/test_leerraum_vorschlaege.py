@@ -189,6 +189,23 @@ def test_leerzeichen_im_gestrichenen_wert_wird_mit_gestrichen(tmp_path):
     assert auto == [("normal", "Die Nennweite von 25mm gilt fuer alle Pumpen im Keller und im Werk.")]
 
 
+@pytest.mark.parametrize("excel", [
+    "Die Anlage gilt fuer alle Pumpen im Kelle und im Werk.",      # Buchstabe fehlt weit vor der Stelle (a1_buchstabe)
+    "Die Anlage gilt fuer alle Pumpen imKeller und im Werk.",      # Leerzeichen fehlt weit vor der Stelle (a1_leerraum)
+])
+def test_gestrichene_wortgruppe_vor_dem_satzpunkt_nimmt_ihr_leerzeichen_mit(tmp_path, excel):
+    """Word streicht das Leerzeichen vor der gestrichenen Wortgruppe mit ("Keller{- und im Werk-}."). Der Vorschlag streicht es
+    auch; frueher blieb es unmarkiert stehen ("Keller ." in der Neu-Ansicht), weil der PDF-Absatz fuer die Markierung wegen des
+    Leerzeichens vor dem Punkt verworfen wurde."""
+    pdf = [[("Die Anlage gilt fuer alle Pumpen im Keller", "k"), (" und im Werk", "d"), (".", "k")]]
+    plan, frei, auto = _lauf(tmp_path, pdf, excel)
+    a = _genau_ein_vorschlag(plan)
+    assert len(plan.absaetze) == 1 and a.id in plan.absaetze[0].aenderungen
+    vorn = excel[:excel.index(" und im Werk")]
+    assert frei == [("normal", vorn), ("alt", " und im Werk"), ("normal", ".")]
+    assert auto == [("normal", excel)]
+
+
 def test_genau_gleicher_text_mit_anderem_polster_bleibt_automatisch(tmp_path):
     """Gegenprobe: Tab, geschuetztes und doppeltes Leerzeichen sind in der Normalform GLEICH -- das ist keine Abweichung, die
     Aenderung wird wie bisher automatisch eingetragen."""

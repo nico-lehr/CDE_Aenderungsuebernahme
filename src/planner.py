@@ -1092,7 +1092,10 @@ class _Planer:
                               if z[1] != mk.ALT)
         except ValueError:
             return
-        if " ".join(projiziert.split()) != " ".join(geplant.split()):
+        # Gleicher neuer Text in der Normalform (Leerraum zaehlt als EIN Leerzeichen, vor Satzzeichen keins): eine gestrichene
+        # Wortgruppe vor dem Satzpunkt laesst in den Operationen ein Leerzeichen vor dem Punkt stehen, das Word mitstreicht
+        # ("einschliesslich{- Typenschild-}."); die Projektion streicht es mit und ist dort richtig.
+        if normalform(projiziert, self.cfg.get("normalform"))[0] != normalform(geplant, self.cfg.get("normalform"))[0]:
             return
         self._absatz(k.blatt, [(k.zeile, k.spalte, k.start, k.end)], out)
 
