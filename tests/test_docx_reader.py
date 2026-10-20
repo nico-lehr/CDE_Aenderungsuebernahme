@@ -22,6 +22,8 @@ from src.planner import plane
 from tests._docx_bau import DocxBau, register_docx
 from tests.test_register import GRUND, G, _ae, _ops, alt_von, excel_absaetze, register_mappe, wort_pdf
 
+pytestmark = pytest.mark.legende_neu          # das Word-PDF der Kreuzprobe wird mit der Standard-Legende gelesen
+
 SPERR = [str(c) for c in config.lade("zuordnung")["planer"]["unsichere_hinweise"]]
 
 
@@ -455,3 +457,51 @@ def test_docx_zahlen_nur_zahlen_und_formen(tmp_path):
     a, z = docx_zahlen(b.speichern(tmp_path / "z.docx"))
     assert z.zaehler["ins"] == 1 and z.zaehler["del"] == 1 and z.zaehler["move_from"] == 1 and z.zaehler["move_to"] == 1
     assert z.zaehler["tabellen"] == 1 and z.autoren == {"Erfunden"}
+
+
+# =================================================================================================
+# 7. Kreuzprobe: dasselbe erfundene Dokument als .docx und als Word-PDF -> dieselben Aenderungen im Planer
+# =================================================================================================
+def _kurz(plan):
+    return [(a.typ, a.section, a.alt, a.neu, a.status) for a in plan.aenderungen]
+
+
+def _beide(tmp_path, pdf_absaetze, auto=True, excel_abs=None, vorspann=None):
+    pdf = wort_pdf(tmp_path / "a.pdf", pdf_absaetze, vorspann)
+    docx = register_docx(tmp_path / "a.docx", pdf_absaetze, auto)
+    xlsx = register_mappe(tmp_path / "alt.xlsx", excel_abs if excel_abs is not None else excel_absaetze(pdf_absaetze))
+    p_pdf = plane(analysiere_pdf(pdf), ExcelModell(xlsx))
+    p_docx = plane(analysiere_docx(docx), ExcelModell(xlsx))
+    return p_pdf, p_docx, xlsx
+
+
+def _szenario(aenderungen: dict[int, tuple]) -> list[tuple]:
+    pdf = list(GRUND)
+    for i, x in aenderungen.items():
+        pdf[i] = x
+    return pdf
+
+
+SZENARIEN = {
+    "einfuegung_streichung_ersetzung": {
+        2: ("sub", "A.", "Die Pumpe {-foerdert-}{+hebt+} das {+klare +}Wasser in das {-obere -}Becken."),
+        5: ("liste", "2.", "Werknorm WN {-2040-}{+2041+} fuer Leitungen.")},
+    "zeichen_genau": {
+        2: ("sub", "A.", "Die Pumpe{+n+} foerdert{+t+} das Wasser in das obere Becken{-.-}{+!+}"),
+        4: ("liste", "1.", "Werknorm WN {-[1001]-}{+1002+} fuer Ventile.")},
+    "section_part_titel": {
+        0: ("part", "1", "{-ALLGEMEINES-}{+ALLGEMEINE ANGABEN+}"),
+        1: ("section", "1.1", "PUMPEN{+HAUS+}")},
+    "nummernaenderung_und_geloeschter_punkt": {
+        6: ("liste", "{-a.-}", "{-Pruefung der Dichtungen nach Plan.-}"),
+        7: ("liste", "{-b.-}{+a.+}", "Pruefung der Lager {+und Dichtungen +}nach Plan.")},
+    "geaenderte_section_nummer": {
+        9: ("section", "{-1.2-}{+1.3+}", "LAGERUNG")},
+}
+
+
+@pytest.mark.parametrize("name", list(SZENARIEN))
+def test_kreuzprobe_docx_und_word_pdf_geben_dieselben_aenderungen(tmp_path, name):
+    p_pdf, p_docx, _ = _beide(tmp_path, _szenario(SZENARIEN[name]))
+    assert len(p_docx.aenderungen) >= 1
+    assert _kurz(p_docx) == _kurz(p_pdf)

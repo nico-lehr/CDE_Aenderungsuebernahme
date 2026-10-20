@@ -805,10 +805,12 @@ def _teile(g: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return out
 
 
-def _tokens(zeichen: list[tuple[str, str]]) -> list[PdfToken]:
+def _tokens(zeichen: list[tuple[str, str]]) -> tuple[list[PdfToken], bool]:
     """Zeichen mit Status -> Woerter (PdfToken) wie der PDF-Leser: Wort = Folge ohne Leerraum; Zeichen-Laeufe (`teile`) bei
     Zeichen-genauen Aenderungen; markierter Leerraum = `trenner_art`, oder (eingefuegtes Leerzeichen zwischen zwei alten
-    Woertern bzw. gestrichenes zwischen zwei neuen) ein zusammengelegtes Wort mit dem Leerraum als Lauf."""
+    Woertern bzw. gestrichenes zwischen zwei neuen) ein zusammengelegtes Wort mit dem Leerraum als Lauf.
+    Ein Tabulator ist wie im Word-PDF (dort fehlt das Zeichen) ein normaler Trenner " "; ob hinter dem ersten Wort ein Tabulator
+    stand (haengender Einzug nach der Listennummer), gibt der zweite Rueckgabewert an."""
     woerter: list[list[tuple[str, str]]] = []
     seps: list[tuple[str, str]] = []
     akt: list[tuple[str, str]] = []
@@ -834,9 +836,11 @@ def _tokens(zeichen: list[tuple[str, str]]) -> list[PdfToken]:
         alt = "".join(c for c, s in g if s in (KEEP, DEL))
         neu = "".join(c for c, s in g if s in (KEEP, ADD))
         status = KEEP if all(s == KEEP for s in st) else DEL if all(s == DEL for s in st) else ADD if all(s == ADD for s in st) else MOD
-        tokens.append(PdfToken(old=alt, new=neu, status=status, page=0, bbox=(0.0, 0.0, 0.0, 0.0), trenner=sep_text, teile=_teile(g)))
+        tokens.append(PdfToken(old=alt, new=neu, status=status, page=0, bbox=(0.0, 0.0, 0.0, 0.0),
+                               trenner=" " if sep_text == "\t" else sep_text, teile=_teile(g)))
+    erster_tab = bool(seps) and seps[0][0] == "\t"
     _kleben(tokens, [st for _, st in seps], [t for t, _ in seps])
-    return tokens
+    return tokens, erster_tab
 
 
 def _kleben(tokens: list[PdfToken], sep_status: list[str], sep_text: list[str]) -> None:
@@ -1023,7 +1027,7 @@ def _lies(paket: _Paket, pfad: Path, cfg: dict | None) -> tuple[PdfAnalyse, Docx
     for a in leser.absaetze:
         if not a.ex_alt and not a.ex_neu and not a.zeichen:
             continue
-        a.tokens = _tokens(_marken_zeichen(a) + a.zeichen)
+        a.tokens, a.erster_tab = _tokens(_marken_zeichen(a) + a.zeichen)
     # 3. Bloecke (eine Tabellenzelle = ein Block)
     sec_alt: str | None = None
     sec_neu: str | None = None
@@ -1111,7 +1115,7 @@ def _ist_kopf(a: _Abs, toks: list[PdfToken], lay: dict, ueber_re: re.Pattern, ma
             return True
     rx = _re_cfg(lay, "section_nummer")
     hat_nr = bool(rx) and any(rx.match(x) for x in (t0.old, t0.new) if x)                 # type: ignore[union-attr]
-    if hat_nr and (t0.trenner == "\t" or _gross_anteil(toks[1:]) >= lay.get("section_min_gross_anteil", 0.6)):
+    if hat_nr and (a.erster_tab or _gross_anteil(toks[1:]) >= lay.get("section_min_gross_anteil", 0.6)):
         return True
     nr = (section_nummer(t0.old) if t0.old else None) or (section_nummer(t0.new) if t0.new else None)
     fett = a.gesamt_zeichen > 0 and a.fett_zeichen / a.gesamt_zeichen >= float(leser.dcfg.get("fett_anteil", 0.8))
@@ -1143,7 +1147,7 @@ def _kopf_fuss(paket: _Paket, leser: _Leser, ergebnis: PdfAnalyse) -> None:
         for a in teil.absaetze:
             if not a.ex_alt and not a.ex_neu and not a.zeichen:
                 continue
-            toks = _tokens(a.zeichen)
+            toks, _ = _tokens(a.zeichen)
             if not toks:
                 continue
             leser.z.zaehler["kopf_fuss_absaetze"] += 1
