@@ -17,6 +17,7 @@ Aufruf (siehe docs/anleitung_steckbrief.md):
   python -m src.cli steckbrief --pdf A.pdf --vorher V.xlsx --nachher N.xlsx [--name NAME] [--ausgabe ORDNER]
   python -m src.cli steckbrief --ordner PFAD_MIT_PAAREN [--name NAME]      (je Unterordner ein Steckbrief + zusammenfassung.json)
   python -m src.cli steckbrief --pruefe DATEI.json
+  python -m src.cli steckbrief --docx DATEI.docx [--name NAME] [--ausgabe ORDNER]   (Zahlen und Formen einer Word-Datei)
 """
 from __future__ import annotations
 
@@ -427,6 +428,29 @@ SCHEMA = Objekt({
     "pdf": PDF_SCHEMA, "excel_vorher": EXCEL_VORHER_SCHEMA, "excel_nachher": EXCEL_NACHHER_SCHEMA,
     "tool": TOOL_SCHEMA, "schablonen": SCHABLONEN_SCHEMA}, pflicht=("art", "format"))
 
+# ---- Steckbrief einer Word-Datei (.docx, `steckbrief --docx`): nur Zahlen und Formen, kein Text ----------------------------
+DOCX_LISTENARTEN = ("decimal", "decimalZero", "lowerLetter", "upperLetter", "lowerRoman", "upperRoman", "bullet")
+ELEMENTNAME = Muster(r"^[A-Za-z][A-Za-z0-9]{0,39}$", 40)             # Name eines XML-Elements (Form, kein Dokumenttext)
+DOCX_SCHEMA = Objekt({
+    "art": Auswahl("steckbrief_docx"), "format": Ganz(1, 99), "name": NAME,
+    "docx": Objekt({
+        "aenderungen": Objekt({k: Z for k in (
+            "ins", "del", "move_from", "move_to", "absatzmarke_ins", "absatzmarke_del", "absatzmarke_move", "netto_null",
+            "format_lauf", "format_absatz", "format_tabelle", "zeilen_ins", "zeilen_del", "nummern_geaendert")}),
+        "woerter": Objekt({k: Z for k in ("neu", "entfaellt", "geaendert", "unveraendert", "mit_zeichen_laeufen",
+                                          "markierter_leerraum")}),
+        "struktur": Objekt({k: Z for k in ("absaetze", "bloecke", "ueberschriften", "ganz_neue_absaetze",
+                                            "ganz_gestrichene_absaetze", "autoren")}),
+        "listen": Objekt({"arten": Zaehl(Auswahl(*DOCX_LISTENARTEN), Z), "ebenen": Zaehl(INTKEY, Z),
+                          "unbekannte_formate": Z}),
+        "tabellen": Objekt({k: Z for k in ("tabellen", "tabellenzeilen", "zellen")}),
+        "kopf_fuss": Objekt({k: Z for k in ("kopf_teile", "fuss_teile", "absaetze", "woerter_geaendert", "ins", "del")}),
+        "sonstiges": Objekt({k: Z for k in ("kommentare", "fussnoten", "endnoten", "textfelder", "grafiken",
+                                            "fussnotenmarken", "versteckter_text_woerter")}),
+        "unbekannte_elemente": Zaehl(ELEMENTNAME, Z),
+        "luecken": Zaehl(Auswahl(*LUECKEN), Objekt({"anzahl": Z, "woerter": Z})), "warnungen": Z,
+        "hinweise": Zaehl(CODE, Z)})}, pflicht=("art", "format"))
+
 # Fehler-Schablonen von `messen --schablonen`: je Eintrag Fehlerart, Aenderungstyp, Erzeuger und die Formen Soll/Ist
 FEHLER_SCHABLONE = Objekt({
     "quelle": Auswahl("stiller_fehler", "falscher_vorschlag"), "fehlerart": Auswahl(
@@ -515,7 +539,8 @@ def pruefe(daten: Any) -> list[str]:
     fehler: list[str] = []
     if not isinstance(daten, dict):
         return ["(oben): Objekt erwartet"]
-    schema = SCHEMA_ZUSAMMENFASSUNG if daten.get("art") == "zusammenfassung" else SCHEMA
+    schema = (SCHEMA_ZUSAMMENFASSUNG if daten.get("art") == "zusammenfassung"
+              else DOCX_SCHEMA if daten.get("art") == "steckbrief_docx" else SCHEMA)
     schema.pruefe(daten, "", fehler)
     gezaehlt = Counter(fehler)
     return [m if n == 1 else f"{m} ({n}x)" for m, n in gezaehlt.items()][:200]
@@ -1612,6 +1637,43 @@ def erzeuge(pdf: Path, vorher: Path, nachher: Path, name: str) -> dict[str, Any]
             "excel_nachher": en, "tool": _tool_zahlen(pa, plan), "schablonen": beispiele}
 
 
+def erzeuge_docx(pfad: Path, name: str) -> dict[str, Any]:
+    """Steckbrief einer Word-Datei: Zahlen und Formen (Anzahl ins/del/move, Listenarten, Tabellen, Kopf/Fuss, Kommentare,
+    unbekannte Elemente), KEIN Text (Regel 16). Wirft NutzerFehler (einfache Meldung) bei kaputter, alter oder geschuetzter Datei."""
+    from .docx_reader import docx_zahlen
+    from .models import ADD, DEL, KEEP
+    pa, z = docx_zahlen(pfad)
+    c = z.zaehler
+    toks = [t for b in pa.blocks for t in b.tokens]
+    hinweise = Counter()
+    for t in toks:
+        for code in filter(None, (t.hinweis or "").split(";")):
+            hinweise[_hinweis_code(code)] += 1
+    kopf_woerter = sum(int(i.get("woerter") or 0) for i in pa.ignoriert)
+    docx = {
+        "aenderungen": {k: int(c[k]) for k in ("absatzmarke_ins", "absatzmarke_del", "absatzmarke_move", "netto_null",
+                                              "format_lauf", "format_absatz", "format_tabelle", "zeilen_ins", "zeilen_del")}
+        | {"ins": int(c["ins"]), "del": int(c["del"]), "move_from": int(c["move_from"]), "move_to": int(c["move_to"]),
+           "nummern_geaendert": int(c["nummern_geaendert"])},
+        "woerter": {"neu": sum(1 for t in toks if t.status == ADD), "entfaellt": sum(1 for t in toks if t.status == DEL),
+                    "geaendert": sum(1 for t in toks if t.status == "mod"), "unveraendert": sum(1 for t in toks if t.status == KEEP),
+                    "mit_zeichen_laeufen": sum(1 for t in toks if t.teile),
+                    "markierter_leerraum": sum(1 for t in toks if getattr(t, "trenner_art", ""))},
+        "struktur": {"absaetze": int(c["absaetze"]), "bloecke": int(c["bloecke"]), "ueberschriften": int(c["ueberschriften"]),
+                     "ganz_neue_absaetze": sum(1 for b in pa.blocks if b.ganz_neu),
+                     "ganz_gestrichene_absaetze": sum(1 for b in pa.blocks if b.ganz_geloescht), "autoren": len(z.autoren)},
+        "listen": {"arten": dict(z.listenarten), "ebenen": dict(z.listenebenen),
+                   "unbekannte_formate": sum(z.unbekannte_zahlformate.values())},
+        "tabellen": {"tabellen": int(c["tabellen"]), "tabellenzeilen": int(c["tabellenzeilen"]), "zellen": int(c["zellen"])},
+        "kopf_fuss": {"kopf_teile": int(c["kopf_teile"]), "fuss_teile": int(c["fuss_teile"]), "absaetze": int(c["kopf_fuss_absaetze"]),
+                      "woerter_geaendert": kopf_woerter, "ins": int(c["kopf_fuss_ins"]), "del": int(c["kopf_fuss_del"])},
+        "sonstiges": {k: int(c[k]) for k in ("kommentare", "fussnoten", "endnoten", "textfelder", "grafiken", "fussnotenmarken",
+                                             "versteckter_text_woerter")},
+        "unbekannte_elemente": dict(z.unbekannt),
+        "luecken": _luecken_zahlen(pa), "warnungen": len(pa.warnungen), "hinweise": dict(hinweise)}
+    return {"art": "steckbrief_docx", "format": STECKBRIEF_FORMAT, "name": name, "docx": docx}
+
+
 # ======================================================================================
 # 11. Markdown (nur aus den geprueften Daten)
 # ======================================================================================
@@ -1684,7 +1746,8 @@ def _md_teil(wert: Any, titel: str, ebene: int, z: list[str]) -> None:
 
 
 def markdown(daten: dict[str, Any]) -> str:
-    titel = "Zusammenfassung" if daten.get("art") == "zusammenfassung" else "Steckbrief"
+    titel = ("Zusammenfassung" if daten.get("art") == "zusammenfassung"
+             else "Steckbrief einer Word-Datei" if daten.get("art") == "steckbrief_docx" else "Steckbrief")
     z = [f"# {titel}", "",
          "Diese Datei enthält nur Zahlen, Farbcodes und Formen (A = Großbuchstabe, a = Kleinbuchstabe, 9 = Ziffer, · = geschütztes "
          "Leerzeichen, ¶ = Zeilenumbruch, ⇥ = Tab, W… = langes Wort, ? = anderes Zeichen). Kein Text aus den Dokumenten.",
@@ -1747,6 +1810,34 @@ def pruefe_datei(pfad: Path) -> int:
     return 1
 
 
+def _steckbrief_docx(pfad: Path, name: str, basis: Path) -> int:
+    """`steckbrief --docx DATEI`: Zahlen und Formen einer Word-Datei (kein Text)."""
+    from .fehler import NutzerFehler
+    if not pfad.is_file():
+        print("Die Word-Datei wurde nicht gefunden.")
+        return 2
+    try:
+        sb = erzeuge_docx(pfad, name)
+    except NutzerFehler as e:
+        print(e.meldung)
+        return 2
+    except Exception:                                        # unerwartete Datei: einfache Meldung, nie Rohtext oder Pfade
+        print(f"{name}: Diese Word-Datei konnte nicht gelesen werden (beschädigte oder nicht unterstützte Datei).")
+        return 2
+    fehler = pruefe(sb)
+    if fehler:
+        print(f"{name}: Der Steckbrief verstößt gegen die Positivliste und wird NICHT geschrieben ({len(fehler)} Verstoß/Verstöße). "
+              "Bitte melden:")
+        print("\n".join(_kurz(fehler)))
+        return 3
+    ziel = _neuer_ordner(basis, name)
+    _schreibe(ziel, sb)
+    print(f"{name}: gelesen", flush=True)
+    print(f"Steckbrief: {ziel / 'steckbrief.json'}")
+    print(f"Vor dem Weitergeben bitte prüfen:  python -m src.cli steckbrief --pruefe \"{ziel / 'steckbrief.json'}\"")
+    return 0
+
+
 def _paar_ordner(eltern: Path) -> list[Path]:
     dateien = ("aenderungen.pdf", "vorher.xlsx", "nachher.xlsx")
     return sorted(d for d in eltern.iterdir() if d.is_dir() and not d.name.startswith(".") and all((d / n).is_file() for n in dateien))
@@ -1761,6 +1852,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ausgabe")
     ap.add_argument("--ordner")
     ap.add_argument("--pruefe")
+    ap.add_argument("--docx")
     try:
         a = ap.parse_args(sys.argv[1:] if argv is None else argv)
     except ValueError as e:
@@ -1774,6 +1866,11 @@ def main(argv: list[str] | None = None) -> int:
         print("Der Name darf nur aus kleinen Buchstaben (a-z), Ziffern, Unterstrich und Bindestrich bestehen (höchstens 40 Zeichen).")
         return 2
     basis = Path(a.ausgabe) if a.ausgabe else config.pfad("steckbrief_dir")
+    if a.docx:
+        if a.pdf or a.vorher or a.nachher or a.ordner:
+            print("--docx steht allein: Es beschreibt eine einzelne Word-Datei und braucht weder PDF noch Excel.")
+            return 2
+        return _steckbrief_docx(Path(a.docx), a.name or "docx", basis)
     if a.ordner:
         eltern = Path(a.ordner)
         if not eltern.is_dir():
