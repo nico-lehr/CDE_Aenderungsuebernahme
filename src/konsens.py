@@ -69,6 +69,10 @@ class BildErgebnis:
     abweichungen: dict[str, list[str]] = field(default_factory=dict)
     gruende: dict[str, int] = field(default_factory=dict)          # warum Woerter nicht pruefbar waren (Zahlen, kein Inhalt)
 
+    def nicht_pruefbar(self, grund: str, n: int = 1) -> None:
+        self.unpruefbar += n
+        self.gruende[grund] = self.gruende.get(grund, 0) + n
+
     def zusammenfassung(self) -> str:
         return (f"Wort-Bildprobe: {self.geprueft} Wörter geprüft, {self.abweichend} abweichend, "
                 f"{self.unpruefbar} nicht prüfbar.")
@@ -276,7 +280,7 @@ def bildprobe(analyse: Any, aenderungen: Iterable[Aenderung], cfg: dict | None =
                 except Exception:                        # noqa: BLE001
                     bild = None
                 if bild is None:
-                    erg.unpruefbar += len(woerter)
+                    erg.nicht_pruefbar("Seite nicht rendert", len(woerter))
                     continue
                 hoehen: dict[int, float] = {}
                 for idx in idxs:
@@ -284,22 +288,20 @@ def bildprobe(analyse: Any, aenderungen: Iterable[Aenderung], cfg: dict | None =
                     hoehen[idx] = hs[len(hs) // 2] if hs else 0.0
                 for idx, t in woerter:
                     if t.status not in (KEEP, ADD, DEL):
-                        erg.unpruefbar += 1
+                        erg.nicht_pruefbar("Status")
                         continue
                     if t.status == KEEP and t.hinweis:
-                        erg.unpruefbar += 1              # Link, Hinterlegung, farbiges Wort ohne Linie ...: Sonderfall
-                        erg.gruende["Sonderfall"] = erg.gruende.get("Sonderfall", 0) + 1
+                        erg.nicht_pruefbar("Sonderfall")      # Link, Hinterlegung, farbiges Wort ohne Linie ...
                         continue
                     if getattr(analyse, "markup_leiste", False) and t.bbox[0] >= 0.68 * bild.width / s:
-                        erg.unpruefbar += 1
+                        erg.nicht_pruefbar("Markup-Leiste")
                         continue
                     try:
                         befund, was = _wort_befund(bild, t, modus, bk, bild.width / s, hoehen[idx])
                     except Exception:                    # noqa: BLE001
                         befund, was = "unpruefbar", "Fehler"
                     if befund == "unpruefbar":
-                        erg.unpruefbar += 1
-                        erg.gruende[was] = erg.gruende.get(was, 0) + 1
+                        erg.nicht_pruefbar(was)
                         continue
                     erg.geprueft += 1
                     if befund == "abweichung":
@@ -527,17 +529,24 @@ def _bereich(o: list[_Z], neu_sicht: bool, start: int, ende: int) -> tuple[int, 
     return i0, i1
 
 
+def neue_zeilen_ids(neue_zeilen: dict[str, tuple[str, int]] | None) -> set[str]:
+    return set(neue_zeilen or ())
+
+
 def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | None, angewendet: set[str],
                 aenderungen: Iterable[Aenderung], zeile_von: Callable[[str, int], int | None],
                 ziele: set[tuple[str, int, int]] | None = None, cfg: dict | None = None,
-                auto_ids: set[str] | None = None, _wb_quelle: Any = None, _wb_ziel: Any = None) -> TextErgebnis:
+                auto_ids: set[str] | None = None, neue_zeilen: dict[str, tuple[str, int]] | None = None,
+                _wb_quelle: Any = None, _wb_ziel: Any = None) -> TextErgebnis:
     """Konsens-Text: Stimmt die geschriebene Datei `ziel` mit dem eigenen Soll aus den PDF-Absaetzen ueberein?
 
     angewendet: IDs der Aenderungen, die in `ziel` geschrieben wurden. aenderungen: alle Aenderungen (Status, `bestaetigt`).
     zeile_von(blatt, zeile): Zeile in `ziel` zu einer Zeile der `quelle` (None = Zeile entfernt); ziele: Zellen der Quelle
     (blatt, zeile, spalte), die Operationen einer angewendeten Aenderung treffen (sie duerfen sich aendern).
     auto_ids: die automatisch (ohne Freigabe) angewendeten Aenderungen; ohne Angabe aus `aenderungen` (Status uebernommen und
-    nicht bestaetigt). Nur sie werden bei einer Abweichung beanstandet."""
+    nicht bestaetigt). Nur sie werden bei einer Abweichung beanstandet.
+    neue_zeilen: Aenderungs-ID -> (Blatt, Zeile in `ziel`) der neu eingefuegten Zeile. Fuer neue Absaetze (Typ absatz_neu) in einer
+    neuen Zeile bzw. in einer bestehenden Zelle gilt: der neue Text laut PDF (`Aenderung.neu`) muss rot (neu) dastehen."""
     erg = TextErgebnis()
     k = konfig(cfg)
     if not k.get("aktiv", False) or absaetze is None:
@@ -636,11 +645,51 @@ def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | N
             if schlecht.get(n):
                 for aid in ab.aenderungen & auto_ids:
                     erg.abweichungen.setdefault(aid, "text")
+        # --- neue Absaetze (neue Zeile oder neuer Absatz in einer bestehenden Zelle): der Text laut PDF steht rot da ------------
+        if markiert:
+            zeilen_von: dict[tuple[str, int], list[Any]] = {}
+            for blatt, zeile in {v for v in (neue_zeilen or {}).values()}:
+                if blatt in wb_z.sheetnames:
+                    zeilen_von[(blatt, zeile)] = [z for (r, _), z in wb_z[blatt]._cells.items() if r == zeile]
+            for aid in sorted(auto_ids):
+                a = nach_id.get(aid)
+                if a is None or a.typ != "absatz_neu" or not a.neu.strip():
+                    continue
+                soll = "".join(t[0] for t in norm.strom([(c,) for c in a.neu]))
+                zellen_ = None
+                if neue_zeilen and aid in neue_zeilen:
+                    zellen_ = zeilen_von.get(neue_zeilen[aid], [])
+                    zellen_ = sorted(zellen_, key=lambda z: z.column)
+                elif not any(aid in ab.aenderungen for ab in absaetze):
+                    cs = []
+                    for o in a.ops:
+                        nz = zeile_von(o.blatt, o.zeile) if o.art == "einfuegen" and o.blatt in wb_z.sheetnames else None
+                        if nz is not None:
+                            cs.append(wb_z[o.blatt]._cells.get((nz, o.spalte)))
+                    zellen_ = [z for z in cs if z is not None] or None
+                if zellen_ is None:
+                    continue
+                strom = ""
+                for z in zellen_:
+                    zs = _zeichen_der_zelle(z, neu_rgb, alt_rgb)
+                    strom += "".join(t[0] for t in norm.strom([c for c in (zs or []) if c[1] == NEU]))
+                if not soll:
+                    continue
+                erg.geprueft += 1
+                if aid in neue_zeilen_ids(neue_zeilen):
+                    gut = strom == soll or any(soll[k:] == strom for k in range(1, min(7, len(soll))))   # Listenzeichen: eigene Spalte
+                else:
+                    gut = soll in strom or any(soll[k:] in strom for k in range(1, min(7, len(soll))))
+                if not gut:
+                    erg.abweichungen.setdefault(aid, "text")
         # --- Zellen, die sich nicht aendern sollten --------------------------------------------------------------
         fremd = 0
+        fremd_blaetter: set[str] = set()
         for blatt in wb_q.sheetnames:
+            fremd_vorher = fremd
             if blatt not in wb_z.sheetnames:
                 fremd += 1
+                fremd_blaetter.add(blatt)
                 continue
             wq, wz = wb_q[blatt], wb_z[blatt]
             abbild: dict[int, int] = {}
@@ -670,10 +719,15 @@ def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | N
                     continue                               # neue Zeile oder schon verglichen
                 if zz.value is not None:
                     fremd += 1                             # Zelle hat jetzt Inhalt, hatte keinen
+            if fremd > fremd_vorher:
+                fremd_blaetter.add(blatt)
         erg.fremd = fremd
-        if fremd:
+        if fremd:                                          # schuld sind die Aenderungen in den betroffenen Blaettern
             for aid in auto_ids:
-                erg.abweichungen.setdefault(aid, "fremd")
+                a = nach_id.get(aid)
+                blaetter = {o.blatt for o in (a.ops if a is not None else [])} | {ab.blatt for ab in absaetze if aid in ab.aenderungen}
+                if not blaetter or blaetter & fremd_blaetter:
+                    erg.abweichungen.setdefault(aid, "fremd")
         erg.gelaufen = True
     finally:
         for w, fremd_geladen in ((wb_q, _wb_quelle is not None), (wb_z, _wb_ziel is not None)):

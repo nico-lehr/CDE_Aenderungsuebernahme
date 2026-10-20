@@ -1310,8 +1310,13 @@ def _uebernehmen_einmal(aenderungen: list[Aenderung], quelle: str | Path, ziel: 
         angew = set(nach_id)
         auto = {i for i in angew if alle_nach_id[i].status == UEBERNOMMEN and not alle_nach_id[i].bestaetigt}
         ziele = {k for k, ops in je_zelle.items() if any(o.aenderung in nach_id for o in ops)}
+        nz_ziel: dict[str, tuple[str, int]] = {}              # neue Zeilen (nur Patch-Schreiber): Aenderung -> (Blatt, Zeile)
+        if perg is not None:
+            for (blatt, pos), ops in einfuegungen.items():
+                for op in ops:
+                    nz_ziel[op.aenderung] = (blatt, perg.neue_zeilen[nz_index[id(op)]][1])
         ergebnis.text_pruefung = lambda pfad, **kw: konsens.pruefe_text(quelle, pfad, absaetze, angew, aenderungen, neue_zeile,
-                                                                        ziele, cfg, auto, **kw)
+                                                                        ziele, cfg, auto, nz_ziel, **kw)
         kt = ergebnis.text_pruefung(ziel)
         ergebnis.konsens["text"] = {"gelaufen": kt.gelaufen, "geprueft": kt.geprueft, "unpruefbar": kt.unpruefbar,
                                     "abweichend": len(kt.abweichungen), "fremde_zellen": kt.fremd}
