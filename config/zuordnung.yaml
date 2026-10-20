@@ -86,9 +86,10 @@ planer:                       # Planen und Anwenden (src/planner.py, src/applier
                        linienfarbe_unklar]
   # Nur Hinweis (keine Sperre): der Satz zum Code steht bei den Aenderungen des Absatzes
   hinweis_codes: [link, unterstrichen, design_blau, ligatur, farbe_ohne_linie, hinterlegt]
-  # Auftrag 004 (Vorschlaege): Bei diesen Sperren gibt es KEINEN fertigen Vorschlag, die Aenderung steht mit Grund bei "nicht
-  # uebernommen". Gemessen an erfundenen Paaren (nachbau_word): nach Freigabe war der Vorschlag bei fortsetzung_unklar nur in
-  # 1 von 10 Faellen richtig (der Absatz ging ueber den Seitenumbruch weiter, der Vorschlag legte eine neue Zeile an).
+  # Auftrag 004 (Vorschlaege): Bei diesen Sperren gibt es KEINEN fertigen Vorschlag: die Aenderung bleibt auf "pruefen", aber ohne
+  # Operationen (Code kein_vorschlag), eine Freigabe schreibt nichts. Gemessen an erfundenen Paaren (nachbau_word): nach Freigabe
+  # war der Vorschlag bei fortsetzung_unklar nur in 1 von 10 Faellen richtig (der Absatz ging ueber den Seitenumbruch weiter,
+  # der Vorschlag legte eine neue Zeile an).
   sperren_ohne_vorschlag: [fortsetzung_unklar]
   # Vorschlaege bei abweichender Excel (excel_weicht_ab): false = nur zeichengenau (Normalform-Ausrichtung, wie Word markiert);
   # true = auch der alte Matcher Wort fuer Wort (ersetzt ganze Woerter samt Satzzeichen, liest Leerraum an der Naht anders)
