@@ -8,6 +8,25 @@ Auf beiden echten Beispielen stand die Ampel **rot**, nur wegen „Dokument nich
 Jetzt gilt: Eine nicht gelesene Stelle **vor der ersten oder hinter der letzten Seite mit CDE-Inhalt** ist nur Info (`luecken_ausserhalb` im Plan, eigene Zeile im Protokoll und unter „Details“); eine Lücke auf einer Seite mit CDE-Inhalt bleibt eine echte Lücke (streng: gleiche Seite zählt als „innen“; Word-Dateien ohne Seitenzahlen: immer „innen“).
 Außerdem zählt „schon eingetragen“ in der Ampel nicht mehr als Handarbeit. Ergebnis auf den echten Paaren: Ampel **gelb** mit den wahren Gründen (A: 8 Vorschläge offen, 4 Änderungen mit Handarbeit; B: 6 und 6), Bilanz „vollständig“. Das Messwerkzeug zählt weiter alle gemeldeten Lücken: die Zahlen auf `nachbau_word` sind unverändert (0 stille Fehler).
 
+## Ergänzung Welle 6, Stufe 2 (20.10.2026) – Leerzeichen am Zeilenumbruch hinter einer Ersetzung
+
+Auf den echten Beispielen waren 9 von 14 offenen Karten eine falsche Abweichung (`excel_weicht_ab` + `a1_leerraum`): Eine Ersetzung endet am Zeilenende, der Excel-Absatz hat dort **kein** Leerzeichen („12mm“), das Leerzeichen gehört zur Einfügung („15 mm“), und das PDF zeichnet am Umbruch keins. Jetzt probiert der Planer bei solchen Trennern (am Umbruch, unmarkiert, neben einer Änderung) die Auslegungen „gemeinsam“ und „nur neu“ und nimmt „nur neu“ **nur**, wenn der alte Absatz damit – und nur damit – Zeichen für Zeichen in der Excel steht (ADR 0006, Nachtrag 20.10.; `planer.umbruch_auslegung_max`). Kein oder mehr als ein Treffer ⇒ alles wie bisher. Die Spur läuft danach als exakter Treffer (A1, A3, zweiter Prüfweg); das Leerzeichen wird rot (neu) geschrieben, der alte Zustand bleibt unverändert.
+Neuer Störer im Generator v3: `umbruch_leerzeichen_ersetzung` (nur `nachbau_word`, Seeds ab 401; Seeds 301–360 bleiben bytegleich geprüft, Wächter über das Modell im Test).
+
+| Kennzahl (erfundene Paare) | `nachbau_word` 301–360 vorher → nachher | neue Seeds 401–480 (mit Störer) vorher → nachher |
+|---|---|---|
+| Stille Fehler / Kollateral | 0 / 0 → 0 / 0 | 0 / 0 → 0 / 0 |
+| Automatisch richtig, Zellen | 7131 von 7131 → 7131 von 7131 | 9250 von 9253 → 9508 von 9511¹ |
+| Abdeckung ohne Nachfrage | 97,8 % → 97,8 % | 93,7 % → 97,7 % |
+| Bitte prüfen (Änderungen) | 115 (2,1 %) → 115 (2,1 %) | 422 (6,0 %) → 165 (2,2 %) |
+| `a1_leerraum` / `excel_weicht_ab` | 0 / 92 → 0 / 92 | 218 / 394 → 0 / 137 |
+| Vorschläge exakt nach Freigabe | 98,8 % → 98,8 % | 37,0 % → 97,5 % |
+| Zweiter Lauf ändert nichts | 60 von 60 → 60 von 60 | 80 von 80 → 80 von 80 |
+| Restarbeit je 100 Änderungen | 16,2 → 16,2 | 19,4 → 15,7 |
+
+¹ Die 3 Zellen sind neue Zeilen in drei Paaren (`plan_falsch`/`zuordnung_falsch`, warten auf Freigabe, kein stiller Fehler), vorher wie nachher gleich und unabhängig von dieser Änderung (offen).
+**Grenze:** „gemeinsam“ und „nur alt“ geben denselben alten Absatz, die Excel kann sie nicht unterscheiden. Gehört das Leerzeichen am Umbruch in Wirklichkeit zur Streichung, bleibt es bei „gemeinsam“; ein dann falscher neuer Zustand fällt meist in der Gegenprobe auf („Bitte prüfen“, getestet), nicht aber, wenn das gestrichene Leerzeichen hinter dem neuen Text steht (in Word selten, auf echten Dokumenten nicht gemessen).
+
 ## Stand Welle 5 (20.10.2026) – „Word-Datei, zweiter Prüfweg, Vertrauensmodus“
 
 **Was neu ist (ADR 0008, 0009; `docs/so_gehts.md`):**
