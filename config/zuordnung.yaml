@@ -168,6 +168,7 @@ konsens:
     tinte_abstand: 70           # Pixel zaehlt als Tinte, wenn er sich so stark (hoechster Kanal, 0..255) vom Grund unterscheidet
     min_tinte_pixel: 8          # weniger Tinte: nicht pruefbar
     linie_min_anteil: 0.85      # laengste zusammenhaengende Tintenstrecke einer Pixelzeile / Wortbreite = Linie
+    linie_max_dicke_pt: 1.6     # dickere Streifen sind Flaechen (Hinterlegung der Nachbarzeile), keine Linie
     band_durchgestrichen: [0.3, 0.72]   # Hoehenband (Anteil der Wortbox von oben) einer Durchstreichung in Zeilenmitte
     band_unterstrichen: [0.8, 1.3]      # Hoehenband einer Unterstreichung (ueber die Unterkante hinaus)
     unterstrichen_bis: 1.3      # so weit unter die Oberkante (Anteil der Boxhoehe) wird das Bild ausgeschnitten

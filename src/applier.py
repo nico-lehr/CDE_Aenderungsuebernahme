@@ -22,11 +22,10 @@ Grundsaetze
 """
 from __future__ import annotations
 
-import copy
 import re
 import zipfile
 from collections import Counter
-from copy import copy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -61,6 +60,7 @@ class UebernahmeErgebnis:
     warnungen: list[str] = field(default_factory=list)
     zeilen_verschoben: dict[str, str] = field(default_factory=dict)
     konsens: dict[str, Any] = field(default_factory=dict)       # Zweiter Pruefweg (src/konsens.py): Zahlen, nie Inhalte
+    text_pruefung: Any = None          # Konsens-Text fuer eine beliebige Ergebnisdatei: f(pfad) -> konsens.TextErgebnis (Tests)
 
 
 def _text(zelle) -> str:
@@ -567,7 +567,7 @@ def _zustand_zurueck(aenderungen: list[Aenderung], start: list[Aenderung]) -> No
     """Stellt die Aenderungs-Objekte (in place) auf den Stand vor dem ersten Schreiben zurueck."""
     for a, s in zip(aenderungen, start):
         a.__dict__.clear()
-        a.__dict__.update(copy.deepcopy(s.__dict__))
+        a.__dict__.update(deepcopy(s.__dict__))
 
 
 def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Path,
@@ -585,7 +585,7 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
     cfg = cfg or config.lade("zuordnung")
     if not konsens.aktiv(cfg):
         return _uebernehmen_einmal(aenderungen, quelle, ziel, freigaben, cfg, xl, abwahl, absaetze, pdf, None)
-    start = copy.deepcopy(aenderungen)
+    start = deepcopy(aenderungen)
     aus: dict[str, str] = {}
     versuche = int(konsens.konfig(cfg).get("text", {}).get("max_durchlaeufe", 4))
     for n in range(versuche + 1):
@@ -1307,8 +1307,12 @@ def _uebernehmen_einmal(aenderungen: list[Aenderung], quelle: str | Path, ziel: 
 
     # --- Zweiter Pruefweg (b): Konsens-Text -- eigenes Soll aus den PDF-Absaetzen gegen die geschriebene Datei -------------
     if konsens.aktiv(cfg):
-        kt = konsens.pruefe_text(quelle, ziel, absaetze, set(nach_id), aenderungen, neue_zeile,
-                                 {k for k, ops in je_zelle.items() if any(o.aenderung in nach_id for o in ops)}, cfg)
+        angew = set(nach_id)
+        auto = {i for i in angew if alle_nach_id[i].status == UEBERNOMMEN and not alle_nach_id[i].bestaetigt}
+        ziele = {k for k, ops in je_zelle.items() if any(o.aenderung in nach_id for o in ops)}
+        ergebnis.text_pruefung = lambda pfad, **kw: konsens.pruefe_text(quelle, pfad, absaetze, angew, aenderungen, neue_zeile,
+                                                                        ziele, cfg, auto, **kw)
+        kt = ergebnis.text_pruefung(ziel)
         ergebnis.konsens["text"] = {"gelaufen": kt.gelaufen, "geprueft": kt.geprueft, "unpruefbar": kt.unpruefbar,
                                     "abweichend": len(kt.abweichungen), "fremde_zellen": kt.fremd}
         if kt.abweichungen:

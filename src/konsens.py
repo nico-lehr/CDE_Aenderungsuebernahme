@@ -34,7 +34,11 @@ from .models import ADD, DEL, KEEP, NICHT, PRUEFEN, UEBERNOMMEN, WIRKUNG_ABWEICH
 
 CODE_TEXT = "konsens_text"
 CODE_BILD = "konsens_bild"
-ALT, NEU, NORMAL = "alt", "neu", "normal"
+ALT, NEU, NORMAL, ALT2 = "alt", "neu", "normal", "alt_anders"     # ALT2: durchgestrichen, aber nicht in der Alt-Farbe (frueher)
+
+
+def _strich(klasse: str) -> bool:
+    return klasse in (ALT, ALT2)
 
 
 def konfig(cfg: dict | None = None) -> dict[str, Any]:
@@ -63,6 +67,7 @@ class BildErgebnis:
     unpruefbar: int = 0                   # Woerter, bei denen die Probe unsicher war (keine Abweichung)
     abweichend: int = 0                   # Woerter mit Abweichung
     abweichungen: dict[str, list[str]] = field(default_factory=dict)
+    gruende: dict[str, int] = field(default_factory=dict)          # warum Woerter nicht pruefbar waren (Zahlen, kein Inhalt)
 
     def zusammenfassung(self) -> str:
         return (f"Wort-Bildprobe: {self.geprueft} Wörter geprüft, {self.abweichend} abweichend, "
@@ -95,19 +100,29 @@ def _laengste_strecke(zeile: bytes) -> int:
     return max((len(s) for s in zeile.split(b"\x00")), default=0)
 
 
-def _linie_im_band(maske: Any, crop: Any, y0: int, y1: int, min_anteil: float) -> tuple[bool, tuple[int, int, int] | None]:
-    """Gibt es im Hoehenband [y0, y1) eine Zeile, in der zusammenhaengende Tinte fast die ganze Breite deckt?
-    Rueckgabe (ja/nein, mittlere Farbe der besten Zeile)."""
+def _linie_im_band(maske: Any, crop: Any, y0: int, y1: int, min_anteil: float, max_dicke: int) -> tuple[bool, tuple[int, int, int] | None]:
+    """Gibt es im Hoehenband [y0, y1) eine duenne Linie: Pixelzeilen, in denen zusammenhaengende Tinte fast die ganze Breite
+    deckt, hoechstens `max_dicke` Zeilen dick (dickere Gruppen sind Flaechen, z. B. eine Hinterlegung der Nachbarzeile)?
+    Rueckgabe (ja/nein, mittlere Farbe der Linie)."""
     from PIL import Image
     b, h = maske.size
     daten = maske.tobytes()
-    beste, farbe = 0, None
-    for y in range(max(0, y0), min(h, y1)):
-        n = _laengste_strecke(daten[y * b:(y + 1) * b])
-        if n > beste:
-            beste = n
-            farbe = crop.crop((0, y, b, y + 1)).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
-    return beste >= min_anteil * b, (farbe if beste >= min_anteil * b else None)
+    gruppe: list[int] = []
+    gruppen: list[list[int]] = []
+    for y in range(h):
+        if _laengste_strecke(daten[y * b:(y + 1) * b]) >= min_anteil * b:
+            gruppe.append(y)
+            continue
+        if gruppe:
+            gruppen.append(gruppe)
+            gruppe = []
+    if gruppe:
+        gruppen.append(gruppe)
+    for g in gruppen:
+        if len(g) <= max_dicke and g[-1] >= y0 and g[0] < y1:
+            mitte = g[len(g) // 2]
+            return True, crop.crop((0, mitte, b, mitte + 1)).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+    return False, None
 
 
 def _wort_befund(bild: Any, tok: Any, modus: str, bk: dict, seiten_breite: float, hoehe_ref: float) -> tuple[str, str]:
@@ -128,7 +143,9 @@ def _wort_befund(bild: Any, tok: Any, modus: str, bk: dict, seiten_breite: float
         return "unpruefbar", "ausserhalb der Seite"
     rand = float(bk.get("rand_anteil", 0.1)) * w
     unten = float(bk.get("unterstrichen_bis", 1.3))
-    box = (int((x0 + rand) * s), int(top * s), int((x1 - rand) * s) + 1, min(bild.height, int((top + unten * h) * s) + 1))
+    extra = float(bk.get("linie_max_dicke_pt", 1.6)) + 1.0          # etwas tiefer ausschneiden, um die Dicke einer Linie zu messen
+    box = (int((x0 + rand) * s), int(top * s), int((x1 - rand) * s) + 1,
+           min(bild.height, int((top + unten * h + extra) * s) + 1))
     crop = bild.crop(box).convert("RGB")
     cb, ch_ = crop.size
     if cb < 6 or ch_ < 6:
@@ -147,8 +164,9 @@ def _wort_befund(bild: Any, tok: Any, modus: str, bk: dict, seiten_breite: float
     d0, d1 = bk.get("band_durchgestrichen", [0.3, 0.72])
     u0, u1 = bk.get("band_unterstrichen", [0.8, 1.3])
     min_a = float(bk.get("linie_min_anteil", 0.85))
-    strich, _ = _linie_im_band(maske, crop, int(d0 * hoehe_px), int(d1 * hoehe_px) + 1, min_a)
-    unter, ucol = _linie_im_band(maske, crop, int(u0 * hoehe_px), ch_, min_a)
+    dicke = max(1, int(round(float(bk.get("linie_max_dicke_pt", 1.6)) * s)))
+    strich, _ = _linie_im_band(maske, crop, int(d0 * hoehe_px), int(d1 * hoehe_px) + 1, min_a, dicke)
+    unter, ucol = _linie_im_band(maske, crop, int(u0 * hoehe_px), int(u1 * hoehe_px) + 1, min_a, dicke)
     farbig_u = bool(unter and ucol and _hsv(ucol)[1] >= float(bk.get("linie_min_saettigung", 0.12)))
     # Farbe des Textes (fuer die Legenden farbe / alt): Anteil farbiger Tinte
     hsv = crop.convert("HSV")
@@ -270,6 +288,7 @@ def bildprobe(analyse: Any, aenderungen: Iterable[Aenderung], cfg: dict | None =
                         continue
                     if t.status == KEEP and t.hinweis:
                         erg.unpruefbar += 1              # Link, Hinterlegung, farbiges Wort ohne Linie ...: Sonderfall
+                        erg.gruende["Sonderfall"] = erg.gruende.get("Sonderfall", 0) + 1
                         continue
                     if getattr(analyse, "markup_leiste", False) and t.bbox[0] >= 0.68 * bild.width / s:
                         erg.unpruefbar += 1
@@ -280,6 +299,7 @@ def bildprobe(analyse: Any, aenderungen: Iterable[Aenderung], cfg: dict | None =
                         befund, was = "unpruefbar", "Fehler"
                     if befund == "unpruefbar":
                         erg.unpruefbar += 1
+                        erg.gruende[was] = erg.gruende.get(was, 0) + 1
                         continue
                     erg.geprueft += 1
                     if befund == "abweichung":
@@ -393,11 +413,13 @@ def _merkmal(font: Any) -> tuple[bool, str]:
     return (bool(getattr(font, "strike", False)), _rgb(font)) if font is not None else (False, "")
 
 
-def _klasse(merkmal: tuple[bool, str], neu_rgb: str) -> str:
-    return ALT if merkmal[0] else (NEU if merkmal[1] == neu_rgb else NORMAL)
+def _klasse(merkmal: tuple[bool, str], neu_rgb: str, alt_rgb: str) -> str:
+    if merkmal[0]:
+        return ALT if merkmal[1] == alt_rgb else ALT2
+    return NEU if merkmal[1] == neu_rgb else NORMAL
 
 
-def _zeichen_der_zelle(zelle: Any, neu_rgb: str) -> list[_Z] | None:
+def _zeichen_der_zelle(zelle: Any, neu_rgb: str, alt_rgb: str) -> list[_Z] | None:
     """(Zeichen, Klasse) je Zeichen; None fuer Zellen, die kein Text sind (Zahl, Formel)."""
     if zelle is None or zelle.value is None:
         return []
@@ -406,14 +428,14 @@ def _zeichen_der_zelle(zelle: Any, neu_rgb: str) -> list[_Z] | None:
         out: list[_Z] = []
         for b in v:
             if isinstance(b, TextBlock):
-                k = _klasse(_merkmal(b.font), neu_rgb)
+                k = _klasse(_merkmal(b.font), neu_rgb, alt_rgb)
                 out += [(c, k) for c in b.text]
             else:
-                k = _klasse(_merkmal(zelle.font), neu_rgb)
+                k = _klasse(_merkmal(zelle.font), neu_rgb, alt_rgb)
                 out += [(c, k) for c in str(b)]
         return out
     if isinstance(v, str) and zelle.data_type != "f":
-        k = _klasse(_merkmal(zelle.font), neu_rgb)
+        k = _klasse(_merkmal(zelle.font), neu_rgb, alt_rgb)
         return [(c, k) for c in v]
     return None
 
@@ -496,7 +518,7 @@ def _stuecke_gleich(soll: list[tuple[str, str, bool]], ist: list[_Z], markiert: 
 
 def _bereich(o: list[_Z], neu_sicht: bool, start: int, ende: int) -> tuple[int, int] | None:
     """Zeichenbereich [start, ende) der Sicht -> Indizes in der Zeichenliste der Zelle (None = passt nicht)."""
-    zaehler: list[int] = [i for i, (_, k) in enumerate(o) if not (neu_sicht and k == ALT)]
+    zaehler: list[int] = [i for i, (_, k) in enumerate(o) if not (neu_sicht and _strich(k))]
     n = len(zaehler)
     if not 0 <= start <= ende <= n:
         return None
@@ -507,12 +529,15 @@ def _bereich(o: list[_Z], neu_sicht: bool, start: int, ende: int) -> tuple[int, 
 
 def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | None, angewendet: set[str],
                 aenderungen: Iterable[Aenderung], zeile_von: Callable[[str, int], int | None],
-                ziele: set[tuple[str, int, int]] | None = None, cfg: dict | None = None) -> TextErgebnis:
+                ziele: set[tuple[str, int, int]] | None = None, cfg: dict | None = None,
+                auto_ids: set[str] | None = None, _wb_quelle: Any = None, _wb_ziel: Any = None) -> TextErgebnis:
     """Konsens-Text: Stimmt die geschriebene Datei `ziel` mit dem eigenen Soll aus den PDF-Absaetzen ueberein?
 
     angewendet: IDs der Aenderungen, die in `ziel` geschrieben wurden. aenderungen: alle Aenderungen (Status, `bestaetigt`).
     zeile_von(blatt, zeile): Zeile in `ziel` zu einer Zeile der `quelle` (None = Zeile entfernt); ziele: Zellen der Quelle
-    (blatt, zeile, spalte), die Operationen einer angewendeten Aenderung treffen (sie duerfen sich aendern)."""
+    (blatt, zeile, spalte), die Operationen einer angewendeten Aenderung treffen (sie duerfen sich aendern).
+    auto_ids: die automatisch (ohne Freigabe) angewendeten Aenderungen; ohne Angabe aus `aenderungen` (Status uebernommen und
+    nicht bestaetigt). Nur sie werden bei einer Abweichung beanstandet."""
     erg = TextErgebnis()
     k = konfig(cfg)
     if not k.get("aktiv", False) or absaetze is None:
@@ -522,12 +547,15 @@ def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | N
     mk_cfg = (cfg or config.lade("zuordnung")).get("markierung", {}) or {}
     markiert = str(mk_cfg.get("aenderungen", "keine")) == "farbe"
     neu_rgb = str(mk_cfg.get("neu_farbe", "FFFF0000"))[-6:].upper()
+    alt_rgb = str(mk_cfg.get("alt_farbe", "FF00B0F0"))[-6:].upper()
     nach_id = {a.id: a for a in aenderungen}
-    auto_ids = {i for i in angewendet if i in nach_id and _auto(nach_id[i])}
+    if auto_ids is None:
+        auto_ids = {i for i in angewendet if i in nach_id and _auto(nach_id[i])}
     erlaubt: set[tuple[str, int, int]] = set(ziele or ())
 
-    wb_q = load_workbook(str(quelle), rich_text=True)
-    wb_z = load_workbook(str(ziel), rich_text=True)
+    # (_wb_quelle / _wb_ziel: schon geladene Mappen, nur fuer Tests, die viele Abwandlungen derselben Datei pruefen)
+    wb_q = _wb_quelle if _wb_quelle is not None else load_workbook(str(quelle), rich_text=True)
+    wb_z = _wb_ziel if _wb_ziel is not None else load_workbook(str(ziel), rich_text=True)
     try:
         # --- Absaetze mit angewendeten automatischen Aenderungen --------------------------------------------------
         dran = [ab for ab in absaetze if ab.aenderungen & angewendet and ab.blatt in wb_q.sheetnames and ab.blatt in wb_z.sheetnames]
@@ -551,12 +579,12 @@ def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | N
             zq = wb_q[blatt]._cells.get((zeile, spalte))
             nz = zeile_von(blatt, zeile)
             zz = None if nz is None else wb_z[blatt]._cells.get((nz, spalte))
-            o = _zeichen_der_zelle(zq, neu_rgb)
-            r = _zeichen_der_zelle(zz, neu_rgb) if nz is not None else None
+            o = _zeichen_der_zelle(zq, neu_rgb, alt_rgb)
+            r = _zeichen_der_zelle(zz, neu_rgb, alt_rgb) if nz is not None else None
             if o is None or r is None:
                 unpruefbar.update(ab_nrs)
                 continue
-            neu_sicht = any(kl == ALT for _, kl in o)
+            neu_sicht = any(_strich(kl) for _, kl in o)
             grenzen = []
             for a, ab, j, e, n in sorted(liste, key=lambda t: (t[0], t[3])):
                 g = _bereich(o, neu_sicht, a, e)
@@ -566,7 +594,7 @@ def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | N
                 grenzen.append((g, ab, j, n))
             else:
                 if any(g1[0][1] > g2[0][0] for g1, g2 in zip(grenzen, grenzen[1:])) or \
-                        any(kl == ALT for (i0, i1), *_ in grenzen for _, kl in o[i0:i1]):
+                        any(_strich(kl) for (i0, i1), *_ in grenzen for _, kl in o[i0:i1]):
                     unpruefbar.update(ab_nrs)             # ueberlappend oder alter Strich mitten im Absatz
                     continue
                 rn = norm.strom(r)
@@ -648,7 +676,9 @@ def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | N
                 erg.abweichungen.setdefault(aid, "fremd")
         erg.gelaufen = True
     finally:
-        for w in (wb_q, wb_z):
+        for w, fremd_geladen in ((wb_q, _wb_quelle is not None), (wb_z, _wb_ziel is not None)):
+            if fremd_geladen:
+                continue
             try:
                 w.close()
             except Exception:                              # pragma: no cover
