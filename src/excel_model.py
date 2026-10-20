@@ -783,25 +783,23 @@ class ExcelModell:
         """Vorlagezeile fuer eine neue Zeile: die naechste Zeile gleichen Typs (oben zuerst), sonst eines verwandten Typs;
         `zeilen`: nur unter diesen Zeilen (Spec des PDFs).
 
-        Auftrag 004: Unter den naechsten Zeilen gleichen Typs (`excel.register.vorlage_kandidaten`) hat die erste den Vorrang,
-        deren Konstanten links der Section-Spalte (Spezifikation, Revision, Datum ...) WOERTLICH so geschrieben sind wie in den
-        meisten Zeilen der Spec. Der Schreiber kopiert die Konstanten woertlich aus der Vorlagezeile; eine Zeile mit verirrtem
-        Leerzeichen am Ende (Schreibweise-Variante) soll dabei nicht die Schreibweise der neuen Zeile bestimmen."""
+        Auftrag 004: Der Schreiber kopiert die Konstanten links der Section-Spalte (Spezifikation, Revision, Datum ...) WOERTLICH
+        aus der Vorlagezeile. Ein Mensch kopiert sie aus der Zeile, an der er einfuegt (`zeile`, dem Anker). Darum hat unter den
+        naechsten Zeilen gleichen Typs (`excel.register.vorlage_kandidaten`) die erste den Vorrang, deren Konstanten genauso
+        geschrieben sind wie beim Anker (auch ein verirrtes Leerzeichen am Ende); gibt es keine, gilt die naechste wie bisher."""
         reihe = sorted(self._zeilen(blatt, zeilen), key=lambda r: (abs(r - zeile), r > zeile))
         lay = self.layouts[blatt]
         spalten = range(1, lay.section_spalte) if lay.register and lay.section_spalte else range(0)
-        gewohnt: dict[int, str] = {}                     # Spalte -> gewohnte Schreibweise (nur fuer wirklich konstante Spalten)
-        if spalten and reihe:
+        wie_anker: dict[int, str] = {}                   # Spalte -> Schreibweise beim Anker (nur fuer wirklich konstante Spalten)
+        if spalten and reihe and zeile in set(reihe):
             def glatt(r: int) -> tuple[str, ...]:
                 return tuple(self.text(blatt, r, c).strip() for c in spalten)
             gleiche = [r for r in reihe if glatt(r) == glatt(zeile)]       # Zeilen derselben Spec (ohne Rand-Leerzeichen gleich)
             for c in spalten:
-                if not gleiche:
-                    break
-                wert, n = Counter(self.text(blatt, r, c) for r in gleiche).most_common(1)[0]
-                if n >= 0.9 * len(gleiche):
-                    gewohnt[c] = wert
-        k_max = int(config.lade("zuordnung")["excel"].get("register", {}).get("vorlage_kandidaten", 8))
+                wert, n = Counter(self.text(blatt, r, c).strip() for r in gleiche).most_common(1)[0]
+                if n >= 0.9 * len(gleiche) and wert == self.text(blatt, zeile, c).strip():
+                    wie_anker[c] = self.text(blatt, zeile, c)
+        k_max = int(config.lade("zuordnung")["excel"].get("register", {}).get("vorlage_kandidaten", 60))
         for gesucht in (art, self._VERWANDT.get(art, art)):
             erste: int | None = None
             gesehen = 0
@@ -812,7 +810,7 @@ class ExcelModell:
                 if erste is None:
                     erste = r
                 gesehen += 1
-                if all(self.text(blatt, r, c) == w for c, w in gewohnt.items()):
+                if all(self.text(blatt, r, c) == w for c, w in wie_anker.items()):
                     return r
                 if gesehen >= k_max:
                     break

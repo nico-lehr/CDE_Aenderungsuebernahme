@@ -453,6 +453,19 @@ def test_neue_section_vor_seitenumbruch_ohne_satzende_ist_unklar(tmp_path):
     assert "sperre:fortsetzung_unklar" in sec.pruefcodes and "sperre:fortsetzung_unklar" in folge.pruefcodes
 
 
+def test_neues_wort_am_textanfang_hinter_geaenderter_listennummer_steht_hinter_dem_polster():
+    """Auftrag 004: Listennummer "c." wird "d." (Ersetzung), dahinter -- durch einen Trenner getrennt -- steht ein neues Wort, das
+    direkt am Text klebt. In der Excel folgt auf die Listennummer Polster (geschuetzte Leerzeichen). Das neue Wort gehoert hinter
+    das Polster (zum Text), nicht vor es (zur Listennummer)."""
+    from src.models import Lauf
+    polster = "\xa0" * 6
+    l = [Lauf("d", "c.", "G1"), Lauf("a", "d.", "G1"), Lauf("s", " "), Lauf("a", "Besondere", "G1"), Lauf("a", " ", "G1"),
+         Lauf("k", "Bauteile:")]
+    so, ergebnis = b_ops(l, "c." + polster + " Bauteile:")
+    assert ergebnis == "d." + polster + " Besondere Bauteile:"
+    assert [(o.start, o.ende, o.text) for o in so.ops["G1"]] == [(0, 2, "d."), (9, 9, "Besondere ")]
+
+
 def test_unklare_fortsetzung_gibt_keinen_vorschlag_und_eine_freigabe_schreibt_nichts(tmp_path):
     """Auftrag 004: Geht ein neuer Absatz vielleicht ueber den Seitenumbruch weiter, ist jeder fertige Vorschlag geraten (eine neue
     Zeile fuer den Rest waere falsch, wenn er zum Satz davor gehoert; im Entwicklungskorpus war er nur in 1 von 10 Faellen

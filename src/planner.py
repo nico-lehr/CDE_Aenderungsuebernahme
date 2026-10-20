@@ -23,8 +23,8 @@ from . import codes as _codes
 from . import config
 from . import markierung as mk
 from .excel_model import REGISTER_UEBERSCHRIFT, Kandidat, ExcelModell, zahl_als_text
-from .abgleich import (ExaktIndex, Label, _aufbau, Fundstelle, Spur, Zuordnung, _woerter_norm, ganz_loeschen, label_der_spur,
-                       ops_fuer_spur, reissverschluss, spuren, umbenennen)
+from .abgleich import (ExaktIndex, Label, _aufbau, _positionen, _unscharfe_abbildung, Fundstelle, Spur, Zuordnung, _woerter_norm,
+                       ganz_loeschen, label_der_spur, ops_fuer_spur, reissverschluss, spuren, umbenennen)
 from .gegenprobe import normalform, vergleiche, zustand, zustand_mit_optional
 from .matcher import Matcher, Treffer
 from .models import (ADD, DEL, HOCH, KEEP, MITTEL, MOD, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN,
@@ -980,6 +980,96 @@ class _Planer:
                               "markierte Stelle. Bitte prüfen und freigeben.")
             doppelt = bool(self._deckel and "excel_weicht_ab" in self._deckel)       # der Deckel nennt den Grund schon
             self._setze(ae, MITTEL, "" if doppelt else _GRUND["excel_weicht_ab"], ["excel_weicht_ab"] + a1)
+        if all(ae.ops and ae.status == PRUEFEN for ae in aes):
+            self._absatz_an_excel_ausrichten(k, so.excel_text, laeufe, {f"{aes[n].id}~{gi}": aes[n].id
+                                                                       for n, gis in je_aenderung.items() for gi in gis}, aes)
+
+    def _absatz_an_excel_ausrichten(self, k: Any, excel: str, laeufe: list[Lauf], ids: dict[str, str],
+                                    aes: list[Aenderung]) -> None:
+        """Der PDF-Absatz fuer die Markierung der Vorschlaege bei abweichender Excel (Auftrag 004).
+
+        Ohne PDF-Absatz markiert der Applier nur nach den Operationen: Leerraum am Rand eines neuen Stuecks bleibt unmarkiert,
+        waehrend Word ihn mit unterstreicht (" Satz" als Ganzes neu). Die Projektion der PDF-Laeufe markiert genau wie das PDF --
+        sie braucht aber Laeufe, deren alter Text Zeichen fuer Zeichen die Excel ist. Hier werden die PDF-Laeufe an die Excel
+        angelegt: bleibende und gestrichene Stuecke tragen den Text der Excel (auch ihre Abweichung), neue Stuecke bleiben
+        wie im PDF. Der Absatz wird nur registriert, wenn (1) die alte Fassung gleich der Excel ist und (2) die Projektion
+        denselben neuen Text ergibt wie die Operationen -- sonst bleibt es bei den Operationen."""
+        nf = self.cfg.get("normalform")
+        alt, lage = _positionen(laeufe, set())
+        abb = _unscharfe_abbildung(alt, excel, nf)
+        out: list[Lauf] = []
+        ende = 0                                              # bis hierher ist die Excel in `out` untergebracht
+        offene_trenner: list[int] = []                        # Indizes (in out) von Trennern seit dem letzten Stueck mit Zeichen
+
+        def anfuegen(art: str, text: str, aenderung: str = "", optional: bool = False) -> None:
+            if art in ("k", "s") and out and out[-1].art == art and out[-1].aenderung == aenderung and not optional:
+                out[-1] = Lauf(art, out[-1].text + text, aenderung, False)
+            else:
+                out.append(Lauf(art, text, aenderung, optional))
+
+        for i, l in enumerate(laeufe):
+            if l.art == "a":
+                out.append(Lauf("a", l.text, ids.get(l.aenderung, l.aenderung), l.optional))
+                continue
+            if i not in lage:
+                continue                                      # nicht sichtbar in der alten Fassung (zusammengelegter Trenner)
+            a0, e0 = lage[i]
+            ziel = [abb[p] for p in range(a0, e0) if p in abb]
+            if l.art == "s" or not ziel:
+                if l.art == "d":
+                    return                                    # gestrichener Text ohne Gegenstueck in der Excel: nicht sicher
+                offene_trenner.append(len(out))
+                out.append(Lauf("s", "", "", l.optional))      # Text folgt, sobald klar ist, was die Excel dort hat
+                continue
+            xs, xe = min(ziel), max(ziel) + 1
+            if xs < ende:
+                return                                        # Reihenfolge nicht eindeutig
+            luecke = excel[ende:xs]
+            if luecke:
+                if offene_trenner and not luecke.strip():
+                    j = offene_trenner[0]
+                    out[j] = Lauf("s", luecke, "", out[j].optional)
+                else:
+                    out.insert(offene_trenner[0] if offene_trenner else len(out), Lauf("k", luecke))
+                    if offene_trenner:
+                        offene_trenner = [j + 1 for j in offene_trenner]
+            offene_trenner = []
+            if l.art == "d":
+                kern = excel[xs:xe]
+                anfuegen("d", kern, ids.get(l.aenderung, l.aenderung), l.optional)
+            else:
+                anfuegen("k", excel[xs:xe], "", l.optional)
+            ende = xe
+        rest = excel[ende:]
+        if rest:
+            if offene_trenner and not rest.strip():
+                j = offene_trenner[0]
+                out[j] = Lauf("s", rest, "", out[j].optional)
+            else:
+                anfuegen("k", rest)
+        out = [l for l in out if l.text]
+        aktiv = set(ids.values())
+        alt_neu, opt_alt = zustand_mit_optional(out, set())
+        if not vergleiche(alt_neu, excel, opt_alt, nf).gleich:
+            return
+        res = mk.projiziere([excel], out, aktiv, self.cfg)
+        if res is None:
+            return
+        zelle = self.xl.text(k.blatt, k.zeile, k.spalte)
+        if zelle[k.start:k.end] != excel:
+            return
+        projiziert = zelle[:k.start] + "".join(z[0] for z in res[0] if z[1] != mk.ALT) + zelle[k.end:]
+        ops = [o for ae in aes for o in ae.ops]
+        if any((o.blatt, o.zeile, o.spalte) != (k.blatt, k.zeile, k.spalte) or o.art not in ("ersetzen", "einfuegen") for o in ops):
+            return
+        try:
+            geplant = "".join(z[0] for z in mk.markiere_ops([mk.Stueck(mk.NORMAL, zelle)], ops, mk.SICHT_FLACH, {}, self.cfg).zeichen
+                              if z[1] != mk.ALT)
+        except ValueError:
+            return
+        if " ".join(projiziert.split()) != " ".join(geplant.split()):
+            return
+        self._absatz(k.blatt, [(k.zeile, k.spalte, k.start, k.end)], out)
 
     def _ops_unbedenklich(self, ae: Aenderung, ops: list[Operation]) -> bool:
         """Neuer Text der Operationen: keine Steuerzeichen, nichts Verdaechtiges, Zahl-Zellen bleiben Zahlen (wie `_setze`)."""

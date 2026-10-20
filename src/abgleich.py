@@ -945,7 +945,15 @@ def _teilgruppen(laeufe: list[Lauf], i0: int, i1: int) -> list[tuple[int, int]]:
     for c in cluster:
         if out:
             arten = frozenset().union(*(x[2] for x in out[-1]))
-            if not ("d" in arten and "d" in c[2] and ("a" in arten or "a" in c[2])):
+            trennt = "d" in arten and "d" in c[2] and ("a" in arten or "a" in c[2])
+            # Auftrag 004: Eine reine Einfuegung, die durch einen Trenner von einer Ersetzung davor getrennt ist und direkt am
+            # naechsten unveraenderten Stueck klebt, gehoert zu diesem Stueck, nicht zur Ersetzung: Listennummer "c." -> "d.",
+            # dahinter (in der Excel: Leerraum der Listennummer) ein neues Wort am Textanfang. Sonst stuende das neue Wort vor dem
+            # Leerraum der Listennummer statt hinter ihm.
+            if (not trennt and {"d", "a"} <= arten and c[2] == {"a"} and c[1] + 1 < len(laeufe) and laeufe[c[1] + 1].art == "k"
+                    and any(laeufe[x].art == "s" for x in range(out[-1][-1][1] + 1, c[0]))):
+                trennt = True
+            if not trennt:
                 out[-1].append(c)
                 continue
         out.append([c])

@@ -68,6 +68,29 @@ def test_neues_wort_vor_dem_punkt_bei_abweichender_excel_laesst_den_punkt_stehen
     assert "".join(t for _, t in stuecke) == "Die Anlage gilt fuer alle Pumpen jeweils. Das gilt nur fur Armaturen im Keller."
 
 
+def test_neuer_satz_bei_abweichender_excel_ist_samt_leerzeichen_markiert_wie_im_pdf(tmp_path):
+    """Word unterstreicht das Leerzeichen vor dem neuen Satz mit. Ohne PDF-Absatz markierte der Applier nur nach den Operationen
+    (Leerraum am Rand unmarkiert); jetzt legt der Planer die PDF-Laeufe an die abweichende Excel an, und die Projektion markiert
+    wie das PDF -- das Leerzeichen gehoert zum neuen Satz, der Punkt davor bleibt unmarkiert."""
+    pdf_zeile = [[("Die Anlage gilt fuer alle Pumpen.", "k"), (" Abweichungen sind schriftlich zu beantragen.", "n")]]
+    plan, stuecke, _ = _lauf(tmp_path, pdf_zeile, "Die Anlage gilt fur alle Pumpen.")
+    (a,) = plan.aenderungen
+    assert a.status == PRUEFEN and "excel_weicht_ab" in a.pruefcodes and a.ops
+    assert len(plan.absaetze) == 1 and a.id in plan.absaetze[0].aenderungen
+    assert stuecke == [("normal", "Die Anlage gilt fur alle Pumpen."), ("neu", " Abweichungen sind schriftlich zu beantragen.")]
+
+
+def test_ersetztes_wort_bei_abweichender_excel_laesst_trenner_und_abweichung_stehen(tmp_path):
+    """Alt direkt vor Neu (ohne Leerzeichen dazwischen), davor und dahinter unmarkierter Text; die Abweichung der Excel
+    ("fur" statt "fuer") bleibt unveraendert und unmarkiert."""
+    pdf_zeile = [[("Die Anlage gilt fuer alle ", "k"), ("Pumpen", "d"), ("Armaturen", "n"), (" im Keller und im Hof des Werks.", "k")]]
+    plan, stuecke, _ = _lauf(tmp_path, pdf_zeile, "Die Anlage gilt fur alle Pumpen im Keller und im Hof des Werks.")
+    (a,) = plan.aenderungen
+    assert a.status == PRUEFEN and a.ops and len(plan.absaetze) == 1
+    assert stuecke == [("normal", "Die Anlage gilt fur alle "), ("alt", "Pumpen"), ("neu", "Armaturen"),
+                       ("normal", " im Keller und im Hof des Werks.")]
+
+
 def test_ohne_zeichengenaue_stelle_gibt_es_keinen_vorschlag(tmp_path):
     """Der Text direkt hinter dem gestrichenen Wort ist in der Excel ein anderer ("xx" statt "im"): die Stelle ist nicht
     zeichengenau bestimmbar. Der alte Matcher hat das Wort trotzdem ersetzt (geraten); jetzt bleibt die Aenderung auf "pruefen"

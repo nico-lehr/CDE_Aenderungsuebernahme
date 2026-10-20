@@ -42,8 +42,8 @@ excel:
     # Listennummer + Polster (Tab, geschuetzte Leerzeichen, Leerzeichen) am Anfang des Texts; Listenpunkt <-> Text mit gleicher Nummer
     listen_label: '^(?P<label>\d{1,3}[.)]|[a-z]{1,3}[.)]|[A-Z]{1,3}[.)]|[ivxlcdm]{1,6}[.)])(?P<polster>[\t    ]+)(?=\S)'
     polster_standard: "\t"      # Polster einer neuen Listennummer, wenn keine Zeile mit gleicher Art Listennummer eines zeigt
-    vorlage_kandidaten: 8       # Vorlagezeile einer neuen Zeile: unter so vielen naechsten Zeilen gleichen Typs hat die erste den Vorrang, deren
-                                # Konstanten links der Section-Spalte so geschrieben sind wie in den meisten Zeilen der Spec (kein verirrtes Leerzeichen)
+    vorlage_kandidaten: 60      # Vorlagezeile einer neuen Zeile: unter so vielen naechsten Zeilen gleichen Typs hat die erste den Vorrang, deren
+                                # Konstanten links der Section-Spalte so geschrieben sind wie beim Anker (die Zeile, an der eingefuegt wird)
     # Spec-Filter (Welle 3, Nico: eine CDE enthaelt mehrere Specs): Spalte mit der Spezifikationsnummer je Zeile. Ziffergruppen
     # mit Leerzeichen/Unterstrich/Punkt/Bindestrich ("11 22 33" = "11_22_33"), Zusaetze dahinter egal
     spec_muster: '(?<![\d])(\d{2})[ _.\-](\d{2})[ _.\-](\d{2})(?:[ _.\-](\d{2}))?(?![\d])'
