@@ -459,6 +459,44 @@ def test_docx_zahlen_nur_zahlen_und_formen(tmp_path):
     assert z.zaehler["tabellen"] == 1 and z.autoren == {"Erfunden"}
 
 
+def test_steckbrief_docx_nur_zahlen_und_formen(tmp_path, capsys):
+    import json
+    from src import cli, steckbrief
+    b = DocxBau()
+    b.register_nummerierung()
+    b.absatz("Die Zebrafinken {-fördern-}{+heben+} das Wasser.", num=(1, 0))
+    b.absatz("{+Ein ganz neuer Punkt.+}", num=(1, 0), marke="ins")
+    b.absatz("1.1\tKRANICHHALLE")
+    b.tabelle([["Kranich", "{-12-}{+14+}"]])
+    b.kopfzeile("Projekt Wombat {+neu+}")
+    b.kommentar("Eine Notiz über das Nilpferd")
+    b.fussnote("Fußnote über den Biber")
+    b.koerper.append("<w:p><w:r><w:t>x</w:t></w:r><m:oMath xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\">"
+                     "<m:r><m:t>y</m:t></m:r></m:oMath></w:p>")
+    datei = b.speichern(tmp_path / "geheim_wombat.docx")
+    ziel = tmp_path / "sb"
+    assert cli.main(["steckbrief", "--docx", str(datei), "--name", "probe", "--ausgabe", str(ziel)]) == 0
+    ausgabe = capsys.readouterr().out
+    assert "wombat" not in ausgabe.lower()                       # kein Dateiname, kein Text in der Ausgabe
+    pfad = next(ziel.glob("*/steckbrief.json"))
+    daten = json.loads(pfad.read_text(encoding="utf-8"))
+    assert steckbrief.pruefe(daten) == []
+    d = daten["docx"]
+    assert d["aenderungen"]["ins"] == 3 and d["kopf_fuss"]["ins"] == 1 and d["aenderungen"]["del"] == 2 and d["aenderungen"]["absatzmarke_ins"] == 1
+    assert d["listen"]["arten"] == {"upperLetter": 2} and d["tabellen"]["tabellen"] == 1
+    assert d["kopf_fuss"]["kopf_teile"] == 1 and d["kopf_fuss"]["woerter_geaendert"] == 1
+    assert d["sonstiges"]["kommentare"] == 1 and d["sonstiges"]["fussnoten"] == 1
+    assert d["unbekannte_elemente"] == {"oMath": 1}
+    roh = pfad.read_text(encoding="utf-8") + pfad.with_suffix(".md").read_text(encoding="utf-8")
+    for fremd in ("Zebrafinken", "Wombat", "Nilpferd", "Biber", "Kranich", "heben"):
+        assert fremd not in roh                                  # kein Text aus dem Dokument (Regel 16)
+    # kaputte Datei: einfache Meldung
+    (tmp_path / "k.docx").write_bytes(b"x")
+    assert cli.main(["steckbrief", "--docx", str(tmp_path / "k.docx"), "--ausgabe", str(ziel)]) == 2
+    assert "keine gültige Word-Datei" in capsys.readouterr().out
+    assert cli.main(["steckbrief", "--docx", str(datei), "--pdf", "x.pdf"]) == 2
+
+
 # =================================================================================================
 # 7. Kreuzprobe: dasselbe erfundene Dokument als .docx und als Word-PDF -> dieselben Aenderungen im Planer
 # =================================================================================================
@@ -614,7 +652,7 @@ def test_ende_zu_ende_aenderungen_nummern_und_neue_zeile_mit_gruener_gegenprobe(
     # zweiter Lauf auf dem Ergebnis: alles steht schon da
     xl2 = ExcelModell(out)
     plan2 = plane(analysiere_docx(tmp_path / "a.docx"), xl2)
-    assert all(a.status == NICHT and a.pruefcodes == ["schon_eingetragen"] for a in plan2.aenderungen if a.typ != "absatz_neu") or True
+    assert all(a.status == NICHT and a.pruefcodes == ["schon_eingetragen"] for a in plan2.aenderungen)
 
 
 @pytest.mark.markierung_an

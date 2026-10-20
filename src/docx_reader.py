@@ -36,7 +36,7 @@ import xml.etree.ElementTree as ET
 from . import config
 from .fehler import NichtGefunden, NutzerFehler
 from .models import ADD, DEL, KEEP, MOD, PdfBlock, PdfToken, luecke
-from .pdf_reader import PdfAnalyse, _block_hinweise, _gross_anteil, _kapitel, _laeufe, _re_cfg, _section_von
+from .pdf_reader import PdfAnalyse, _block_hinweise, _gross_anteil, _kapitel, _laeufe, _re_cfg, _section_von, hinweis_text
 from .textutil import norm, section_nummer
 
 _OLE_KOPF = bytes.fromhex("D0CF11E0A1B11AE1")
@@ -650,7 +650,11 @@ class _Leser:
                 elif _kind(rpr, "del") is not None:
                     a.marke = "del"
                     self.z.zaehler["absatzmarke_del"] += 1
-                if _kind(rpr, "moveFrom") is not None or _kind(rpr, "moveTo") is not None:
+                elif _kind(rpr, "moveFrom") is not None:               # verschobener Absatz: wie gestrichen / eingefuegt
+                    a.marke = "del"
+                    self.z.zaehler["absatzmarke_move"] += 1
+                elif _kind(rpr, "moveTo") is not None:
+                    a.marke = "ins"
                     self.z.zaehler["absatzmarke_move"] += 1
             wechsel = _kind(ppr, "pPrChange")
         if a.gliederung is None and a.stil:
@@ -1014,9 +1018,9 @@ def _lies(paket: _Paket, pfad: Path, cfg: dict | None) -> tuple[PdfAnalyse, Docx
             a.marke_alt = za.weiter(*a.num_alt)
         if a.num_neu is not None and a.ex_neu:
             a.marke_neu = zn.weiter(*a.num_neu)
-        for m in (a.marke_alt, a.marke_neu):
-            if m is not None:
-                z.listenarten[m.fmt] += 1
+        m = a.marke_neu or a.marke_alt
+        if m is not None:
+            z.listenarten[m.fmt] += 1
         if a.marke_neu is not None and a.num_neu is not None:
             z.listenebenen[str(a.num_neu[1] + 1)] += 1
         if a.marke_alt is not None and a.marke_neu is not None and a.marke_alt.text != a.marke_neu.text:
@@ -1082,6 +1086,7 @@ def _lies(paket: _Paket, pfad: Path, cfg: dict | None) -> tuple[PdfAnalyse, Docx
     for a in leser.absaetze:
         b = block_von_absatz.get(id(a))
         if a.absatzgrenze and b is not None and _HINWEIS_ABSATZ[a.absatzgrenze] not in b.hinweise:
+            b.hinweise = [h for h in b.hinweise if h != hinweis_text("absatzgrenze_unklar")]     # dessen Satz spricht von PDF-Zeilen
             b.hinweise.append(_HINWEIS_ABSATZ[a.absatzgrenze])
     # 4. Kopf- und Fusszeilen, Kommentare, Fussnoten
     _kopf_fuss(paket, leser, ergebnis)
