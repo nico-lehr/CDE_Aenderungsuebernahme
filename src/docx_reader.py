@@ -433,7 +433,8 @@ class _Zaehler:
         if lv.fmt not in _FORMATE:
             self.unbekannt[lv.fmt if re.fullmatch(r"[A-Za-z]{1,30}", lv.fmt or "") else "andere"] += 1
             return None
-        suff = {"tab": "\t", "space": " ", "nothing": ""}.get(lv.suff, "\t")
+        # "nothing" (kein Trennzeichen): im Layout steht die Nummer durch den Einzug trotzdem als eigenes Wort vor dem Text
+        suff = {"tab": "\t", "space": " ", "nothing": " "}.get(lv.suff, "\t")
         if lv.fmt == "none":
             return None
         if lv.fmt == "bullet":

@@ -5,6 +5,8 @@ Die Test-Dateien baut tests/_docx_bau.py (Dokument-XML von Hand, zip im tmp_path
 """
 from __future__ import annotations
 
+import shutil
+import subprocess
 import zipfile
 
 import pytest
@@ -465,6 +467,41 @@ def test_passwort_im_zip_und_strict_namespace(tmp_path):
     strict = b.speichern(tmp_path / "s.docx", extra={"word/document.xml": b.dokument_xml().replace(
         W, "http://purl.oclc.org/ooxml/wordprocessingml/main")})
     assert _tok(analysiere_docx(strict), "hebt").status == MOD
+
+
+_FODT = """<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"
+  office:version="1.2" office:mimetype="application/vnd.oasis.opendocument.text">
+ <office:automatic-styles>
+  <text:list-style style:name="L1"><text:list-level-style-number text:level="1" style:num-suffix="." style:num-format="a"/></text:list-style>
+ </office:automatic-styles>
+ <office:body><office:text>
+  <text:tracked-changes text:track-changes="true">
+   <text:changed-region text:id="ct1"><text:insertion><office:change-info><dc:creator>Erfunden</dc:creator><dc:date>2026-01-01T10:00:00</dc:date></office:change-info></text:insertion></text:changed-region>
+   <text:changed-region text:id="ct2"><text:deletion><office:change-info><dc:creator>Erfunden</dc:creator><dc:date>2026-01-01T10:01:00</dc:date></office:change-info><text:p>foerdert</text:p></text:deletion></text:changed-region>
+  </text:tracked-changes>
+  <text:list text:style-name="L1">
+   <text:list-item><text:p>Die Pumpe <text:change text:change-id="ct2"/><text:change-start text:change-id="ct1"/>hebt<text:change-end text:change-id="ct1"/> das Wasser.</text:p></text:list-item>
+   <text:list-item><text:p>Zweiter Punkt bleibt.</text:p></text:list-item>
+  </text:list>
+ </office:text></office:body>
+</office:document>
+"""
+
+
+@pytest.mark.skipif(shutil.which("soffice") is None, reason="LibreOffice nicht installiert")
+def test_docx_eines_fremden_erzeugers_libreoffice(tmp_path):
+    """Unabhaengiger Erzeuger: LibreOffice schreibt aus einem Flat-ODT mit Aenderungsverfolgung eine echte .docx (eigene
+    Namensraeume, Formatvorlagen, numbering.xml); der Leser liest sie wie unsere Handarbeit."""
+    (tmp_path / "t.fodt").write_text(_FODT, encoding="utf-8")
+    subprocess.run(["soffice", "--headless", f"-env:UserInstallation=file://{tmp_path / 'lo'}", "--convert-to", "docx",
+                    "--outdir", str(tmp_path), str(tmp_path / "t.fodt")], check=True, capture_output=True, timeout=180)
+    a = analysiere_docx(tmp_path / "t.docx")
+    assert [b.tokens[0].old for b in a.blocks] == ["a.", "b."]
+    t = _tok(a, "hebt")
+    assert (t.old, t.new, t.teile) == ("foerdert", "hebt", [(DEL, "foerdert"), (ADD, "hebt")])
+    assert [x.status for x in _toks(a) if x.status != KEEP] == [MOD] and a.luecken == []
 
 
 def test_fehlertexte_sind_einfach_und_ohne_pfade(tmp_path):
