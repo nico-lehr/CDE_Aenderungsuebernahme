@@ -181,7 +181,7 @@ def test_cli_docx_und_pdf_und_beides_nicht_gleichzeitig(paar, tmp_path, docx_les
     docx = _docx_datei(tmp_path / "w.docx")
     assert cli.main(["analyse", "--docx", str(docx), "--excel", str(paar["alt"])]) == 0
     out = capsys.readouterr().out
-    assert "Lauf:" in out and "Dokument-Ampel:" in out
+    assert "Lauf:" in out and "Dokument-Ampel:" in out and "Wörter im Word-Dokument markiert" in out and "das Word-Dokument wurde vollständig" in out
     assert cli.main(["analyse", "--pdf", str(paar["pdf"]), "--excel", str(paar["alt"])]) == 0           # wie bisher
     assert cli.main(["analyse", "--pdf", str(docx), "--excel", str(paar["alt"])]) == 0                   # beide Endungen an beiden Flaggen
     capsys.readouterr()

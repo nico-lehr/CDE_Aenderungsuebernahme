@@ -32,18 +32,19 @@ def _zeige(daten: dict, luecken: list[dict] | None = None, gezeigt: set[str] | N
     """Gibt die Bilanz aus. `luecken`: die Luecken-Liste des PDFs (wird bei unvollstaendiger Bilanz aufgelistet).
     `gezeigt`: schon ausgegebene Hinweise (jeder Hinweis erscheint nur einmal)."""
     b = daten["bilanz"]
+    dok = "Word-Dokument" if daten.get("quelle_art") == "docx" else "PDF"          # Eingabe Word oder PDF
     print(f"Änderungen: {b['aenderungen']}  |  übernommen: {b['uebernommen']}  |  zu prüfen: {b['pruefen']}  |  "
           f"nicht übernommen: {b['nicht_uebernommen']}")
-    print(f"Wörter im PDF markiert: {b['woerter_im_pdf']}")
+    print(f"Wörter im {dok} markiert: {b['woerter_im_pdf']}")
     if b.get("stimmt") and b.get("vollstaendig") is True:
-        print("Bilanz stimmt: ja (das PDF wurde vollständig gelesen)")
+        print(f"Bilanz stimmt: ja (das {dok} wurde vollständig gelesen)")
     elif b.get("stimmt") and b.get("vollstaendig") is None:
-        print("Bilanz stimmt: ja, aber ob das PDF vollständig gelesen wurde, ist nicht geprüft")
+        print(f"Bilanz stimmt: ja, aber ob das {dok} vollständig gelesen wurde, ist nicht geprüft")
     else:                                              # UNVOLLSTÄNDIG (Lücken) oder NEIN
         label, wert = bilanz_satz(b)
         print(f"{label}: {wert}")
     if b.get("vollstaendig") is False and luecken:
-        print("Diese Stellen im PDF konnten nicht gelesen werden (hier kann eine Änderung fehlen, bitte im PDF selbst prüfen):")
+        print(f"Diese Stellen im {dok} konnten nicht gelesen werden (hier kann eine Änderung fehlen, bitte im {dok} selbst prüfen):")
         for l in luecken:
             art = _LUECKE_ART.get(l.get("art", ""), l.get("art", "") or "Sonstiges")
             print(f"  Seite {l.get('seite', '?')} | {art} | {l.get('beschreibung', '')}")
@@ -153,7 +154,7 @@ def _vertrauen(args: list[str]) -> int:
         ap.parse_args(args)
     except SystemExit as e:
         return 2 if e.code else 0
-    zeilen, laeufe, kaputt = vertrauen.lese_alle(runs.runs_dir())
+    zeilen, laeufe, kaputt = vertrauen.lese_alle(config.pfad("runs_dir"))      # nur lesen: legt auch keinen Ordner an
     for zeile in vertrauen.bericht(zeilen, laeufe, kaputt):
         print(zeile)
     return 0
@@ -235,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Ergebnis:", runs.lauf_dir(run_id) / res["ordner"] / res["excel"])
             if abwahl:
                 print(f"Abgewählt (nicht eingetragen): {', '.join(res['abwahl'])}")
-            _zeige({"bilanz": res["bilanz"], "warnungen": res["warnungen"]}, None, gezeigt)     # Lücken stehen schon oben
+            _zeige({"bilanz": res["bilanz"], "warnungen": res["warnungen"], "quelle_art": daten.get("quelle_art")}, None, gezeigt)     # Lücken stehen schon oben
     except NutzerFehler as e:                                  # gewollte Meldung: schon einfaches Deutsch
         print(e.meldung)
         return 2

@@ -478,6 +478,7 @@ const [basis, docx, xlsx] = process.argv.slice(2);
   aus.vorschau_da = await p.locator('#karten-bitte .karte .vorschau').count();
   aus.orte = await p.$$eval('#karten-bitte .karte h3', (l) => l.map((x) => x.textContent));
   await p.click('#fachleute summary');
+  await p.waitForFunction(() => document.getElementById('fachleute-inhalt').textContent.length > 0);      // das Klapp-Ereignis kommt etwas später
   aus.fachleute = await p.textContent('#fachleute-inhalt');
   await p.keyboard.press('Escape');
   await p.click('#btn-excel');
