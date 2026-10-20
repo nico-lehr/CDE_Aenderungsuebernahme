@@ -1,6 +1,37 @@
 # Status – was geht, was nicht, was fehlt
 
-Autor: Nico Lehr · Stand: 19.10.2026 · **Version 0.3.0** (Auftrag 003) · Alle Zahlen stammen von erfundenen Nachbauten oder von zwei echten Beispielpaaren, die nur gemessen und nie gespeichert wurden.
+Autor: Nico Lehr · Stand: 20.10.2026 · **Version 0.4.0** (Auftrag 003, Welle 5) · Alle Zahlen stammen von erfundenen Nachbauten oder von zwei echten Beispielpaaren, die nur gemessen und nie gespeichert wurden.
+
+## Stand Welle 5 (20.10.2026) – „Word-Datei, zweiter Prüfweg, Vertrauensmodus“
+
+**Was neu ist (ADR 0008, 0009; `docs/so_gehts.md`):**
+- **Word-Datei (.docx) lesen** (`src/docx_reader.py`): Einfügungen, Streichungen, Verschiebungen, Zeichen-genaue Änderungen, Listennummern aus `numbering.xml`, Tabellen, Kopf-/Fußzeilen. Dasselbe erfundene Dokument als .docx und als Word-PDF ergibt dieselben Änderungen.
+  Zusammengeführte oder getrennte Absätze, Tabellen und Unbekanntes werden nie automatisch eingetragen, sondern gemeldet.
+- **Zweiter Prüfweg** (`src/konsens.py`): unabhängige Prüfung des Ergebnisses (Zeichen für Zeichen; bei PDF zusätzlich im Seitenbild). Abweichung ⇒ „Bitte prüfen“, die Datei wird ohne die Änderung neu geschrieben.
+- **Vertrauensmodus** (Dashboard, `src/vertrauen.py`): Dokument-Ampel, Stichprobe (etwa 10 %) zum Ansehen, Eingabe Word oder PDF, Freigabe-Protokoll je Lauf (nur Codes, keine Texte) und Auswertung `python -m src.cli vertrauen`.
+- **Besser lesen und vorschlagen:** Listen-Einrückungen galten fälschlich als „mehrspaltig“ (487 richtige Änderungen waren gesperrt); Vorschläge bei abweichender Excel entstehen nur noch, wenn sie zeichengenau stimmen (sonst Code `kein_vorschlag`).
+
+**Messung (erfundene Nachbauten):**
+
+| Kennzahl | Ziel | `nachbau_word` vorher → jetzt (60, Entwicklung) | frischer ungesehener Satz (Seeds 3001–3030, einmal gemessen) |
+|---|---|---|---|
+| Stille Fehler | 0 | 12 → 3 | 3 |
+| Automatisch richtig, Zellen / je Änderung | 100 % | 99,8 % → 100,0 % / 99,4 % → 99,7 % | 99,9 % / 100,0 % |
+| Vorschläge exakt nach Freigabe | ≥ 95 % | 87,8 % → 98,8 % | 95,8 % |
+| Abdeckung ohne Nachfrage, Haupt-Spalten | ≥ 70 % | 85,9 % → 97,7 % | 97,5 % |
+| Bitte prüfen (Änderungen) | berichten | 619 → 115 | 79 |
+| Lese-Lücke | ≤ 2 % | 4,1 % → 4,1 % | 3,6 % |
+| Kollateral (fremde Zelle geändert) | 0 | 0 | **2** |
+| Restarbeit je 100 Änderungen | berichten | 29,3 → 16,2 | 14,0 |
+
+**Echte Beispielpaare** (nur Zahlen, im Scratchpad): keine Verschlechterung durch die neuen Teile. Der zweite Prüfweg schlug bei Beispiel B nicht an (517 Wörter geprüft, 0 Abweichungen) und stufte bei Beispiel A eine falsch eingetragene Änderung auf „Bitte prüfen“ zurück.
+
+**Ehrlich lesen:**
+- Der frische Satz ist eine **einmalige** Messung vor jeder Korrektur. Danach wurden die zwei Fehlerklassen (Kollateral, falsche Neue-Zeile-Zelle) **nur als Klassen** an einen Helfer gegeben, der sie auf Entwicklungsdaten (Seeds < 1000) gesucht hat; der Satz zählt damit nicht mehr als ungesehen.
+- Die Lese-Lücke ist überwiegend ein Messartefakt: Rund 97 % der „nicht erkannten“ Wörter sind Section-Nummern neuer oder entfernter Zeilen, die das PDF nicht markiert und die das Tool aus dem Kontext richtig einträgt. Die Messung nennt deshalb zusätzlich die Zahl nur für Zellen, die im Ergebnis nicht stimmen (die alte Zahl bleibt).
+- Der Word-Leser ist nur an selbstgebauten Dateien getestet (keine echte .docx vorhanden). Sicherheitsnetz: `steckbrief --docx` auf einer eigenen Datei und der Abgleich mit dem PDF (`vergleiche_mit_pdf`).
+- Die Bildprobe prüft nur rund drei Viertel der Wörter (kleine Wörter, farbiger Grund und Satzzeichen sind „nicht prüfbar“, nie „falsch“).
+- Die Ampel-Schwelle „rot ab 40 offenen Punkten je 100 Änderungen“ ist ein Startwert und gehört an echten Paaren eingestellt.
 
 ## Stand Auftrag 003 (19.10.2026) – „Word-PDFs, CDE wie Nico, einfaches Dashboard“
 
