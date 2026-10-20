@@ -66,6 +66,9 @@ SAETZE: dict[str, str] = {
     "gegenprobe_verlust": "Nachkontrolle: Ein Zeichen der Excel wäre verloren gegangen.",
     "gegenprobe_alt": "Nachkontrolle: Der alte Text (durchgestrichen) passt nicht zum PDF.",
     "gegenprobe_format": "Nachkontrolle: Die Markierung (rot / blau durchgestrichen) passt nicht zum PDF.",
+    # ---- Zweiter Pruefweg (src/konsens.py): unabhaengig vom Planer
+    "konsens_text": "Zweitprüfung: Der Text in der Excel passt danach nicht zum PDF.",
+    "konsens_bild": "Zweitprüfung: Im Seitenbild ist die Markierung eines Wortes anders als gelesen.",
     # ---- Hinweise des PDF-Lesers (als "sperre:<code>" oder nur Hinweis)
     "unbekannte_farbe": "Im Absatz gibt es eine Farbe, die nicht in der Legende steht.",
     "teilweise_markiert": "Ein Wort ist nur zum Teil markiert.",
@@ -104,7 +107,7 @@ A1_ART: dict[str, str] = {
 # Wichtigster Grund zuerst: Gruende, die das Eintragen ganz verhindern, vor Gruenden fuer "pruefen", vor reinen Hinweisen
 RANG: tuple[str, ...] = (
     "ausserhalb_cde", "spec_unklar", "steuerzeichen", "schon_eingetragen", "abgewaehlt", "nicht_gefunden", "zu_unsicher", "kein_anker",
-    "blatt_ohne_anker", "keine_inhaltsspalte", "gegenprobe_", "ohne_absatz", "sperre:", "excel_weicht_ab", "a1_", "widerspruch",
+    "blatt_ohne_anker", "keine_inhaltsspalte", "gegenprobe_", "konsens_", "ohne_absatz", "sperre:", "excel_weicht_ab", "a1_", "widerspruch",
     "mehrdeutig", "keiner", "label_spalte", "teil_absatz", "mehrere_zellen", "excel_umbruch", "naht_unklar", "neutext_verdaechtig",
     "zahlformat", "zeilen_risiko", "anker_", "layout_unsicher", "section_", "kopfspalte", "versteckt", "kurz",
     "vielleicht_doppelt", "gruppe",
