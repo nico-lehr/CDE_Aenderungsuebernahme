@@ -345,7 +345,7 @@ def analysiere(run_id: str, profil: str | None = None, spec: str | None = None) 
         raise
     plan = plane(pa, xl, spec=spec)
     konsens.bildprobe_anwenden(plan.aenderungen, pa, pdf=pdf)      # zweiter Pruefweg (nur PDF): Abweichung -> "pruefen"
-    bil = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
+    bil = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken, plan.luecken_ausserhalb)
     if (d / "plan.json").exists():                   # gleichzeitige Analyse desselben Laufs: die erste gewinnt
         raise LaufFehler("Dieser Lauf wurde schon analysiert. Eine Analyse wird nicht überschrieben. "
                          "Bitte einen neuen Lauf starten.", 409, "schon_analysiert")
@@ -355,6 +355,7 @@ def analysiere(run_id: str, profil: str | None = None, spec: str | None = None) 
         "bilanz": bil, "layout": plan.layout, "profil": {"name": prof.name, "hash": prof.hash} if prof else None,
         "warnungen": plan.warnungen, "ignoriert": plan.ignoriert,
         "luecken": plan.luecken,
+        "luecken_ausserhalb": plan.luecken_ausserhalb,   # Welle 6: nicht gelesen, aber auf Seiten ohne CDE-Inhalt (nur Info)
         "farben": pa.farben, "aenderungen": [a.zu_dict() for a in plan.aenderungen],
         "absaetze": [ab.zu_dict() for ab in plan.absaetze],   # Schema 3: fuer die Gegenprobe nach dem Speichern
         # Schema 4, nur Info fuer "Details fuer Fachleute": erkannte Legende und Zahl der Sprechblasen (kein Text daraus)
@@ -620,7 +621,9 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None, abwahl: li
             res = uebernehmen(aenderungen, quelle, ziel, freig, absaetze=absaetze, abwahl=abw)
         markierte = plan["bilanz"]["woerter_im_pdf"]
         luecken = plan.get("luecken")
-        bil = bilanz(aenderungen, markierte, plan.get("ignoriert", []), luecken if isinstance(luecken, list) else [])
+        aussen = plan.get("luecken_ausserhalb")
+        aussen = aussen if isinstance(aussen, list) else []
+        bil = bilanz(aenderungen, markierte, plan.get("ignoriert", []), luecken if isinstance(luecken, list) else [], aussen)
         if not isinstance(luecken, list):
             # Schema-1-Plan: damals wurden Luecken nicht erfasst. "Vollstaendig" ist UNBEKANNT und darf nie behauptet
             # werden (nie gruen); luecken_geprueft=False sagt das ausdruecklich.
@@ -628,7 +631,7 @@ def uebernehmen_lauf(run_id: str, freigaben: list[str] | None = None, abwahl: li
         warn = list(plan.get("warnungen", [])) + res.warnungen
         xinfo = {"pdf_name": info["pdf"], "excel_name": info["excel"], "ergebnis_name": ziel.name, "quelle_art": info["quelle_art"]}
         schreibe_xlsx(ordner / "aenderungsprotokoll.xlsx", xinfo, aenderungen, bil, plan.get("layout", []), warn,
-                      plan.get("farben", []), plan.get("luecken", []), plan.get("spec"))
+                      plan.get("farben", []), plan.get("luecken", []), plan.get("spec"), aussen)
         _schreibe_json_atomar(ordner / "ergebnis.json", {   # zuletzt: erst damit zaehlt das Ergebnis
             "run_id": run_id, "erstellt": datetime.now().isoformat(timespec="seconds"), "ergebnis_name": ziel.name,
             "freigaben": sorted(freig), "abwahl": sorted(abw), "bilanz": bil, "warnungen": warn,

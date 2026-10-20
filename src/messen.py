@@ -681,7 +681,7 @@ class _Auswertung:
                 if t.status in (DEL, MOD) and t.old:
                     self.pdf_alt.update(_wort_liste(t.old))
         # Woerter in unbekannter Farbe auf Seiten, fuer die das Tool eine Luecke "unbekannte_farbe" GEMELDET hat (nur im Speicher)
-        gemeldet_seiten = {lk.get("seite") for lk in plan.luecken if lk.get("art") == "unbekannte_farbe"}
+        gemeldet_seiten = {lk.get("seite") for lk in plan.alle_luecken if lk.get("art") == "unbekannte_farbe"}
         self.farbe_gemeldet: Counter[str] = Counter()
         for b in pdf_analyse.blocks:
             for t in b.tokens:
@@ -1722,7 +1722,7 @@ class _Auswertung:
         # Erwartete Luecken muessen gemeldet sein
         luecke_fehlt = 0
         if self.luecken_erwartet:
-            gemeldet = Counter(l["art"] for l in self.plan.luecken)
+            gemeldet = Counter(l["art"] for l in self.plan.alle_luecken)
             for art, n in Counter(l.get("art") for l in self.luecken_erwartet).items():
                 if gemeldet.get(art, 0) < n:
                     luecke_fehlt += n - gemeldet.get(art, 0)
@@ -1809,7 +1809,7 @@ class _Auswertung:
             "restarbeit": {"pruefen": sum(1 for a in self.aend if a.status == PRUEFEN),
                            "nicht_uebernommen": sum(1 for a in self.aend if a.status == NICHT),
                            "leere_zellen_neue_zeilen": leer_neu,
-                           "luecken_woerter": sum(int(lk.get("woerter") or 0) for lk in self.plan.luecken)},
+                           "luecken_woerter": sum(int(lk.get("woerter") or 0) for lk in self.plan.alle_luecken)},
             "pruefcodes": dict(codes),
             "sperr_quote": sperre,
             "bilanz_stimmt": bilanz_ok,
@@ -1861,7 +1861,7 @@ class _Auswertung:
             "lese_luecke_unerreicht_woerter": self.lese_luecke_unerreicht(),
             "lese_luecke_zaehlung": zaehlung,
             "luecken_nicht_gemeldet": luecke_fehlt,
-            "luecken_gemeldet": len(self.plan.luecken),
+            "luecken_gemeldet": len(self.plan.alle_luecken),
             "aenderungen": len(self.aend),
             "aenderungen_uebernommen_korrekt": len(uebernommen_ids - falsch_ids),
             "aenderungen_uebernommen_falsch": len(uebernommen_ids & falsch_ids),
@@ -2463,12 +2463,12 @@ def _messe_paar(ordner: Path, mit_vorschlaegen: bool, ergebnis_kopie: Path | Non
         xl = ExcelModell(vorher)
         plan = plane(pa, xl)
         konsens.bildprobe_anwenden(plan.aenderungen, pa, pdf=pdf)
-        bil_plan = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
+        bil_plan = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.alle_luecken)
         vor_status = {a.id: a.status for a in plan.aenderungen}
         aend_auto = copy.deepcopy(plan.aenderungen)
         e_auto = tmp / "ergebnis_auto.xlsx"
         uebernehmen(aend_auto, vorher, e_auto, None, absaetze=plan.absaetze)
-        bil_auto = bilanz(aend_auto, plan.markierte_woerter, plan.ignoriert, plan.luecken)
+        bil_auto = bilanz(aend_auto, plan.markierte_woerter, plan.ignoriert, plan.alle_luecken)
         # B: alle "pruefen" freigegeben (Qualitaet der Vorschlaege)
         e_alle = None
         if mit_vorschlaegen:
@@ -2542,7 +2542,7 @@ def _messe_paar(ordner: Path, mit_vorschlaegen: bool, ergebnis_kopie: Path | Non
                 ausfaelle.append(("struktur_vorschlaege", type(exc).__name__))
 
     # Plausibilitaet direkt aus dem PDF (unabhaengig vom Tool); nur ein Hinweis
-    seiten_mit_luecke = {l.get("seite") for l in plan.luecken}
+    seiten_mit_luecke = {l.get("seite") for l in plan.alle_luecken}
     if plausi is None:
         res["plausibilitaet_hinweise"] = None
         res["plausibilitaet_ungemeldet"] = None
@@ -3512,12 +3512,12 @@ def messe_nachher(ordner: Path, einstellungen: dict[str, str] | None = None, max
         pa = analysiere_pdf(pdf)
         plan = plane(pa, ExcelModell(rueck))
         konsens.bildprobe_anwenden(plan.aenderungen, pa, pdf=pdf)
-        bil_plan = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
+        bil_plan = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.alle_luecken)
         vor_status = {a.id: a.status for a in plan.aenderungen}
         aend = copy.deepcopy(plan.aenderungen)
         ergebnis = tmp / "ergebnis.xlsx"
         uebernehmen(aend, rueck, ergebnis, None, absaetze=plan.absaetze)
-        bil = bilanz(aend, plan.markierte_woerter, plan.ignoriert, plan.luecken)
+        bil = bilanz(aend, plan.markierte_woerter, plan.ignoriert, plan.alle_luecken)
         _plausi, pdf_zeichen = _pdf_pruefung(pdf)
         aw = _Auswertung(_lese_excel(rueck, True), _lese_excel(nachher, True), _lese_excel(ergebnis, True), None,
                          _blattnamen(rueck), aend, plan, pa, bil, bil_plan, None, None, vor_status, pdf_zeichen, markiert=True,

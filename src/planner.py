@@ -132,6 +132,14 @@ class Plan:
     # Spec-Filter (Welle 3): {"erkannt": "11 22 33" | None, "quelle": vorgabe | pdf | einzige | "", "zeilen": [von, bis] | None,
     # "kandidaten": [Specs der CDE], "pdf": [im PDF genannte Specs der CDE]}; None = die CDE hat keine Spec-Spalte
     spec: dict[str, Any] | None = None
+    # Welle 6: Luecken auf Seiten, auf denen nichts zur CDE gehoert (Deckblatt, Pruef- und Revisionstabelle, Anhang). Nur Info:
+    # sie zaehlen nicht als "nicht gelesen" (`luecken`), bleiben aber im Protokoll sichtbar (Bilanz-Prinzip: nichts still).
+    luecken_ausserhalb: list[dict] = field(default_factory=list)
+
+    @property
+    def alle_luecken(self) -> list[dict]:
+        """Alle gemeldeten Luecken, auch die ausserhalb der CDE (fuer das Messwerkzeug und die Gesamtzahl)."""
+        return list(self.luecken) + list(self.luecken_ausserhalb)
 
 
 def _bbox(tokens: list[PdfToken]) -> tuple[float, float, float, float]:
@@ -657,6 +665,16 @@ class _Planer:
         return out
 
     _hauptblatt: str = ""
+
+    def seiten_der_cde(self) -> tuple[int, int] | None:
+        """Erste und letzte PDF-Seite, auf der etwas zur CDE gehoert (alle Absaetze ausser Vorspann/Anhang), sonst None
+        (kein sicherer Bereich: dann gilt jede Luecke als echte Luecke). Seite 0 = Word-Datei ohne Seiten: immer None."""
+        if not self._ausserhalb:
+            return None
+        seiten = [b.page for i, sp in enumerate(self.spuren) if i not in self._ausserhalb for b in sp.bloecke]
+        if not seiten or min(seiten) <= 0:
+            return None
+        return min(seiten), max(seiten)
 
     def _ausserhalb_spur(self, i: int, wo: str) -> None:
         """Ein PDF-Absatz ausserhalb der CDE: EINE Zeile im Protokoll (zaehlt in der Bilanz), nicht uebernommen, kein offener
@@ -2140,7 +2158,13 @@ def plane(pdf: PdfAnalyse, xl: ExcelModell, cfg: dict | None = None, spec: str |
         ae.grund_einfach = _codes.grund_einfach(ae)
         ae.stuecke = _stuecke_der_aenderung(ae, je_zelle, xl, zwischen, cfg, absatz_von)
     warn = list(pdf.warnungen) + list(xl.warnungen) + p.spec_warnungen
+    luecken, ausserhalb = list(pdf.luecken), []
+    bereich = p.seiten_der_cde()
+    if bereich is not None:             # Welle 6: eine Luecke strikt vor der ersten / hinter der letzten CDE-Seite ist nur Info
+        ausserhalb = [l for l in luecken if isinstance(l.get("seite"), int) and l["seite"] > 0
+                      and (l["seite"] < bereich[0] or l["seite"] > bereich[1])]
+        luecken = [l for l in luecken if l not in ausserhalb]
     plan = Plan(aenderungen=p.out, layout=xl.beschreibung(), warnungen=warn,
                 ignoriert=pdf.ignoriert, markierte_woerter=pdf.markierte_woerter,
-                luecken=list(pdf.luecken), absaetze=p.absaetze, spec=p.spec_info)
+                luecken=luecken, absaetze=p.absaetze, spec=p.spec_info, luecken_ausserhalb=ausserhalb)
     return plan

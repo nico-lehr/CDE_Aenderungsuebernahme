@@ -945,7 +945,7 @@
       h('h3', {}, e ? 'Wort-Bilanz (nach dem Eintragen)' : 'Wort-Bilanz'),
       dl([['Wörter im PDF markiert', b.woerter_im_pdf], ['davon eingetragen', b.woerter_uebernommen], ['davon Vorschlag', b.woerter_pruefen],
         ['davon nicht eingetragen', b.woerter_nicht_uebernommen], ['bewusst ignoriert (Kopf-/Fußzeile)', b.woerter_ignoriert],
-        ['Bilanz stimmt', jaNein(b.stimmt)], ['PDF vollständig gelesen', jaNein(b.vollstaendig)], ['Lücken beim Lesen', b.luecken],
+        ['Bilanz stimmt', jaNein(b.stimmt)], ['PDF vollständig gelesen', jaNein(b.vollstaendig)], ['Lücken beim Lesen', b.luecken], ...(b.luecken_ausserhalb ? [['Nicht gelesen, aber außerhalb der CDE (Info)', b.luecken_ausserhalb]] : []),
         ['Abweichungen nach dem Eintragen', b.nachkontrolle_abweichungen]]),
       h('h3', {}, 'Lücken: Stellen, die nicht gelesen werden konnten'),
       luecken.length ? h('ul', { class: 'einfach-liste' }, luecken.map((x) => h('li', {}, `${istDocx() ? 'Im Word-Dokument' : `Seite ${hatWort(x.seite)}`} · ${LUECKE_ART[x.art] || text(x.art) || 'Sonstiges'}`,

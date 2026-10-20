@@ -110,7 +110,8 @@ def ampel(plan: dict[str, Any], offene_vorschlaege: int | None = None, stichprob
     aen = [a for a in plan.get("aenderungen") or [] if isinstance(a, dict)]
     kats = [(a, _kategorie(a)) for a in aen]
     vorschlaege = sum(1 for _, k in kats if k == "pruefen")
-    nicht = sum(1 for _, k in kats if k == "nicht")
+    # "schon eingetragen" (die Excel hat die Aenderung schon) macht keine Arbeit und zaehlt nicht als offener Punkt
+    nicht = sum(1 for a, k in kats if k == "nicht" and "schon_eingetragen" not in (a.get("pruefcodes") or []))
     markiert = sum(1 for a, k in kats if k == "automatisch" and _hat_offenen_code(a, praefixe))
     offen_v = vorschlaege if offene_vorschlaege is None else int(min(max(offene_vorschlaege, 0), vorschlaege))
     sp_alle = len(_ids(plan.get("stichprobe")))

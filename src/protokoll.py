@@ -68,7 +68,10 @@ def bilanz_satz(bil: dict[str, Any]) -> tuple[str, str]:
 
 
 def bilanz(aenderungen: list[Aenderung], markierte_woerter: int, ignoriert: list[dict[str, Any]],
-           luecken: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+           luecken: list[dict[str, Any]] | None = None,
+           luecken_ausserhalb: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """`luecken`: nicht gelesene Stellen, die zur CDE gehoeren koennen (machen die Bilanz "unvollstaendig").
+    `luecken_ausserhalb`: nicht gelesene Stellen auf Seiten ohne CDE-Inhalt (Deckblatt, Tabellen im Vorspann): nur Info."""
     zaehler = {UEBERNOMMEN: 0, PRUEFEN: 0, NICHT: 0}
     woerter = {UEBERNOMMEN: 0, PRUEFEN: 0, NICHT: 0}
     for a in aenderungen:
@@ -88,6 +91,7 @@ def bilanz(aenderungen: list[Aenderung], markierte_woerter: int, ignoriert: list
         # Schema 2: "stimmt" prueft nur die Wortsumme. "vollstaendig" sagt, ob das Tool alles lesen konnte.
         "luecken": len(luecken or []),
         "vollstaendig": not luecken,
+        "luecken_ausserhalb": len(luecken_ausserhalb or []),
     }
 
 
@@ -126,7 +130,8 @@ def _spec_zeilen(spec: dict[str, Any] | None) -> list[tuple[str, Any]]:
 
 def schreibe_xlsx(pfad: Path, info: dict[str, Any], aenderungen: list[Aenderung], bil: dict[str, Any],
                   layout: list[dict], warnungen: list[str], farben: list[dict] | None = None,
-                  luecken: list[dict[str, Any]] | None = None, spec: dict[str, Any] | None = None) -> None:
+                  luecken: list[dict[str, Any]] | None = None, spec: dict[str, Any] | None = None,
+                  luecken_ausserhalb: list[dict[str, Any]] | None = None) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "Bilanz"
@@ -150,6 +155,7 @@ def schreibe_xlsx(pfad: Path, info: dict[str, Any], aenderungen: list[Aenderung]
         bilanz_satz(bil),
         ("Nicht gelesene Stellen im PDF (Lücken)", "nicht geprüft (älterer Lauf)" if bil.get("luecken", 0) is None
          else bil.get("luecken", 0)),
+        *([("Nicht gelesene Stellen außerhalb der CDE (nur Info)", bil["luecken_ausserhalb"])] if bil.get("luecken_ausserhalb") else []),
         ("Nachkontrolle-Abweichungen", bil["nachkontrolle_abweichungen"]),
     ]
     for i, (a, b) in enumerate(zeilen, 4):
@@ -166,6 +172,13 @@ def schreibe_xlsx(pfad: Path, info: dict[str, Any], aenderungen: list[Aenderung]
         else:
             r += 1
             ws.cell(r, 1, f"{bil.get('luecken', 0)} Lücke(n); Einzelheiten stehen in plan.json.")
+        r += 1
+    if luecken_ausserhalb:
+        ws.cell(r, 1, "Außerhalb der CDE nicht gelesen (nur Info: Deckblatt, Tabellen im Vorspann oder Anhang)").font = Font(bold=True)
+        for l in luecken_ausserhalb:
+            r += 1
+            ws.cell(r, 1, _wert(f"Seite {l.get('seite', '?')} · {l.get('art', '')}"))
+            ws.cell(r, 2, _wert(l.get("beschreibung", "")))
         r += 1
     if warnungen:
         ws.cell(r, 1, "Hinweise").font = Font(bold=True)
