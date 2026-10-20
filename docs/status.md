@@ -2,6 +2,12 @@
 
 Autor: Nico Lehr · Stand: 20.10.2026 · **Version 0.4.0** (Auftrag 003, Welle 5) · Alle Zahlen stammen von erfundenen Nachbauten oder von zwei echten Beispielpaaren, die nur gemessen und nie gespeichert wurden.
 
+## Ergänzung Welle 6, Stufe 1 (20.10.2026) – ehrlichere Ampel
+
+Auf beiden echten Beispielen stand die Ampel **rot**, nur wegen „Dokument nicht ganz gelesen“: Alle nicht gelesenen Stellen (mehrere Spalten, Tabellen; A: Seiten 2, 4, 5, B: Seiten 2, 4) lagen im Vorspann, der nie zur CDE gehört.
+Jetzt gilt: Eine nicht gelesene Stelle **vor der ersten oder hinter der letzten Seite mit CDE-Inhalt** ist nur Info (`luecken_ausserhalb` im Plan, eigene Zeile im Protokoll und unter „Details“); eine Lücke auf einer Seite mit CDE-Inhalt bleibt eine echte Lücke (streng: gleiche Seite zählt als „innen“; Word-Dateien ohne Seitenzahlen: immer „innen“).
+Außerdem zählt „schon eingetragen“ in der Ampel nicht mehr als Handarbeit. Ergebnis auf den echten Paaren: Ampel **gelb** mit den wahren Gründen (A: 8 Vorschläge offen, 4 Änderungen mit Handarbeit; B: 6 und 6), Bilanz „vollständig“. Das Messwerkzeug zählt weiter alle gemeldeten Lücken: die Zahlen auf `nachbau_word` sind unverändert (0 stille Fehler).
+
 ## Stand Welle 5 (20.10.2026) – „Word-Datei, zweiter Prüfweg, Vertrauensmodus“
 
 **Was neu ist (ADR 0008, 0009; `docs/so_gehts.md`):**
