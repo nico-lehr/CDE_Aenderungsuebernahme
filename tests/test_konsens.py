@@ -392,6 +392,22 @@ def test_bildprobe_ohne_pdf_oder_bei_word_eingabe_laeuft_nicht(basis, word_marki
     assert not erg.gelaufen and erg.abweichend == 0
 
 
+@pytest.mark.parametrize("erzeuger", ["writer", "libreoffice"])
+def test_bildprobe_alte_legende_ohne_fehlalarm(tmp_path, erzeuger):
+    """Legende "alt" (blau = neu, rot = entfaellt; Korpora Entwicklung, eigener PDF-Schreiber und LibreOffice): kein Fehlalarm, auch
+    nicht durch Farbe oder Hinterlegung der Nachbarzeile oder Woerter ueber zwei Zeilen (Silbentrennung)."""
+    from tests.fixtures.pdf_lo import LibreOfficeFehlt
+    try:
+        ordner = erzeuge_paar(77, "standard", tmp_path, "entwicklung", erzeuger=erzeuger)
+    except LibreOfficeFehlt:
+        pytest.skip("LibreOffice fehlt")
+    pa = analysiere_pdf(ordner / "aenderungen.pdf")
+    assert pa.legende_modus == "alt"
+    plan = plane(pa, ExcelModell(ordner / "vorher.xlsx"))
+    erg = konsens.bildprobe(pa, plan.aenderungen)
+    assert erg.gelaufen and erg.abweichend == 0 and erg.geprueft >= 20, (erg.geprueft, erg.abweichungen)
+
+
 def test_ohne_pdf_keine_bildprobe_und_ausfall_der_zweitpruefung_ist_nie_still(basis, tmp_path, word_markiert, monkeypatch):
     aend, res = _schreibe(basis, tmp_path / "a.xlsx", mit_pdf=False)
     assert "bild" not in res.konsens and res.konsens["text"]["gelaufen"]            # Text-Probe braucht das PDF nicht

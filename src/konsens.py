@@ -145,6 +145,8 @@ def _wort_befund(bild: Any, tok: Any, modus: str, bk: dict, seiten_breite: float
         return "unpruefbar", "zu klein"
     if h < float(bk.get("hochgestellt_anteil", 0.75)) * hoehe_ref:
         return "unpruefbar", "hochgestellt"
+    if hoehe_ref > 0 and h > float(bk.get("mehrzeilig_anteil", 1.6)) * hoehe_ref:
+        return "unpruefbar", "Wort ueber zwei Zeilen"                  # Silbentrennung am Zeilenende: die Box umfasst beide Zeilen
     if not any(ch.isalnum() for ch in (tok.new or tok.old or "")):
         return "unpruefbar", "nur Satzzeichen"
     if tok.teile and len({st for st, _ in tok.teile}) > 1:
@@ -167,12 +169,14 @@ def _wort_befund(bild: Any, tok: Any, modus: str, bk: dict, seiten_breite: float
     if min(bg) < int(bk.get("hintergrund_min_helligkeit", 225)):
         return "unpruefbar", "farbiger Hintergrund"
     maske, abst = _tinte(crop, bg, int(bk.get("tinte_abstand", 40)))
-    tinte_n = maske.histogram()[255]
+    hoehe_px = h * s
+    hb = max(1, min(ch_, int(round(hoehe_px))))
+    maske_box = maske.crop((0, 0, cb, hb))                      # Tinte und Farbe des WORTES: nur die Wortbox, nicht die Nachbarzeile
+    tinte_n = maske_box.histogram()[255]
     if tinte_n < int(bk.get("min_tinte_pixel", 8)):
         return "unpruefbar", "kaum Tinte"
-    hoehe_px = h * s
     d0, d1 = bk.get("band_durchgestrichen", [0.3, 0.72])
-    u0, u1 = bk.get("band_unterstrichen", [0.8, 1.3])
+    u0, u1 = bk.get("band_unterstrichen", [0.86, 1.3])
     min_a = float(bk.get("linie_min_anteil", 0.85))
     dicke = max(1, int(round(float(bk.get("linie_max_dicke_pt", 1.6)) * s)))
     staerke = float(bk.get("linie_min_staerke", 0.6))
@@ -180,12 +184,12 @@ def _wort_befund(bild: Any, tok: Any, modus: str, bk: dict, seiten_breite: float
     unter, ucol = _linie_im_band(maske, abst, crop, int(u0 * hoehe_px), int(u1 * hoehe_px) + 1, min_a, dicke, staerke)
     farbig_u = bool(unter and ucol and _hsv(ucol)[1] >= float(bk.get("linie_min_saettigung", 0.12)))
     # Farbe des Textes (fuer die Legenden farbe / alt): Anteil farbiger Tinte
-    hsv = crop.convert("HSV")
+    hsv = crop.crop((0, 0, cb, hb)).convert("HSV")
     hh, ss, vv = hsv.split()
     smin, vmin = float(bk.get("text_min_saettigung", 0.35)) * 255, float(bk.get("text_min_helligkeit", 0.25)) * 255
     from PIL import ImageChops
     farb = ImageChops.multiply(ss.point(lambda v: 255 if v >= smin else 0), vv.point(lambda v: 255 if v >= vmin else 0))
-    farb = ImageChops.multiply(farb, maske)
+    farb = ImageChops.multiply(farb, maske_box)
     farb_n = farb.histogram()[255]
     farbanteil = farb_n / max(1, tinte_n)
     blau = ImageChops.multiply(farb, hh.point(lambda v: 255 if 131 <= v <= 188 else 0)).histogram()[255]

@@ -163,6 +163,7 @@ konsens:
     min_breite_pt: 9.0          # kleinere Woerter sind "nicht pruefbar"
     min_hoehe_pt: 5.0
     hochgestellt_anteil: 0.75   # Wortbox niedriger als dieser Anteil der Blockhoehe (Hochzahl, Fussnote): nicht pruefbar
+    mehrzeilig_anteil: 1.6      # Wortbox hoeher als das Soviel-fache der Blockhoehe (Silbentrennung ueber zwei Zeilen): nicht pruefbar
     rand_anteil: 0.1            # an beiden Enden des Wortes weglassen (Nachbarlinien, Rundung)
     hintergrund_min_helligkeit: 225   # dominante Farbe der Wortbox heller als das = weisser Grund; sonst (z. B. gelb) nicht pruefbar
     tinte_abstand: 40           # Pixel zaehlt als Tinte, wenn er sich so stark (hoechster Kanal, 0..255) vom Grund unterscheidet
