@@ -65,7 +65,7 @@ data/         Läufe (runs/), Paare (paare/), Messberichte (messung/), Profile (
 
 ## Wie gut ist es?
 
-**Kurz und ehrlich:** Auf erfundenen Nachbauten in der Struktur deiner echten Word-PDFs und CDE-Dateien gibt es jetzt **0 stille Fehler** (Entwicklungsdaten, 60 Paare; auf einem frischen Satz nach den Korrekturen ebenfalls 0). Vorschläge stimmen zu 98,8 %, 97,8 % der Zellen gehen ohne Nachfrage durch. Das ist **kein Versprechen für echte Dokumente**: Die Lese-Lücke liegt bei 4,1 % (Ziel 2 %), der Word-Leser ist nur an selbstgebauten Dateien getestet, und die zwei echten Beispielpaare (nur gemessen, nie gespeichert) zeigen, dass noch Handarbeit bleibt. Automatisch übernommene Änderungen bitte am Anfang stichprobenartig prüfen; das Dashboard legt dir dafür eine Stichprobe und eine Ampel vor.
+**Kurz und ehrlich:** Auf erfundenen Nachbauten in der Struktur deiner echten Word-PDFs und CDE-Dateien gibt es jetzt **0 stille Fehler** (Entwicklungsdaten, 60 Paare; auf einem wirklich ungesehenen Satz von 30 Paaren, einmal gemessen, ebenfalls 0). Vorschläge stimmen zu 98,8 %, 97,8 % der Zellen gehen ohne Nachfrage durch. Das ist **kein Versprechen für echte Dokumente**: Die Lese-Lücke liegt bei 4,1 % (Ziel 2 %), der Word-Leser ist nur an selbstgebauten Dateien getestet, und die zwei echten Beispielpaare (nur gemessen, nie gespeichert) zeigen, dass noch Handarbeit bleibt. Automatisch übernommene Änderungen bitte am Anfang stichprobenartig prüfen; das Dashboard legt dir dafür eine Stichprobe und eine Ampel vor.
 
 Aktuelle Messwerte und ehrliche Grenzen stehen in **`docs/status.md`**. Die Ziele und Kriterien stehen in **`docs/ziel_v1.md`**.
 Alle Zahlen stammen von **erfundenen** Beispielen; sie sind kein Versprechen für echte Dokumente.
