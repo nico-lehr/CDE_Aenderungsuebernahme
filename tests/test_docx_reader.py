@@ -163,6 +163,20 @@ def test_eingefuegt_und_danach_gestrichen_hat_keine_wirkung(tmp_path):
     assert any("keine Wirkung" in w for w in a.warnungen)
 
 
+def test_hochgestellte_ziffer_hinter_einheit_bleibt_im_wort_fussnotenmarke_nicht(tmp_path):
+    """Wie beim PDF-Leser: "mm" + hochgestellte 2 = "mm2"; "Pumpe" + hochgestellte 1 = Fussnoten-Marke, nicht im Text."""
+    hoch = "<w:vertAlign w:val=\"superscript\"/>"
+    lauf = DocxBau.lauf_xml
+    xml = ("<w:p>" + lauf("Kabel 2.5 mm") + lauf("2", rpr=hoch) + lauf(", Rohr 3 m") + lauf("3", rpr=hoch) + lauf(", Pumpe")
+           + lauf("1", rpr=hoch) + lauf(" Programm") + lauf("2", rpr=hoch) + lauf(" und Becken")
+           + f'<w:ins w:id="800" w:author="E">{lauf("1", rpr=hoch)}</w:ins>' + lauf(" Ende.") + "</w:p>")
+    a = _lies(tmp_path, DocxBau().roh(xml))
+    woerter = [t.old for t in _toks(a)]
+    assert "mm2," in woerter and "m3," in woerter and "Pumpe" in woerter and "Programm" in woerter
+    assert not any(w in woerter for w in ("Pumpe1", "Programm2"))
+    assert "hochzahl_markiert" in _sperrend(a)                   # die markierte Marke sperrt den Absatz (Regel 27)
+
+
 def test_gross_geschrieben_durch_formatvorlage(tmp_path):
     b = DocxBau().formatvorlagen([{"id": "Gross", "name": "Gross", "gross": True}])
     b.absatz("Pumpenhaus {+und Lager+}", stil="Gross")

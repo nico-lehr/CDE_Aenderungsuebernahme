@@ -484,6 +484,8 @@ class _Abs:
     marke_alt: _Marke | None = None
     marke_neu: _Marke | None = None
     tokens: list[PdfToken] = field(default_factory=list)
+    erster_tab: bool = False             # hinter dem ersten Wort (Listennummer) steht ein Tabulator
+    hoch_markiert: bool = False          # eine markierte Hochzahl (Fussnoten-Marke) wurde nicht als Text gelesen
 
     @property
     def hat_alt(self) -> bool:
@@ -524,8 +526,10 @@ class _Leser:
         """Ein w:r: sichtbare Zeichen anhaengen."""
         rpr = _kind(r, "rPr")
         fett = gross = None
-        versteckt = False
+        versteckt = hoch = False
         if rpr is not None:
+            va = _kind(rpr, "vertAlign")
+            hoch = va is not None and _attr(va, "val") == "superscript"
             if _kind(rpr, "rPrChange") is not None:
                 self.z.zaehler["format_lauf"] += 1
             if _kind(rpr, "b") is not None:
@@ -574,12 +578,31 @@ class _Leser:
             return
         if gross:
             text = text.upper()
+        if hoch and not self._hochzahl_bleibt(text, a):
+            # wie im PDF-Leser (Fussnoten-Marke): nicht im Text; ist sie markiert, sperrt das den Absatz
+            self.z.zaehler["hochzahlen_ausgelassen"] += 1
+            if status != KEEP:
+                a.hoch_markiert = True
+            return
         for c in text:
             a.zeichen.append((c, status))
             if not c.isspace():
                 a.gesamt_zeichen += 1
                 if fett:
                     a.fett_zeichen += 1
+
+    def _hochzahl_bleibt(self, text: str, a: _Abs) -> bool:
+        """Hochgestellte Ziffer direkt hinter einer Einheit ("mm" + "2") bleibt Teil des Wortes (config farben.yaml layout.
+        hochzahl_einheiten / hochzahl_einheit_ziffern), jede andere Hochzahl ist eine Fussnoten-Marke."""
+        if text not in [str(z) for z in self.lay.get("hochzahl_einheit_ziffern", ["2", "3"])]:
+            return False
+        wort = ""
+        for c, _ in reversed(a.zeichen):
+            if c.isspace():
+                break
+            wort = c + wort
+        einheiten = [str(x) for x in self.lay.get("hochzahl_einheiten", [])]
+        return bool(wort) and any(wort.endswith(e) and (len(wort) == len(e) or not wort[-len(e) - 1].isalpha()) for e in einheiten)
 
     def _grafik(self, e: ET.Element) -> None:
         """Zeichnung / Textfeld / Objekt: Text darin wird nicht gelesen; Aenderungen darin sind eine Luecke."""
@@ -1046,6 +1069,9 @@ def _lies(paket: _Paket, pfad: Path, cfg: dict | None) -> tuple[PdfAnalyse, Docx
         toks = a.tokens
         if not toks:
             continue
+        if a.hoch_markiert:
+            for t in toks:
+                t.hinweis = ";".join(sorted(set(filter(None, t.hinweis.split(";"))) | {"hochzahl_markiert"}))
         if a.absatzgrenze:
             for t in toks:
                 t.hinweis = ";".join(sorted(set(filter(None, t.hinweis.split(";"))) | {"absatzgrenze_unklar"}))
