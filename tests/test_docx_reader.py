@@ -490,18 +490,81 @@ _FODT = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-@pytest.mark.skipif(shutil.which("soffice") is None, reason="LibreOffice nicht installiert")
-def test_docx_eines_fremden_erzeugers_libreoffice(tmp_path):
+@pytest.fixture(scope="module")
+def lo_docx(tmp_path_factory):
+    """Beide Flat-ODT in EINEM LibreOffice-Lauf nach .docx wandeln (der Start dauert) -> {Name: Pfad}."""
+    if shutil.which("soffice") is None:
+        pytest.skip("LibreOffice nicht installiert")
+    ordner = tmp_path_factory.mktemp("lo_docx")
+    for name, inhalt in (("t", _FODT), ("t2", _FODT2)):
+        (ordner / f"{name}.fodt").write_text(inhalt, encoding="utf-8")
+    subprocess.run(["soffice", "--headless", f"-env:UserInstallation=file://{ordner / 'lo'}", "--convert-to", "docx",
+                    "--outdir", str(ordner), str(ordner / "t.fodt"), str(ordner / "t2.fodt")], check=True, capture_output=True,
+                   timeout=240)
+    return {"t": ordner / "t.docx", "t2": ordner / "t2.docx"}
+
+
+def test_docx_eines_fremden_erzeugers_libreoffice(lo_docx):
     """Unabhaengiger Erzeuger: LibreOffice schreibt aus einem Flat-ODT mit Aenderungsverfolgung eine echte .docx (eigene
     Namensraeume, Formatvorlagen, numbering.xml); der Leser liest sie wie unsere Handarbeit."""
-    (tmp_path / "t.fodt").write_text(_FODT, encoding="utf-8")
-    subprocess.run(["soffice", "--headless", f"-env:UserInstallation=file://{tmp_path / 'lo'}", "--convert-to", "docx",
-                    "--outdir", str(tmp_path), str(tmp_path / "t.fodt")], check=True, capture_output=True, timeout=180)
-    a = analysiere_docx(tmp_path / "t.docx")
+    a = analysiere_docx(lo_docx["t"])
     assert [b.tokens[0].old for b in a.blocks] == ["a.", "b."]
     t = _tok(a, "hebt")
     assert (t.old, t.new, t.teile) == ("foerdert", "hebt", [(DEL, "foerdert"), (ADD, "hebt")])
     assert [x.status for x in _toks(a) if x.status != KEEP] == [MOD] and a.luecken == []
+
+
+_FODT2 = """<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"
+  xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
+  office:version="1.2" office:mimetype="application/vnd.oasis.opendocument.text">
+ <office:styles>
+  <style:style style:name="Heading_20_1" style:display-name="Heading 1" style:family="paragraph" style:default-outline-level="1"/>
+  <style:style style:name="Heading_20_2" style:display-name="Heading 2" style:family="paragraph" style:default-outline-level="2"/>
+  <text:outline-style style:name="Outline">
+   <text:outline-level-style text:level="1" style:num-format="1" text:display-levels="1"/>
+   <text:outline-level-style text:level="2" style:num-format="1" text:display-levels="2"/>
+  </text:outline-style>
+ </office:styles>
+ <office:automatic-styles>
+  <style:page-layout style:name="pm1"/>
+  <text:list-style style:name="L1"><text:list-level-style-number text:level="1" style:num-suffix="." style:num-format="A"/></text:list-style>
+ </office:automatic-styles>
+ <office:master-styles>
+  <style:master-page style:name="Standard" style:page-layout-name="pm1">
+   <style:header><text:p>Projekt Zebrafink Kopfzeile</text:p></style:header>
+   <style:footer><text:p>40 05 13 - Fusszeile</text:p></style:footer>
+  </style:master-page>
+ </office:master-styles>
+ <office:body><office:text>
+  <text:tracked-changes text:track-changes="true">
+   <text:changed-region text:id="ct1"><text:insertion><office:change-info><dc:creator>Erfunden</dc:creator><dc:date>2026-01-01T10:00:00</dc:date></office:change-info></text:insertion></text:changed-region>
+   <text:changed-region text:id="ct2"><text:deletion><office:change-info><dc:creator>Erfunden</dc:creator><dc:date>2026-01-01T10:01:00</dc:date></office:change-info><text:p>alter Satz</text:p></text:deletion></text:changed-region>
+  </text:tracked-changes>
+  <text:h text:outline-level="1" text:style-name="Heading_20_1">ALLGEMEINES</text:h>
+  <text:h text:outline-level="2" text:style-name="Heading_20_2">PUMPENHAUS</text:h>
+  <text:list text:style-name="L1">
+   <text:list-item><text:p>Erster Punkt <text:change text:change-id="ct2"/><text:change-start text:change-id="ct1"/>neuer Satz<text:change-end text:change-id="ct1"/> bleibt.</text:p></text:list-item>
+   <text:list-item><text:p>Zweiter Punkt bleibt.</text:p></text:list-item>
+  </text:list>
+  <table:table table:name="T1"><table:table-column/><table:table-column/>
+   <table:table-row><table:table-cell><text:p>Pumpe</text:p></table:table-cell><table:table-cell><text:p>Wert <text:change-start text:change-id="ct1"/>14<text:change-end text:change-id="ct1"/></text:p></table:table-cell></table:table-row>
+  </table:table>
+ </office:text></office:body>
+</office:document>
+"""
+
+
+def test_docx_libreoffice_ueberschrift_nummern_kopf_fuss_und_tabelle(lo_docx):
+    """Ueberschriften mit Nummern aus der Gliederung (numbering.xml, Formatvorlage "Heading 1/2"), Kopf-/Fusszeile, Tabelle."""
+    a = analysiere_docx(lo_docx["t2"])
+    assert [(b.kind, b.section_neu) for b in a.blocks[:4]] == [("ueberschrift", "1"), ("ueberschrift", "1.1"), ("absatz", "1.1"),
+                                                              ("absatz", "1.1")]
+    assert [t.old for t in a.blocks[1].tokens] == ["1.1", "PUMPENHAUS"] and a.blocks[2].tokens[0].old == "A."
+    assert _tok(a, "neuer").status == MOD
+    assert [i["text"] for i in a.ignoriert] == ["Projekt Zebrafink Kopfzeile", "40 05 13 - Fusszeile"]
+    assert "Projekt" not in {x for t in _toks(a) for x in (t.old, t.new)} and len(a.blocks) == 6
 
 
 def test_fehlertexte_sind_einfach_und_ohne_pfade(tmp_path):
