@@ -1013,7 +1013,12 @@ class _Planer:
                 out.append(Lauf("a", l.text, ids.get(l.aenderung, l.aenderung), l.optional))
                 continue
             if i not in lage:
-                continue                                      # nicht sichtbar in der alten Fassung (zusammengelegter Trenner)
+                # nicht sichtbar in der alten Fassung (zusammengelegter Trenner). Steht er hinter einem neuen Stueck ("Liste a.",
+                # Polster, {+Alle+} " " "Die"), bleibt er als Trenner erhalten: sonst klebt das neue Wort am Nachbarn und die
+                # Projektion wird verworfen (die Operationen schrieben das neue Wort mitten ins Polster der Listennummer).
+                if l.art == "s" and out and out[-1].art == "a":
+                    out.append(Lauf("s", l.text, "", l.optional))
+                continue
             a0, e0 = lage[i]
             ziel = [abb[p] for p in range(a0, e0) if p in abb]
             if l.art == "d" and not l.text.strip():

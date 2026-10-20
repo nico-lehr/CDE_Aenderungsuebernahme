@@ -171,3 +171,56 @@ def test_genau_gleicher_text_mit_anderem_polster_bleibt_automatisch(tmp_path):
     (a,) = plan.aenderungen
     assert a.status == UEBERNOMMEN and not a.pruefcodes
     assert auto == [("normal", "Die Anlage gilt fuer\talle Pumpen  im "), ("alt", "Keller"), ("neu", "Hof"), ("normal", " und im Werk.")]
+
+
+# ------------------------------------------------------------------------------------------------ Listennummer + Polster
+def _lauf_liste(tmp_path, label, zeilen_pdf, excel_text, name="l"):
+    """Wie `_lauf`, aber der Absatz ist ein Listenpunkt: Listennummer (`label`) und Text im haengenden Einzug."""
+    d = WordDok()
+    d.ueberschrift([("1.1", "k")], [("ANLAGE", "k")])
+    d.listenpunkt(1, label, zeilen_pdf)
+    pdf = d.speichern(tmp_path / f"{name}.pdf")
+    alt = schreibe_excel(tmp_path / f"{name}.xlsx", [["Nr.", "Titel", "Inhalt"], ["1.1", "ANLAGE", None], ["", "", excel_text]])
+    plan = plane(analysiere_pdf(pdf), ExcelModell(alt))
+    frei = tmp_path / f"{name}_frei.xlsx"
+    uebernehmen(copy.deepcopy(plan.aenderungen), alt, frei, {a.id for a in plan.aenderungen if a.status == PRUEFEN},
+                absaetze=plan.absaetze)
+    return plan, messen._stuecke(messen._lese_excel(frei, True)[0][2][2])
+
+
+TEXT_LISTE = "Die Anlage gilt fuer alle Pumpen im Keller und im Werk."
+NEUES_WORT_AM_ANFANG = [[("Alle", "n"), (" " + TEXT_LISTE, "k")]]
+
+
+@pytest.mark.parametrize("polster", ["    ", "  ", "       "])
+@pytest.mark.parametrize("abweichung", [
+    ("Pumpen", "Pump", "a1_buchstabe"),                 # Buchstabe fehlt vor einem Leerzeichen (frueher: "Leerzeichen")
+    ("Anlage gilt", "Anlagegilt", "a1_leerraum"),       # Leerzeichen fehlt weit weg von der Aenderung
+    ("Die Anlage", "DieAnlage", "a1_leerraum"),         # Leerzeichen fehlt direkt hinter dem ersten Wort
+], ids=["buchstabe", "leerraum_fern", "leerraum_nah"])
+def test_neues_erstes_wort_im_listenpunkt_steht_hinter_dem_ganzen_polster(tmp_path, polster, abweichung):
+    """Das neue Wort steht in der Liste hinter dem Polster der Listennummer ("a." + geschuetzte/doppelte Leerzeichen), nicht
+    mitten darin. Wie bei einer Excel OHNE Abweichung bleibt das Polster der Excel ganz erhalten (Nico traegt das neue Wort
+    dahinter ein). Frueher schrieb der Vorschlag das Wort zwischen die Leerzeichen des Polsters und verkuerzte es."""
+    von, nach, code = abweichung
+    plan, frei = _lauf_liste(tmp_path, [("a.", "k")], NEUES_WORT_AM_ANFANG, "a." + polster + TEXT_LISTE.replace(von, nach))
+    a = _genau_ein_vorschlag(plan)
+    assert code in a.pruefcodes
+    assert len(plan.absaetze) == 1 and a.id in plan.absaetze[0].aenderungen       # PDF-Absatz fuer die Markierung ist angelegt
+    assert frei == [("normal", "a." + polster), ("neu", "Alle"), ("normal", " " + TEXT_LISTE.replace(von, nach))]
+
+
+def test_neues_erstes_wort_im_listenpunkt_mit_tab_als_polster(tmp_path):
+    plan, frei = _lauf_liste(tmp_path, [("a.", "k")], NEUES_WORT_AM_ANFANG, "a.\t" + TEXT_LISTE.replace("Pumpen", "Pump"))
+    a = _genau_ein_vorschlag(plan)
+    assert "a1_buchstabe" in a.pruefcodes
+    assert frei == [("normal", "a.\t"), ("neu", "Alle"), ("normal", " " + TEXT_LISTE.replace("Pumpen", "Pump"))]
+
+
+def test_listenpunkt_ohne_abweichung_ergibt_dasselbe_bild_automatisch(tmp_path):
+    """Gegenstueck: mit genau passender Excel ist die Aenderung automatisch und sieht genauso aus."""
+    polster = "    "
+    plan, frei = _lauf_liste(tmp_path, [("a.", "k")], NEUES_WORT_AM_ANFANG, "a." + polster + TEXT_LISTE)
+    (a,) = plan.aenderungen
+    assert a.status == UEBERNOMMEN
+    assert frei == [("normal", "a." + polster), ("neu", "Alle"), ("normal", " " + TEXT_LISTE)]
