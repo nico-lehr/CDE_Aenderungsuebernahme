@@ -34,5 +34,5 @@ Neu sind Nachfragen, eine Zusammenfassung und eine Auswertung. Kein Schema-Wechs
 
 - Die Klicks landen im Protokoll erst, wenn eine Excel erstellt wird (wie die übrigen Entscheidungen im Dashboard). Wer nur klickt und dann abbricht, hinterlässt nichts.
 - Die Ampel-Schwelle `rot_offene_je_100: 40` ist ein Startwert (gemessen: typisch rund 30 offene Punkte je 100 Änderungen); sie gehört an echten Paaren eingestellt.
-- Das Word-Lesen (`src/docx_reader.py`) kommt von einem anderen Helfer; die Tests ersetzen es durch einen Fake, ein echter Test mit einer echten `.docx` folgt nach dem Merge.
+- Das Word-Lesen steht in ADR 0009 (`src/docx_reader.py`). Die Tests in `tests/test_vertrauen.py` benutzen einen Fake; ein Test mit dem echten Leser steht in `tests/test_word_dashboard.py`.
 - Ältere Läufe ohne `stichprobe`/`quelle_art` bleiben lesbar (keine Stichprobe, PDF).

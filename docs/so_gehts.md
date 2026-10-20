@@ -1,6 +1,6 @@
 # So geht's – CDE-Änderungsübernahme in 3 Schritten
 
-Für Nico · Stand 18.10.2026 · eine Seite, ohne Fachbegriffe
+Für Nico · Stand 20.10.2026 · eine Seite, ohne Fachbegriffe
 
 ## Starten
 
@@ -11,13 +11,17 @@ Für Nico · Stand 18.10.2026 · eine Seite, ohne Fachbegriffe
 
 ## Die 3 Schritte
 
-**① Dateien** – Zieh das **PDF mit den Änderungen** und deine **CDE-Excel** in die zwei Felder (oder klick drauf).
-Dann **Abgleichen**. Das dauert etwa 15 Sekunden. Es wird dabei noch nichts in die Excel geschrieben.
+**① Dateien** – Zieh die **Datei mit den Änderungen** und deine **CDE-Excel** in die zwei Felder (oder klick drauf).
+Die Datei mit den Änderungen ist am besten die **Word-Datei (.docx) mit eingeschalteter Änderungsverfolgung** – dort sind Neues und Gestrichenes
+eindeutig. Ein **PDF** geht auch. Dann **Abgleichen**. Das dauert etwa 15 Sekunden. Es wird dabei noch nichts in die Excel geschrieben.
 Unter „Zuletzt“ findest du frühere Abgleiche wieder („Öffnen“). Über „⋯“ kannst du einen Abgleich **archivieren** – er ist dann nur
 ausgeblendet, nicht weg („Archivierte anzeigen“ holt ihn zurück).
 
 **② Prüfen** – Oben steht in einem Satz, was gefunden wurde, zum Beispiel
 „62 Änderungen gefunden · 55 automatisch eingetragen · 7 bitte prüfen (3 erledigt)“.
+Daneben zeigt eine **Ampel**, wie sicher das Ganze ist: grün = alles sicher eingetragen, gelb = bitte ein paar Punkte ansehen, rot = hier bitte genau hinsehen.
+- **Bitte kurz ansehen (Stichprobe)**: Das Tool legt dir einige automatisch eingetragene Änderungen (etwa jede zehnte) zur Kontrolle vor.
+  **Passt** heißt: stimmt. **Falsch** heißt: nicht eintragen. So lernst du in den ersten Läufen, wie sehr du dem Tool trauen kannst.
 - **Bitte prüfen**: Hier ist sich das Tool nicht sicher. Jede Karte zeigt, wie die Zelle **danach in der Excel** aussieht, darunter
   den Ausschnitt **im PDF** und den **Grund**. Du entscheidest: **Übernehmen** oder **Nicht übernehmen**. Nochmal klicken hebt die
   Entscheidung wieder auf.
@@ -37,6 +41,16 @@ Die anderen Zeilen bleiben unverändert.
   Das startet einen neuen Abgleich mit denselben Dateien (nichts muss neu abgelegt werden; der erste bleibt unter „Zuletzt“).
 - Findet das Tool die Spec nicht sicher heraus, fragt es oben **„Welche Spec gehört zu diesem PDF?“**. Bis du eine wählst, wird **nichts eingetragen**.
 - Hat die CDE nur eine Spec, siehst du davon nichts.
+
+## Doppelt geprüft
+
+Nach dem Eintragen prüft das Tool das Ergebnis **noch einmal auf einem zweiten, unabhängigen Weg** (Zeichen für Zeichen, bei einem PDF zusätzlich im Seitenbild).
+Stimmt etwas nicht, wird die Änderung **nicht eingetragen**, sondern landet unter „Bitte prüfen“.
+
+## Wie weit kannst du dem Tool trauen?
+
+Im Terminal (in der `.venv`): `python -m src.cli vertrauen`. Das zeigt dir, bei welcher Art von Änderung du fast immer „Übernehmen“ klickst
+und bei welcher oft nicht. Es ändert nichts von selbst; es ist nur eine Entscheidungshilfe.
 
 ## Was die Farben bedeuten
 
@@ -72,6 +86,7 @@ ist nur halb markiert, der Text kommt zweimal vor), macht es einen **Vorschlag**
 ## Was das Tool nicht kann
 
 - Keine Scans lesen (keine Texterkennung), keine Tabellen, Bilder oder zweispaltigen Text – solche Stellen werden **gemeldet**, nicht übernommen.
-- Kommentare und Sprechblasen am Rand des PDFs werden nicht übernommen (nur gezählt).
+- Kommentare und Sprechblasen am Rand (PDF) bzw. Kommentare in der Word-Datei werden nicht übernommen (nur gezählt).
+- Bei einer Word-Datei gibt es **keinen PDF-Ausschnitt** in den Karten, nur den Text. Zusammengeführte oder getrennte Absätze und Tabellen werden **nie von selbst** eingetragen.
 - Es entscheidet nichts Unsicheres für dich und ersetzt nicht den Blick auf das Ergebnis: Stichproben in der neuen Excel lohnen sich.
 - Läuft nur auf diesem Rechner; andere Personen im Netz können es nicht öffnen.
