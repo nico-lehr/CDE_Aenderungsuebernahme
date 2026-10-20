@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 
+import pytest
 from openpyxl import Workbook, load_workbook
 
 from src import config
@@ -50,7 +51,8 @@ def _zelle(p, r, c):
 
 
 def _ae(aid, ops, status=UEBERNOMMEN, typ="text_ersetzt", **kw) -> Aenderung:
-    return Aenderung(id=aid, typ=typ, seite=1, bbox=(0, 0, 1, 1), section="1", alt="", neu="x", woerter=1,
+    kw.setdefault("neu", "x")
+    return Aenderung(id=aid, typ=typ, seite=1, bbox=(0, 0, 1, 1), section="1", alt="", woerter=1,
                      status=status, konfidenz="hoch", ops=ops, ziel="CDE!C2", **kw)
 
 
@@ -84,7 +86,15 @@ def _bestanden(ae: Aenderung) -> None:
     assert not [c for c in ae.pruefcodes if c.startswith("gegenprobe")]
 
 
+@pytest.fixture
+def konsens_aus(monkeypatch):
+    """Die A3-Tests pruefen die Gegenprobe A3 fuer sich. Der zweite Pruefweg (src/konsens.py) faengt dieselben absichtlich
+    falschen Faelle schon beim Schreiben ab (eigene Tests: tests/test_konsens.py und `test_konsens_faengt_...` unten)."""
+    monkeypatch.setitem(config.lade("zuordnung")["konsens"], "aktiv", False)
+
+
 # ---------------------------------------------------------------- A3 erkennt falsch angewendeten Text
+@pytest.mark.usefixtures("konsens_aus")
 def test_a3_satzzeichen_falsche_seite_wird_pruefen(tmp_path):
     t = "Die Anlage arbeitet."
     p = _excel(tmp_path, t)
@@ -107,6 +117,7 @@ def test_a3_satzzeichen_richtige_seite_bleibt_uebernommen(tmp_path):
     assert not res.warnungen
 
 
+@pytest.mark.usefixtures("konsens_aus")
 def test_a3_falsches_vorkommen_wird_pruefen(tmp_path):
     t = "Der Wert und der Wert."
     p = _excel(tmp_path, t)
@@ -126,7 +137,21 @@ def test_a3_zeilenumbruch_im_neuen_text_wird_pruefen(tmp_path):
     uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[ab])
     _durchgefallen(ae, "gegenprobe_umbruch")
 
+def test_konsens_faengt_falsches_vorkommen_schon_beim_schreiben(tmp_path):
+    """Dieselbe Lage wie `test_a3_falsches_vorkommen_wird_pruefen`, aber mit dem zweiten Pruefweg: die Datei wird ohne die
+    Aenderung neu geschrieben (Regel 27), die Aenderung steht auf "pruefen" mit Code konsens_text."""
+    t = "Der Wert und der Wert."
+    p = _excel(tmp_path, t)
+    ab = _absatz(L("Der Wert und der {-Wert-} {+Pegel+}|."), 0, len(t))
+    ae = _ae("A1", [_ers(4, 8, "Pegel", "A1", t)])                              # erstes statt zweites Vorkommen
+    res = uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[ab])
+    assert _zelle(tmp_path / "out.xlsx", 2, 3) == t                              # unveraendert: nichts Falsches steht in der Datei
+    assert ae.status == PRUEFEN and "konsens_text" in ae.pruefcodes
+    assert any("Zweitprüfung" in w for w in res.warnungen)
 
+
+
+@pytest.mark.usefixtures("konsens_aus")
 def test_a3_gruppe_wird_gemeinsam_zurueckgestuft(tmp_path):
     t = "Der Wert und der Wert."
     p = _excel(tmp_path, t)
@@ -609,7 +634,7 @@ def test_markiert_neue_zeile_rot_mit_konstanten_und_leeren_spalten(tmp_path):
     p = _register(tmp_path, ["Erster Absatz mit genug Text.", "Zweiter Absatz mit genug Text.",
                              "Dritter Absatz mit genug Text.", "Vierter Absatz mit genug Text."])
     op = Operation("zeile_einfuegen", "CDE", 3, zellen={1: "2.1", 3: "Neuer Absatz dazwischen."}, stil_von=3, aenderung="A1")
-    ae = _ae("A1", [op], typ="absatz_neu")
+    ae = _ae("A1", [op], typ="absatz_neu", neu="Neuer Absatz dazwischen.")
     res = uebernehmen([ae], p, tmp_path / "out.xlsx", absaetze=[])
     assert (ae.status, ae.wirkung) == (UEBERNOMMEN, WIRKUNG_OK), (ae.grund, ae.hinweise)
     ws = load_workbook(str(tmp_path / "out.xlsx"), rich_text=True)["CDE"]
@@ -648,7 +673,7 @@ def test_markiert_neue_zeile_konstanten_nur_links_und_aus_derselben_spec(tmp_pat
            Operation("zeile_einfuegen", "CDE", 7, zellen={5: "0.9", 7: "Ganz vorn in B."}, stil_von=6, vor=True,
                      aenderung="A2"),
            Operation("zeile_einfuegen", "CDE", 3, zellen={5: "1.2", 7: "Neu in A."}, stil_von=3, aenderung="A3")]
-    aes = [_ae(f"A{i}", [op], typ="absatz_neu") for i, op in enumerate(ops, 1)]
+    aes = [_ae(f"A{i}", [op], typ="absatz_neu", neu=list(op.zellen.values())[-1]) for i, op in enumerate(ops, 1)]
     uebernehmen(aes, p, tmp_path / "out.xlsx", absaetze=[])
     for ae in aes:
         assert (ae.status, ae.wirkung) == (UEBERNOMMEN, WIRKUNG_OK), (ae.id, ae.grund, ae.hinweise)
@@ -684,7 +709,7 @@ def test_markiert_neue_zeile_konstante_woertlich_mit_leerzeichen_am_ende(tmp_pat
     for k, vorlage in enumerate((5, 7)):          # Zeile 5 = "11_22_33 " (mit Leerzeichen), Zeile 7 = ohne
         op = Operation("zeile_einfuegen", "CDE", vorlage, zellen={4: f"9.{k}", 5: f"Neu {k} mit Ventil."},
                        stil_von=vorlage, aenderung=f"A{k}")
-        aes.append(_ae(f"A{k}", [op], typ="absatz_neu"))
+        aes.append(_ae(f"A{k}", [op], typ="absatz_neu", neu=f"Neu {k} mit Ventil."))
     uebernehmen(aes, p, tmp_path / "out.xlsx", absaetze=[])
     for ae in aes:
         assert (ae.status, ae.wirkung) == (UEBERNOMMEN, WIRKUNG_OK), (ae.grund, ae.hinweise)
