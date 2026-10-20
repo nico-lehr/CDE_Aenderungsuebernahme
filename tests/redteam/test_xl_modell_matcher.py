@@ -234,7 +234,16 @@ _MESSEN = textwrap.dedent("""
     from src.excel_model import ExcelModell
     t0 = time.time()
     ExcelModell(sys.argv[1])
-    print(json.dumps({"sek": time.time() - t0, "mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024}))
+    # Spitzenspeicher des NEUEN Prozesses: VmHWM. ru_maxrss uebernimmt beim exec den Spitzenwert des startenden (grossen)
+    # Test-Prozesses und misst dann nicht mehr dieses Einlesen.
+    mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    try:
+        for zeile in open("/proc/self/status"):
+            if zeile.startswith("VmHWM:"):
+                mb = int(zeile.split()[1]) / 1024
+    except OSError:
+        pass
+    print(json.dumps({"sek": time.time() - t0, "mb": mb}))
 """)
 
 
