@@ -453,6 +453,38 @@ def test_neue_section_vor_seitenumbruch_ohne_satzende_ist_unklar(tmp_path):
     assert "sperre:fortsetzung_unklar" in sec.pruefcodes and "sperre:fortsetzung_unklar" in folge.pruefcodes
 
 
+def test_neues_wort_am_textanfang_hinter_geaenderter_listennummer_steht_hinter_dem_polster():
+    """Auftrag 004: Listennummer "c." wird "d." (Ersetzung), dahinter -- durch einen Trenner getrennt -- steht ein neues Wort, das
+    direkt am Text klebt. In der Excel folgt auf die Listennummer Polster (geschuetzte Leerzeichen). Das neue Wort gehoert hinter
+    das Polster (zum Text), nicht vor es (zur Listennummer)."""
+    from src.models import Lauf
+    polster = "\xa0" * 6
+    l = [Lauf("d", "c.", "G1"), Lauf("a", "d.", "G1"), Lauf("s", " "), Lauf("a", "Besondere", "G1"), Lauf("a", " ", "G1"),
+         Lauf("k", "Bauteile:")]
+    so, ergebnis = b_ops(l, "c." + polster + " Bauteile:")
+    assert ergebnis == "d." + polster + " Besondere Bauteile:"
+    assert [(o.start, o.ende, o.text) for o in so.ops["G1"]] == [(0, 2, "d."), (9, 9, "Besondere ")]
+
+
+def test_unklare_fortsetzung_gibt_keinen_vorschlag_und_eine_freigabe_schreibt_nichts(tmp_path):
+    """Auftrag 004: Geht ein neuer Absatz vielleicht ueber den Seitenumbruch weiter, ist jeder fertige Vorschlag geraten (eine neue
+    Zeile fuer den Rest waere falsch, wenn er zum Satz davor gehoert; im Entwicklungskorpus war er nur in 1 von 10 Faellen
+    richtig). Die Aenderungen bleiben auf "pruefen", aber ohne Operationen."""
+    alt = excel(tmp_path, [["1", "Eins", "Erster Absatz mit genug Text darin."], ZWEI])
+    pdf = pdf_aus([("h", "1 Eins"), ("p", "Erster Absatz mit genug Text darin."), ("h", "{+1.1 Neu+}"),
+                   ("p", "{+Die Anlage wird geprüft, sofern keine+}"), ("p", "Fußnote eins."),
+                   ("p", "{+Störung ansteht.+}", 2), ("h", "2 Zwei", 2), ("p", "Zweiter Absatz mit genug Text darin.", 2)])
+    plan, _ = lauf(tmp_path, pdf, alt)
+    sec = next(a for a in plan.aenderungen if a.typ == "section_neu")
+    folge = next(a for a in plan.aenderungen if a.typ == "absatz_neu" and "geprüft" in a.neu)
+    for a in (sec, folge):
+        assert a.status == PRUEFEN and a.ops == [] and "kein_vorschlag" in a.pruefcodes
+        assert "sperre:fortsetzung_unklar" in a.pruefcodes
+    frei = tmp_path / "frei.xlsx"
+    uebernehmen(plan.aenderungen, alt, frei, {sec.id, folge.id}, absaetze=plan.absaetze)
+    assert load_workbook(str(frei))["CDE"].max_row == load_workbook(str(alt))["CDE"].max_row      # keine neue Zeile
+
+
 # ------------------------------------------------------------------------------------------------ Welle 3: markierter Leerraum
 def test_markierter_leerraum_wird_d_bzw_a_lauf():
     """PdfToken.trenner_art (PDF-Leser, ADR 0006): ein gestrichenes bzw. unterstrichenes Leerzeichen gehoert nur zur alten bzw.

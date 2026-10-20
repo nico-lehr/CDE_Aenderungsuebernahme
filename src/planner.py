@@ -23,8 +23,8 @@ from . import codes as _codes
 from . import config
 from . import markierung as mk
 from .excel_model import REGISTER_UEBERSCHRIFT, Kandidat, ExcelModell, zahl_als_text
-from .abgleich import (ExaktIndex, Label, _aufbau, Fundstelle, Spur, Zuordnung, _woerter_norm, ganz_loeschen, label_der_spur,
-                       ops_fuer_spur, reissverschluss, spuren, umbenennen)
+from .abgleich import (ExaktIndex, Label, _aufbau, _positionen, _unscharfe_abbildung, Fundstelle, Spur, Zuordnung, _woerter_norm,
+                       ganz_loeschen, label_der_spur, ops_fuer_spur, reissverschluss, spuren, umbenennen)
 from .gegenprobe import normalform, vergleiche, zustand, zustand_mit_optional
 from .matcher import Matcher, Treffer
 from .models import (ADD, DEL, HOCH, KEEP, MITTEL, MOD, NICHT, NIEDRIG, PRUEFEN, UEBERNOMMEN,
@@ -354,6 +354,13 @@ class _Planer:
                 codes.append("sperre:" + c)
             grund = (grund + "; " if grund else "") + ("Im Absatz gibt es eine Stelle, die nicht sicher gelesen werden konnte "
                                                        "(siehe Hinweise). Der ganze Absatz wird nicht automatisch eingetragen.")
+            # Auftrag 004: Bei diesen Sperren ist schon die Stelle des Textes unsicher (z. B. ob ein Absatz auf der naechsten
+            # Seite weitergeht); ein fertiger Vorschlag waere geraten. Besser kein Vorschlag als ein falscher.
+            ohne = [c for c in sperre if c in [str(x) for x in _planer_cfg(self.cfg).get("sperren_ohne_vorschlag", [])]]
+            if ohne and ae.ops:
+                ae.ops = []
+                codes.append("kein_vorschlag")
+                self._hinweis(ae, _codes.satz("kein_vorschlag"))
         if p["verdaechtig"]:
             if stufe == HOCH:
                 stufe = MITTEL
@@ -901,24 +908,69 @@ class _Planer:
         """Nicos Entscheidung (ADR 0006 Punkt 7): ist der Absatz in der Excel verortet, die Excel weicht aber anderswo im Absatz
         vom PDF ab, wird eine Aenderung, die Wort fuer Wort nicht passte (sonst "nicht uebernommen"), ein fertiger Vorschlag:
         nur die markierte Stelle aendert sich (zeichengenau ueber die Normalform ausgerichtet), Excel-eigene Zeichen bleiben.
-        Nie automatisch ("pruefen", Codes excel_weicht_ab + a1_*)."""
+        Nie automatisch ("pruefen", Codes excel_weicht_ab + a1_*).
+
+        Auftrag 004 (Vorschlaege): Auch ein Vorschlag des alten Matchers (Wort fuer Wort) wird durch den zeichengenauen
+        ersetzt, wenn es ihn gibt -- der alte Matcher ersetzt ganze Woerter samt Satzzeichen ("Pumpen." -> "Pumpen nachweislich."),
+        liest Leerraum an der Naht anders als Word und kennt keine Klammern, deren Zeichen allein gestrichen sind. Gibt es keinen
+        zeichengenauen Vorschlag, bleibt der alte nur, wenn `planer.vorschlag_wortgenau` es erlaubt (Standard: nein, besser kein
+        Vorschlag als ein falscher)."""
         offen = [ae for ae in aes if ae.status == NICHT and not ae.ops and not ae.pruefcodes]
-        if tr is None or not offen or tr.kandidat.art == "kopf":
+        alte = [ae for ae in aes if ae.status == PRUEFEN and ae.ops and "excel_weicht_ab" in ae.pruefcodes
+                and all(o.art in ("ersetzen", "einfuegen") for o in ae.ops)]
+        if tr is None or not (offen or alte) or tr.kandidat.art == "kopf":
             return
         k = tr.kandidat
+        wortgenau = bool(_planer_cfg(self.cfg).get("vorschlag_wortgenau", False))
+
+        def verwerfen() -> None:
+            if not wortgenau:
+                for ae in alte:
+                    self._vorschlag_verwerfen(ae)
         aufbau = _aufbau(b.tokens, "X")
-        if len(aufbau.gruppen) != len(aes):
-            return
-        ids = {f"X{n + 1}": ae.id for n, ae in enumerate(aes)}
+        # Eine Aenderung des alten Matchers = zusammenhaengende markierte Woerter; der Aufbau kann daraus mehrere Gruppen machen
+        # (gestrichene Klammern um einen unveraenderten Wert: "[" und "]" sind zwei Gruppen). Jede Gruppe gehoert zu genau einer.
+        bereiche = list(self._gruppen(b))
+        if len(bereiche) != len(aes):
+            return verwerfen()
+        je_aenderung: dict[int, list[int]] = {n: [] for n in range(len(aes))}
+        for gi, toks in enumerate(aufbau.gruppen_token):
+            ziele = {n for n, (i0, i1) in enumerate(bereiche) for t in toks if i0 <= t < i1}
+            if len(ziele) != 1:
+                return verwerfen()
+            je_aenderung[next(iter(ziele))].append(gi)
+        ids = {f"X{gi + 1}": f"{aes[n].id}~{gi}" for n, gis in je_aenderung.items() for gi in gis}
         laeufe = umbenennen(aufbau.laeufe, ids)
         fund = Fundstelle(blatt=k.blatt, zellen=((k.zeile, k.spalte, k.start, k.end),), art="absatz",
                           schluessel=self.idx.schluessel(k.blatt, k.zeile, k.spalte, k.start), text=k.text,
                           end_schluessel=self.idx.schluessel(k.blatt, k.zeile, k.spalte, k.end))
         so = ops_fuer_spur(laeufe, fund, self.xl.text, self.cfg, b.idx * 1000, unscharf=True)
         a1 = self._a1_codes(b.alt_text, k.text)
+
+        def ops_von(n: int) -> list[Operation] | None:
+            """Alle Operationen der Gruppen dieser Aenderung (None = eine Gruppe ohne sichere Stelle)."""
+            out: list[Operation] = []
+            for gi in je_aenderung[n]:
+                gid = f"{aes[n].id}~{gi}"
+                o = so.ops.get(gid, [])
+                if not o or so.probleme.get(gid):
+                    return None
+                out += o
+            for o in out:
+                o.aenderung = aes[n].id
+            return sorted(out, key=lambda o: (o.zeile, o.spalte, o.start)) or None
+
+        for ae in alte:
+            ops = ops_von(aes.index(ae))
+            if ops and self._ops_unbedenklich(ae, ops):
+                ae.ops = ops
+                ae.ziel = f"{k.blatt}!{get_column_letter(ops[0].spalte)}{ops[0].zeile}"
+                ae.ist_absatz = k.text
+            elif not wortgenau:
+                self._vorschlag_verwerfen(ae)
         for ae in offen:
-            ops = so.ops.get(ae.id, [])
-            if not ops or so.probleme.get(ae.id):
+            ops = ops_von(aes.index(ae))
+            if not ops:
                 continue
             ae.status, ae.konfidenz, ae.grund = PRUEFEN, MITTEL, ""
             ae.ops = ops
@@ -928,6 +980,133 @@ class _Planer:
                               "markierte Stelle. Bitte prüfen und freigeben.")
             doppelt = bool(self._deckel and "excel_weicht_ab" in self._deckel)       # der Deckel nennt den Grund schon
             self._setze(ae, MITTEL, "" if doppelt else _GRUND["excel_weicht_ab"], ["excel_weicht_ab"] + a1)
+        if all(ae.ops and ae.status == PRUEFEN for ae in aes):
+            self._absatz_an_excel_ausrichten(k, so.excel_text, laeufe, {f"{aes[n].id}~{gi}": aes[n].id
+                                                                       for n, gis in je_aenderung.items() for gi in gis}, aes)
+
+    def _absatz_an_excel_ausrichten(self, k: Any, excel: str, laeufe: list[Lauf], ids: dict[str, str],
+                                    aes: list[Aenderung]) -> None:
+        """Der PDF-Absatz fuer die Markierung der Vorschlaege bei abweichender Excel (Auftrag 004).
+
+        Ohne PDF-Absatz markiert der Applier nur nach den Operationen: Leerraum am Rand eines neuen Stuecks bleibt unmarkiert,
+        waehrend Word ihn mit unterstreicht (" Satz" als Ganzes neu). Die Projektion der PDF-Laeufe markiert genau wie das PDF --
+        sie braucht aber Laeufe, deren alter Text Zeichen fuer Zeichen die Excel ist. Hier werden die PDF-Laeufe an die Excel
+        angelegt: bleibende und gestrichene Stuecke tragen den Text der Excel (auch ihre Abweichung), neue Stuecke bleiben
+        wie im PDF. Der Absatz wird nur registriert, wenn (1) die alte Fassung gleich der Excel ist und (2) die Projektion
+        denselben neuen Text ergibt wie die Operationen -- sonst bleibt es bei den Operationen."""
+        nf = self.cfg.get("normalform")
+        alt, lage = _positionen(laeufe, set())
+        abb = _unscharfe_abbildung(alt, excel, nf)
+        out: list[Lauf] = []
+        ende = 0                                              # bis hierher ist die Excel in `out` untergebracht
+        offene_trenner: list[int] = []                        # Indizes (in out) von Trennern seit dem letzten Stueck mit Zeichen
+
+        def anfuegen(art: str, text: str, aenderung: str = "", optional: bool = False) -> None:
+            if art in ("k", "s") and out and out[-1].art == art and out[-1].aenderung == aenderung and not optional:
+                out[-1] = Lauf(art, out[-1].text + text, aenderung, False)
+            else:
+                out.append(Lauf(art, text, aenderung, optional))
+
+        for i, l in enumerate(laeufe):
+            if l.art == "a":
+                out.append(Lauf("a", l.text, ids.get(l.aenderung, l.aenderung), l.optional))
+                continue
+            if i not in lage:
+                continue                                      # nicht sichtbar in der alten Fassung (zusammengelegter Trenner)
+            a0, e0 = lage[i]
+            ziel = [abb[p] for p in range(a0, e0) if p in abb]
+            if l.art == "d" and not l.text.strip():
+                # gestrichenes Leerzeichen als eigener Lauf: es ist das Leerzeichen der Excel an dieser Stelle (sonst entfaellt es)
+                rest = len(l.text)
+                nach = ende
+                while rest > 0 and nach < len(excel) and excel[nach].isspace():
+                    nach, rest = nach + 1, rest - 1
+                if nach > ende:
+                    out.append(Lauf("d", excel[ende:nach], ids.get(l.aenderung, l.aenderung), l.optional))
+                    ende = nach
+                continue
+            if l.art == "s" or not ziel:
+                if l.art == "d":
+                    return                                    # gestrichener Text ohne Gegenstueck in der Excel: nicht sicher
+                offene_trenner.append(len(out))
+                out.append(Lauf("s", "", "", l.optional))      # Text folgt, sobald klar ist, was die Excel dort hat
+                continue
+            xs, xe = min(ziel), max(ziel) + 1
+            if l.art == "d":
+                # Word streicht das Leerzeichen am Rand eines gestrichenen Stuecks mit; es steht in der Excel zwischen den Woertern
+                # und gehoert dann zum gestrichenen Stueck (nicht zur Luecke), sonst entstuende ein Leerzeichen zu viel bzw. zu wenig
+                vorn = len(l.text) - len(l.text.lstrip())
+                hinten = len(l.text) - len(l.text.rstrip())
+                while vorn > 0 and xs > ende and excel[xs - 1].isspace():
+                    xs, vorn = xs - 1, vorn - 1
+                while hinten > 0 and xe < len(excel) and excel[xe].isspace():
+                    xe, hinten = xe + 1, hinten - 1
+            if xs < ende:
+                return                                        # Reihenfolge nicht eindeutig
+            luecke = excel[ende:xs]
+            if luecke:
+                if offene_trenner and not luecke.strip():
+                    j = offene_trenner[0]
+                    out[j] = Lauf("s", luecke, "", out[j].optional)
+                else:
+                    out.insert(offene_trenner[0] if offene_trenner else len(out), Lauf("k", luecke))
+                    if offene_trenner:
+                        offene_trenner = [j + 1 for j in offene_trenner]
+            offene_trenner = []
+            if l.art == "d":
+                kern = excel[xs:xe]
+                anfuegen("d", kern, ids.get(l.aenderung, l.aenderung), l.optional)
+            else:
+                anfuegen("k", excel[xs:xe], "", l.optional)
+            ende = xe
+        rest = excel[ende:]
+        if rest:
+            if offene_trenner and not rest.strip():
+                j = offene_trenner[0]
+                out[j] = Lauf("s", rest, "", out[j].optional)
+            else:
+                anfuegen("k", rest)
+        out = [l for l in out if l.text]
+        aktiv = set(ids.values())
+        alt_neu, opt_alt = zustand_mit_optional(out, set())
+        if not vergleiche(alt_neu, excel, opt_alt, nf).gleich:
+            return
+        res = mk.projiziere([excel], out, aktiv, self.cfg)
+        if res is None:
+            return
+        zelle = self.xl.text(k.blatt, k.zeile, k.spalte)
+        if zelle[k.start:k.end] != excel:
+            return
+        projiziert = zelle[:k.start] + "".join(z[0] for z in res[0] if z[1] != mk.ALT) + zelle[k.end:]
+        ops = [o for ae in aes for o in ae.ops]
+        if any((o.blatt, o.zeile, o.spalte) != (k.blatt, k.zeile, k.spalte) or o.art not in ("ersetzen", "einfuegen") for o in ops):
+            return
+        try:
+            geplant = "".join(z[0] for z in mk.markiere_ops([mk.Stueck(mk.NORMAL, zelle)], ops, mk.SICHT_FLACH, {}, self.cfg).zeichen
+                              if z[1] != mk.ALT)
+        except ValueError:
+            return
+        if " ".join(projiziert.split()) != " ".join(geplant.split()):
+            return
+        self._absatz(k.blatt, [(k.zeile, k.spalte, k.start, k.end)], out)
+
+    def _ops_unbedenklich(self, ae: Aenderung, ops: list[Operation]) -> bool:
+        """Neuer Text der Operationen: keine Steuerzeichen, nichts Verdaechtiges, Zahl-Zellen bleiben Zahlen (wie `_setze`)."""
+        p = neutext_probleme([o.text for o in ops], self.cfg)
+        if p["steuerzeichen"] or p["verdaechtig"]:
+            return False
+        for op in ops:
+            if self.xl.ist_zahl(op.blatt, op.zeile, op.spalte):
+                return False
+        return True
+
+    def _vorschlag_verwerfen(self, ae: Aenderung) -> None:
+        """Kein sicherer Vorschlag: die Aenderung bleibt auf "pruefen", aber ohne fertige Operationen (Regel 27, besser kein
+        Vorschlag als ein falscher). Freigeben schreibt dann nichts; der Mensch traegt die Stelle von Hand ein."""
+        ae.ops = []
+        ae.status, ae.konfidenz = PRUEFEN, MITTEL
+        self._hinweis(ae, _codes.satz("kein_vorschlag"))
+        self._code(ae, "kein_vorschlag")
 
     def _ersatz_absatz(self, b: PdfBlock, tr: Treffer | None, aes: list[Aenderung]) -> None:
         """PDF-Absatz fuer die Gegenprobe A3 auch auf dem Weg ueber den alten Matcher -- aber nur, wenn die Laeufe des Blocks

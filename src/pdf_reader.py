@@ -630,6 +630,10 @@ def _leiste_objekte(page: Any, sd: _SeitenDaten, cfg: dict) -> None:
         if max(x1 - x0, bot - top) > a_max:
             continue
         am_anfang = any(x0 - 2.0 <= ax <= x1 + 2.0 and top - 2.0 <= ay <= bot + 2.0 for ax, ay in anfaenge)
+        # Ein flaches Rechteck ist eine Linie (Durchstreichung eines schmalen Zeichens wie "[" oder "."), nie ein Ankerpunkt;
+        # nur Kurven (Punkt aus Boegen, auch flach gemeldet) zaehlen am Anfang einer Verbindungslinie als Anker.
+        if o.get("object_type") == "rect" and am_anfang and min(x1 - x0, bot - top) < a_min:
+            continue
         if am_anfang or a_min <= min(x1 - x0, bot - top):
             sd.leiste_weg.add(id(o))
             sd.anker.append((x0, top, x1, bot))
@@ -2464,6 +2468,17 @@ def _spalten_regionen(zeilen: list[_Zeile], tabellen: list[tuple[float, float, f
         ueber = min(r_bot, l_bot) - max(r_top, l_top)
         if ueber < sp["min_ueberlappung"] * min(r_bot - r_top, l_bot - l_top):
             continue
+        # Echte Spalten stehen NEBENEINANDER: Zeilen der rechten Spalte liegen (zumindest teilweise) auf gleicher Hoehe wie Zeilen
+        # der linken. Einrueckungen von Listen (Text hinter "1." oder "a)") mit kurzen Zeilen davor liegen dagegen untereinander,
+        # nie auf gleicher Hoehe -- das sind keine Spalten.
+        gleich = sp.get("min_gleiche_hoehe", 0.0)
+        if gleich:
+            def nebeneinander(r: int) -> bool:
+                hr = segs[r][3] - segs[r][2]
+                return any(min(segs[r][3], segs[j][3]) - max(segs[r][2], segs[j][2]) >= gleich * min(hr, segs[j][3] - segs[j][2])
+                           for j in links)
+            if sum(1 for r in rechts if nebeneinander(r)) < sp.get("min_anteil_gleiche_hoehe", 0.5) * len(rechts):
+                continue
         alle = links + rechts
         benutzt.update(alle)
         ergebnis.append((min(segs[i][0] for i in alle), min(segs[i][2] for i in alle),

@@ -136,6 +136,8 @@ spalten:                     # mehrere Textspalten nebeneinander
   min_spaltenabstand_em: 1.0 # Mindestabstand zwischen linker Spalte und Beginn der rechten (in Schriftgroessen)
   min_anteil: 0.4            # Verhaeltnis der Zeilenzahlen links/rechts (kleinere / groessere Spalte)
   min_ueberlappung: 0.5      # so viel der Spaltenhoehe muss in beiden Spalten gleichzeitig vorkommen
+  min_gleiche_hoehe: 0.5     # Zeilen echter Spalten liegen nebeneinander: so viel der kleineren Zeilenhoehe muss sich ueberdecken (0 = aus)
+  min_anteil_gleiche_hoehe: 0.5   # ... fuer mindestens so viele Zeilen der rechten Spalte (Einrueckungen von Listen liegen untereinander)
 
 tabellen:                    # Tabellen mit Rahmenlinien
   linie_min_laenge: 20       # waagerechte Linien ab dieser Laenge (pt)
