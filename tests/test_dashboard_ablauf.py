@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from openpyxl import load_workbook
 
-from src import cli, config, runs
+from src import cli, config, protokoll, runs
 from src.api.app import app
 from tests.fixtures.szenario import erzeuge
 from tests.test_register import GRUND, wort_pdf
@@ -133,17 +133,40 @@ const [basis, pdf, xlsx] = process.argv.slice(2);
   await p.waitForSelector('#schritt-pruefen:not([hidden]) #karten-bitte .karte', { timeout: 60000 });
   aus.karten = await p.locator('#karten-bitte .karte').count();
   aus.satz_vorher = await p.textContent('#fortschritt-satz');
+  // Vertrauensmodus: Dokument-Ampel oben, Stichprobe (eingeklappter Block nur wenn vorhanden) steht VOR „Bitte prüfen“
+  aus.ampel_vorher = await p.getAttribute('#ampel', 'data-stufe');
+  aus.ampel_satz = await p.textContent('#ampel-satz');
+  aus.sp_karten = await p.locator('#karten-stichprobe .karte').count();
+  aus.sp_offen = await p.evaluate(() => document.getElementById('klapp-stichprobe').open);
+  aus.sp_zuerst = await p.evaluate(() => !!(document.getElementById('klapp-stichprobe').compareDocumentPosition(document.getElementById('bereich-bitte')) & Node.DOCUMENT_POSITION_FOLLOWING));
   await p.keyboard.press('?');
   aus.hilfe_offen = await p.evaluate(() => document.getElementById('hilfe').open);
   await p.keyboard.press('Escape');
   aus.hilfe_zu = await p.evaluate(() => !document.getElementById('hilfe').open);
-  await p.keyboard.press('j');                                  // erste Karte wählen
+  await p.keyboard.press('j');                                  // erste Karte wählen: die erste der Stichprobe
   aus.fokus_karte = await p.evaluate(() => document.activeElement.classList.contains('karte'));
+  aus.erste_ist_stichprobe = await p.evaluate(() => !!document.activeElement.closest('#karten-stichprobe'));
+  await p.keyboard.press('a');                                  // Stichprobe: Passt (springt zur nächsten offenen Karte)
+  aus.sp1 = await p.getAttribute('#karten-stichprobe li:nth-child(1) .karte', 'data-entscheid');
+  aus.sp_stand = await p.textContent('#stichprobe-stand');
+  await p.keyboard.press('n');                                  // zweite Karte: Falsch (wählt die Änderung ab)
+  aus.sp2 = await p.getAttribute('#karten-stichprobe li:nth-child(2) .karte', 'data-entscheid');
+  aus.sp2_abgewaehlt = await p.evaluate(() => {
+    const id = document.querySelector('#karten-stichprobe li:nth-child(2) .karte').dataset.id;
+    return [...document.querySelectorAll('#karten-auto .karte')].find((k) => k.dataset.id === id).classList.contains('abgewaehlt');
+  });
+  aus.ampel_mitte = await p.getAttribute('#ampel', 'data-stufe');
+  await p.keyboard.press('a');                                  // dritte Karte: Passt -> weiter zur ersten offenen Karte unter „Bitte prüfen“
+  aus.sp3 = await p.getAttribute('#karten-stichprobe li:nth-child(3) .karte', 'data-entscheid');
+  aus.fokus_bitte = await p.evaluate(() => !!document.activeElement.closest('#karten-bitte'));
   await p.keyboard.press('a');                                  // übernehmen
   aus.gedrueckt = await p.getAttribute('#karten-bitte .karte .entscheid.ja', 'aria-pressed');
   aus.entscheid = await p.getAttribute('#karten-bitte .karte', 'data-entscheid');
   aus.satz_nachher = await p.textContent('#fortschritt-satz');
   aus.balken = await p.getAttribute('#fortschritt', 'aria-valuenow');
+  // alles entschieden und die Stichprobe angesehen: die Ampel (Regeln kommen vom Server) wird grün
+  await p.waitForFunction(() => document.getElementById('ampel').dataset.stufe === 'gruen', null, { timeout: 15000 });
+  aus.ampel_nachher = await p.textContent('#ampel-satz');
   await p.click('#btn-excel');
   await p.waitForSelector('#schritt-fertig:not([hidden])', { timeout: 60000 });
   aus.fertig_titel = await p.textContent('#titel-fertig');
@@ -202,9 +225,14 @@ def test_browser_karte_per_taste_freigeben_und_excel_erstellen(paar, tmp_path, m
     assert "absturz" not in aus, aus
     assert aus["fehler"] == [], f"Konsolenfehler: {aus['fehler']}"
     assert aus["schritt1"] and aus["aktuell1"] == "step"
-    assert aus["karten"] == 1 and "1 bitte prüfen (0 erledigt)" in aus["satz_vorher"]
+    assert aus["karten"] == 1 and "1 bitte prüfen (0 erledigt)" in aus["satz_vorher"] and "Stichprobe 0 von 3 angesehen" in aus["satz_vorher"]
+    assert aus["ampel_vorher"] == "gelb" and aus["ampel_satz"] == "Bitte ein paar Punkte ansehen."
+    assert aus["sp_karten"] == 3 and aus["sp_offen"] and aus["sp_zuerst"]
     assert aus["hilfe_offen"] and aus["hilfe_zu"]
-    assert aus["fokus_karte"] and aus["gedrueckt"] == "true" and aus["entscheid"] == "ja"
+    # J wählt die erste Karte (die Stichprobe steht zuerst); A = Passt, N = Falsch (wählt ab), springt jeweils weiter
+    assert aus["fokus_karte"] and aus["erste_ist_stichprobe"] and aus["sp1"] == "passt" and aus["sp_stand"] == "1 von 3 angesehen"
+    assert aus["sp2"] == "falsch" and aus["sp2_abgewaehlt"] and aus["ampel_mitte"] == "gelb" and aus["sp3"] == "passt" and aus["fokus_bitte"]
+    assert aus["gedrueckt"] == "true" and aus["entscheid"] == "ja" and aus["ampel_nachher"] == "Alles sicher eingetragen."
     assert "(1 erledigt)" in aus["satz_nachher"] and aus["balken"] == "1"
     assert aus["aktuell3"] == "step" and aus["fertig_titel"] == "Fertig." and "Änderungen eingetragen" in aus["fertig_satz"]
     assert aus["fertig_fokus"] == "titel-fertig"
@@ -213,7 +241,12 @@ def test_browser_karte_per_taste_freigeben_und_excel_erstellen(paar, tmp_path, m
     (lauf,) = runs.liste()
     plan = runs.lade_plan(lauf["run_id"])
     (vorschlag,) = [a["id"] for a in plan["aenderungen"] if a["status"] == "pruefen"]
-    assert runs.ergebnisse(lauf["run_id"])[0]["freigaben"] == [vorschlag]
+    erg = runs.ergebnisse(lauf["run_id"])[0]
+    assert erg["freigaben"] == [vorschlag] and len(erg["abwahl"]) == 1 and erg["stichprobe"]["falsch"] == erg["abwahl"]
+    assert len(erg["stichprobe"]["passt"]) == 2 and set(erg["stichprobe"]["passt"] + erg["stichprobe"]["falsch"]) == set(plan["stichprobe"])
+    zeilen, _ = protokoll.lese_entscheidungen(runs.lauf_dir(lauf["run_id"]) / "entscheidungen.jsonl")
+    assert {z["id"]: z["entscheidung"] for z in zeilen}[erg["abwahl"][0]] == "abgelehnt"           # „Falsch“ im Freigabe-Protokoll
+    assert sum(1 for z in zeilen if z["entscheidung"] == "bestaetigt") == 2
 
 
 # ---------------------------------------------------------------------------------------------------------------- 4. Spec

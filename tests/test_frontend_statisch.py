@@ -309,7 +309,8 @@ def test_wichtige_aussagen_stehen_im_dashboard():
                  "grund_einfach", "bereich", "kategorie", "zusammenfassung", "abwahl", "freigaben", "legende_modus", "sprechblasen",
                  "pruefcodes", "score", "konfidenz"):
         assert feld in JS, f"app.js liest das Feld {feld!r} nicht"
-    assert "JSON.stringify({ freigaben, abwahl })" in JS, "Freigaben UND Abwahl gehen an die API"
+    # Freigaben UND Abwahl gehen an die API; dazu fürs Freigabe-Protokoll (Vertrauensmodus) ausdrücklich Abgelehntes, pauschal Freigegebenes und die Stichprobe
+    assert "JSON.stringify({ freigaben, abwahl, abgelehnt, pauschal, stichprobe })" in JS
     # Ohne geöffneten Abgleich gibt es nichts Technisches zu sehen; alles Technische steckt in EINEM Klappbereich
     fachleute = _finde(id="fachleute")[0]
     assert "hidden" in fachleute and next(t for t, a in SEITE.elemente if a is fachleute) == "details"
