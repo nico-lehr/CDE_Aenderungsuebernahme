@@ -906,6 +906,36 @@ def _unscharfe_abbildung(pdf: str, excel: str, cfg: dict | None) -> dict[int, in
     return abb
 
 
+def a1_art(alt: str, excel: str, cfg: dict | None = None, optional: frozenset[int] = frozenset()) -> str:
+    """Worin weicht die Excel vom alten PDF-Text ab? "" = gar nicht (in der Normalform gleich), sonst eine Kategorie wie
+    `Vergleich.art` (leerraum | satzzeichen | gross_klein | ziffer | buchstabe | pdf_laenger | excel_laenger).
+
+    Unterschied zu `vergleiche(...).art`: Dort heisst die Art "leerraum", sobald an der ersten Abweichung auf EINER Seite ein
+    Leerzeichen steht -- auch dann, wenn dort ein Buchstabe oder ein Satzzeichen vor dem Leerzeichen fehlt ("Temperatu darf" statt
+    "Temperatur darf"). Hier heisst sie nur dann "leerraum", wenn die Zeichen ausser dem Leerraum in beiden Texten genau gleich
+    sind (nur Leerzeichen fehlen oder sind zu viel, z. B. "Pumpen.Sie" statt "Pumpen. Sie"); sonst gilt die erste Abweichung der
+    Zeichen OHNE Leerraum. So sagt der Grund-Satz, was wirklich anders ist (ein Buchstabe, ein Satzzeichen, eine Ziffer)."""
+    v = vergleiche(alt, excel, optional, cfg)
+    if v.gleich or v.art != "leerraum":
+        return v.art
+    na, _ = normalform(alt, cfg)
+    nx, _ = normalform(excel, cfg)
+    sa, sx = na.replace(" ", ""), nx.replace(" ", "")
+    if sa == sx:
+        return "leerraum"
+    i = next((k for k, (p, q) in enumerate(zip(sa, sx)) if p != q), None)
+    if i is None:                                        # ein Text ist der Anfang des anderen
+        return "pdf_laenger" if len(sa) > len(sx) else "excel_laenger"
+    p, q = sa[i], sx[i]
+    if p.casefold() == q.casefold():
+        return "gross_klein"
+    if p.isdigit() or q.isdigit():
+        return "ziffer"
+    if not p.isalnum() or not q.isalnum():
+        return "satzzeichen"
+    return "buchstabe"
+
+
 def _alt_text_steht_da(laeufe: list[Lauf], idx: list[int], lage: dict[int, tuple[int, int]], abb: dict[int, int], X: str,
                        cfg: dict | None) -> bool:
     """Steht der alte Text einer Aenderung (ihre d-Laeufe) Zeichen fuer Zeichen an der zugeordneten Excel-Stelle, und sind

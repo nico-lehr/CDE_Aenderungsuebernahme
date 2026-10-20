@@ -888,8 +888,9 @@ class _Planer:
             self._setze(ae, stufe, "; ".join(g for g in dict.fromkeys(gruende) if g), codes)
 
     def _a1_codes(self, alt: str, excel: str) -> list[str]:
-        v = vergleiche(alt, excel, frozenset(), self.cfg.get("normalform"))
-        return ["a1_" + v.art] if v.art else []
+        from .abgleich import a1_art                      # "leerraum" nur bei WIRKLICH gleichen Zeichen (Auftrag ZUORDNEN)
+        art = a1_art(alt, excel, self.cfg.get("normalform"))
+        return ["a1_" + art] if art else []
 
     def _ersatz_text(self, i: int) -> bool:
         """keiner/widerspruch: ein Vorschlag ueber den alten Matcher im Fenster. True, wenn er etwas geplant hat."""
@@ -1018,6 +1019,7 @@ class _Planer:
         out: list[Lauf] = []
         ende = 0                                              # bis hierher ist die Excel in `out` untergebracht
         offene_trenner: list[int] = []                        # Indizes (in out) von Trennern seit dem letzten Stueck mit Zeichen
+        behalten: list[Lauf] = []                             # Trenner HINTER einem neuen Stueck, in der alten Fassung zusammengelegt
 
         def anfuegen(art: str, text: str, aenderung: str = "", optional: bool = False) -> None:
             if art in ("k", "s") and out and out[-1].art == art and out[-1].aenderung == aenderung and not optional:
@@ -1030,7 +1032,13 @@ class _Planer:
                 out.append(Lauf("a", l.text, ids.get(l.aenderung, l.aenderung), l.optional))
                 continue
             if i not in lage:
-                continue                                      # nicht sichtbar in der alten Fassung (zusammengelegter Trenner)
+                # nicht sichtbar in der alten Fassung (zusammengelegter Trenner). Steht er hinter einem neuen Stueck ("Liste a.",
+                # Polster, {+Alle+} " " "Die"), merken wir ihn (siehe unten `behalten`).
+                if l.art == "s" and out and out[-1].art == "a":
+                    t = Lauf("s", l.text, "", l.optional)
+                    behalten.append(t)
+                    out.append(t)
+                continue
             a0, e0 = lage[i]
             ziel = [abb[p] for p in range(a0, e0) if p in abb]
             if l.art == "d" and not l.text.strip():
@@ -1084,6 +1092,19 @@ class _Planer:
                 out[j] = Lauf("s", rest, "", out[j].optional)
             else:
                 anfuegen("k", rest)
+        # Der Trenner hinter dem neuen Stueck bleibt nur, wenn der Trenner DAVOR Excel-eigener Leerraum ist (Polster der
+        # Listennummer, Tab, doppelte oder geschuetzte Leerzeichen): Dort schrieben die Operationen das neue Wort mitten in diesen
+        # Leerraum ("a." + NBSP + {+Alle+} + NBSP NBSP ...), und der Absatz wurde verworfen, weil das neue Wort am Nachbarn klebte.
+        # Bei einem einfachen Leerzeichen davor sind Operationen und Projektion gleich (nichts zu retten, nichts zu aendern).
+        for t in behalten:
+            n = next((x for x, y in enumerate(out) if y is t), None)
+            if n is None:
+                continue
+            vor = n - 1
+            while vor >= 0 and out[vor].art == "a":
+                vor -= 1
+            if not (vor >= 0 and out[vor].art == "s" and out[vor].text.strip() == "" and out[vor].text not in ("", " ")):
+                out.pop(n)
         out = [l for l in out if l.text]
         aktiv = set(ids.values())
         alt_neu, opt_alt = zustand_mit_optional(out, set())
@@ -1104,7 +1125,10 @@ class _Planer:
                               if z[1] != mk.ALT)
         except ValueError:
             return
-        if " ".join(projiziert.split()) != " ".join(geplant.split()):
+        # Gleicher neuer Text in der Normalform (Leerraum zaehlt als EIN Leerzeichen, vor Satzzeichen keins): eine gestrichene
+        # Wortgruppe vor dem Satzpunkt laesst in den Operationen ein Leerzeichen vor dem Punkt stehen, das Word mitstreicht
+        # ("einschliesslich{- Typenschild-}."); die Projektion streicht es mit und ist dort richtig.
+        if normalform(projiziert, self.cfg.get("normalform"))[0] != normalform(geplant, self.cfg.get("normalform"))[0]:
             return
         self._absatz(k.blatt, [(k.zeile, k.spalte, k.start, k.end)], out)
 

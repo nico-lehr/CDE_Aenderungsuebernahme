@@ -101,9 +101,15 @@ SAETZE: dict[str, str] = {
 
 # Teil-Saetze fuer "a1_<art>" (worin die Excel vom alten PDF-Text abweicht); frueher planner._A1_SATZ
 A1_ART: dict[str, str] = {
-    "leerraum": "Leerzeichen", "satzzeichen": "ein Satzzeichen", "gross_klein": "Groß-/Kleinschreibung",
+    "leerraum": "Leerzeichen fehlen oder zu viele", "satzzeichen": "ein Satzzeichen", "gross_klein": "Groß-/Kleinschreibung",
     "ziffer": "eine Ziffer", "buchstabe": "ein Buchstabe", "pdf_laenger": "im PDF steht mehr Text",
     "excel_laenger": "in der Excel steht mehr Text", "abweichung": "der Text",
+}
+
+# Auftrag ZUORDNEN: worin die Excel abweicht, in wenigen Worten (fuer den Karten-Satz bei "excel_weicht_ab")
+A1_KURZ: dict[str, str] = {
+    "leerraum": "nur Leerzeichen", "satzzeichen": "ein Satzzeichen", "gross_klein": "Groß-/Kleinschreibung",
+    "ziffer": "eine Ziffer", "buchstabe": "ein Buchstabe", "pdf_laenger": "PDF hat mehr Text", "excel_laenger": "Excel hat mehr Text",
 }
 
 # Wichtigster Grund zuerst: Gruende, die das Eintragen ganz verhindern, vor Gruenden fuer "pruefen", vor reinen Hinweisen
@@ -174,6 +180,11 @@ def grund_einfach(ae: Any) -> str:
     gruende = sorted((c for c in ae.pruefcodes if kurz(c)), key=_rang)
     if gruende:
         haupt = kurz(gruende[0])
+        if ae.status == PRUEFEN and gruende[0] == "excel_weicht_ab":          # Auftrag ZUORDNEN: sagen, WORIN die Excel abweicht
+            art = next((A1_KURZ[c[3:]] for c in ae.pruefcodes if c.startswith("a1_") and c[3:] in A1_KURZ), "")
+            genau = f"Die Excel weicht hier vom alten PDF-Text ab ({art}). Vorschlag bitte prüfen." if art else ""
+            if genau and len(genau.split()) <= KURZ_MAX_WOERTER:
+                return genau
         if ae.status == UEBERNOMMEN:
             return "Wird eingetragen. " + haupt if len(haupt.split()) <= KURZ_MAX_WOERTER - 2 else haupt
         return haupt
