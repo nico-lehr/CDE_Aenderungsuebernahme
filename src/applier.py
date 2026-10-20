@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 import zipfile
 from collections import Counter
-from copy import copy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -38,7 +38,9 @@ from openpyxl.formula.translate import Translator
 from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 
+from . import codes as _codes
 from . import config
+from . import konsens
 from . import markierung as mk
 from .fehler import DateiVorhanden
 from .excel_model import ExcelModell, zahl_als_text
@@ -58,6 +60,8 @@ class UebernahmeErgebnis:
     ausgabe: str
     warnungen: list[str] = field(default_factory=list)
     zeilen_verschoben: dict[str, str] = field(default_factory=dict)
+    konsens: dict[str, Any] = field(default_factory=dict)       # Zweiter Pruefweg (src/konsens.py): Zahlen, nie Inhalte
+    text_pruefung: Any = None          # Konsens-Text fuer eine beliebige Ergebnisdatei: f(pfad) -> konsens.TextErgebnis (Tests)
 
 
 def _text(zelle) -> str:
@@ -551,10 +555,62 @@ def _gefaehrdet(quelle: Path) -> list[str]:
     return out
 
 
+class _KonsensNeustart(Exception):
+    """Der Konsens-Text (src/konsens.py) hat nach dem Schreiben eine Abweichung gefunden: die Datei wird ohne die betroffenen
+    Aenderungen neu geschrieben (siehe `uebernehmen`)."""
+
+    def __init__(self, abweichungen: dict[str, str]) -> None:
+        super().__init__("Konsens-Text: Abweichung")
+        self.abweichungen = abweichungen
+
+
+def _zustand_zurueck(aenderungen: list[Aenderung], start: list[Aenderung]) -> None:
+    """Stellt die Aenderungs-Objekte (in place) auf den Stand vor dem ersten Schreiben zurueck."""
+    for a, s in zip(aenderungen, start):
+        a.__dict__.clear()
+        a.__dict__.update(deepcopy(s.__dict__))
+
+
 def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Path,
                 freigaben: set[str] | None = None, cfg: dict | None = None,
                 xl: ExcelModell | None = None, abwahl: set[str] | None = None,
-                absaetze: list[Absatz] | None = None) -> UebernahmeErgebnis:
+                absaetze: list[Absatz] | None = None, pdf: Any = None) -> UebernahmeErgebnis:
+    """Wie `_uebernehmen_einmal` (siehe dort), dazu der zweite Pruefweg `konsens` (src/konsens.py, `konsens.aktiv`):
+    * `pdf`: PdfAnalyse zum Plan (optional). Mit ihr laeuft VOR dem Schreiben die Wort-Bildprobe fuer die automatisch
+      uebernommenen Aenderungen (Abweichung -> "pruefen", Code konsens_bild). Ohne sie gibt es die Bildprobe nur im Plan
+      (`konsens.bildprobe_anwenden`).
+    * Konsens-Text NACH dem Schreiben: weicht die geschriebene Zelle vom eigenen Soll aus den PDF-Absaetzen ab (oder aendert sich
+      eine Zelle, die unberuehrt bleiben sollte), wird die Datei verworfen und OHNE die betroffenen Aenderungen neu geschrieben
+      (derselbe Weg wie bei einer Abweichung der Gegenprobe vor dem Schreiben); sie stehen dann auf "pruefen" (Code konsens_text).
+      Nach `konsens.text.max_durchlaeufe` Versuchen geht keine Automatik mehr durch."""
+    cfg = cfg or config.lade("zuordnung")
+    if not konsens.aktiv(cfg):
+        return _uebernehmen_einmal(aenderungen, quelle, ziel, freigaben, cfg, xl, abwahl, absaetze, pdf, None)
+    start = deepcopy(aenderungen)
+    aus: dict[str, str] = {}
+    versuche = int(konsens.konfig(cfg).get("text", {}).get("max_durchlaeufe", 4))
+    for n in range(versuche + 1):
+        if n == versuche:                                   # Notbremse: nichts Automatisches mehr schreiben
+            aus.update({a.id: "konsens_text" for a in start if a.status == UEBERNOMMEN and not a.bestaetigt})
+        try:
+            res = _uebernehmen_einmal(aenderungen, quelle, ziel, freigaben, cfg, xl, abwahl, absaetze, pdf, aus)
+            break
+        except _KonsensNeustart as k:
+            Path(ziel).unlink(missing_ok=True)
+            _zustand_zurueck(aenderungen, start)
+            aus.update({aid: "konsens_text" for aid in k.abweichungen})
+    else:                                                   # nicht erreichbar: die letzte Runde schreibt nichts Automatisches
+        raise RuntimeError("Konsens-Text: Neuschreiben ohne Ende")
+    if aus:
+        res.warnungen.append("Zweitprüfung: Bei einem Teil der Änderungen passte das Ergebnis nicht zum PDF; sie stehen auf "
+                             "„prüfen“ und wurden nicht eingetragen.")
+        res.konsens["neu_geschrieben"] = n
+    return res
+
+
+def _uebernehmen_einmal(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Path,
+                        freigaben: set[str] | None, cfg: dict | None, xl: ExcelModell | None, abwahl: set[str] | None,
+                        absaetze: list[Absatz] | None, pdf: Any, konsens_aus: dict[str, str] | None) -> UebernahmeErgebnis:
     """Trägt alle Aenderungen mit Status 'uebernommen' sowie freigegebene 'pruefen' ein.
 
     Die Aenderung-Objekte werden aktualisiert (Konflikte -> nicht_uebernommen,
@@ -678,6 +734,14 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             aktiv_ids.add(ae.id)
     aktiv: list[Aenderung] = [a for a in aenderungen if a.id in aktiv_ids]
     nach_id = {a.id: a for a in aktiv}
+    # Zweiter Pruefweg: was der Konsens-Text im vorigen Versuch beanstandet hat, wird nicht geschrieben (samt Gruppe); der Weg
+    # ist derselbe wie bei einer Abweichung der Gegenprobe vor dem Schreiben (`zurueck`, unten)
+    konsens_zurueck: dict[str, str] = {}
+    for aid in sorted(konsens_aus or ()):
+        for k in sorted(kopplung.get(aid, {aid})):
+            if k in nach_id and k not in konsens_zurueck:
+                konsens_zurueck[k] = (konsens_aus or {}).get(aid, "konsens_text") if k == aid else "gegenprobe_gruppe"
+                nach_id.pop(k)
 
     def entferne(ae: Aenderung, art: str, grund: str, *hinweise: str) -> None:
         """Nimmt eine Aenderung (und die Gruppe, zu der sie gehoert) aus der Anwendung."""
@@ -707,6 +771,21 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                 entferne(ae, PRUEFEN, "Zu dieser Änderung fehlt der PDF-Absatz für die Gegenprobe; sie wird nicht automatisch eingetragen.",
                          "Das Ergebnis könnte nach dem Eintragen nicht gegen das PDF geprüft werden. Bitte von Hand prüfen.")
                 _code(ae, "ohne_absatz")
+
+    # --- Zweiter Pruefweg (a): Wort-Bildprobe VOR dem Schreiben (braucht nur die PdfAnalyse des Plans) --------------
+    if pdf is not None and konsens.aktiv(cfg):
+        bild = konsens.bildprobe(pdf, [a for a in aktiv if a.id in nach_id], cfg)
+        ergebnis.konsens["bild"] = {"gelaufen": bild.gelaufen, "geprueft": bild.geprueft, "unpruefbar": bild.unpruefbar,
+                                    "abweichend": bild.abweichend}
+        if bild.grund and not bild.gelaufen and bild.grund != "ausgeschaltet":
+            ergebnis.warnungen.append(bild.grund)
+        for aid, was in bild.abweichungen.items():
+            ae = nach_id.get(aid)
+            if ae is not None:
+                entferne(ae, PRUEFEN, "Zweitprüfung: Im Seitenbild ist die Markierung anders als gelesen.", *was)
+                _code(ae, "konsens_bild")
+                ae.grund_einfach = _codes.grund_einfach(ae)
+        aktiv = [a for a in aktiv if a.id in nach_id]
 
     # --- Stimmt der erwartete Text noch? Ist der Neutext schreibbar? ------------------------------------------
     for ae in list(aktiv):
@@ -983,7 +1062,7 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
                 fehler.setdefault(ae.id, "gegenprobe_neuer_absatz")
         return fehler, gut
 
-    zurueck: dict[str, str] = {}                   # vor dem Schreiben durchgefallen (nicht in der Datei)
+    zurueck: dict[str, str] = dict(konsens_zurueck)    # vor dem Schreiben durchgefallen (nicht in der Datei)
     a3_vorab: set[str] = set()
     zell_info = baue_zellen()
     if farbig:
@@ -1228,6 +1307,32 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
             raise PatchFehler("Die Ergebnis-Excel ließ sich nicht wieder öffnen; es wurde keine Datei geschrieben.") from e
         raise
 
+    # --- Zweiter Pruefweg (b): Konsens-Text -- eigenes Soll aus den PDF-Absaetzen gegen die geschriebene Datei -------------
+    if konsens.aktiv(cfg):
+        angew = set(nach_id)
+        auto = {i for i in angew if alle_nach_id[i].status == UEBERNOMMEN and not alle_nach_id[i].bestaetigt}
+        ziele = {k for k, ops in je_zelle.items() if any(o.aenderung in nach_id for o in ops)}
+        nz_ziel: dict[str, tuple[str, int]] = {}              # neue Zeilen (nur Patch-Schreiber): Aenderung -> (Blatt, Zeile)
+        if perg is not None:
+            for (blatt, pos), ops in einfuegungen.items():
+                for op in ops:
+                    nz_ziel[op.aenderung] = (blatt, perg.neue_zeilen[nz_index[id(op)]][1])
+        ergebnis.text_pruefung = lambda pfad, **kw: konsens.pruefe_text(quelle, pfad, absaetze, angew, aenderungen, neue_zeile,
+                                                                        ziele, cfg, auto, nz_ziel, **kw)
+        try:
+            kt = ergebnis.text_pruefung(ziel)
+        except Exception as e:                      # noqa: BLE001 -- die zweite Pruefung faellt aus; die uebrigen Pruefungen gelten weiter
+            kt = None
+            ergebnis.konsens["text"] = {"gelaufen": False, "fehler": type(e).__name__}
+            ergebnis.warnungen.append("Die Zweitprüfung (Konsens-Text) konnte nicht laufen. Alle anderen Prüfungen haben "
+                                      "stattgefunden; bitte das Ergebnis stichprobenartig prüfen.")
+        if kt is not None:
+            ergebnis.konsens["text"] = {"gelaufen": kt.gelaufen, "geprueft": kt.geprueft, "unpruefbar": kt.unpruefbar,
+                                        "abweichend": len(kt.abweichungen), "fremde_zellen": kt.fremd}
+            if kt.abweichungen:
+                kontrolle.close()
+                raise _KonsensNeustart(kt.abweichungen)
+
     # --- Gegenprobe A3 (ADR 0004): steht jeder betroffene Absatz so in der Excel, wie das PDF es verlangt? ----------
     durchgefallen: dict[str, str] = {}             # Aenderungs-ID -> Pruefcode
     a3_bestanden: set[str] = set(a3_vorab)         # gegen das PDF geprueft und in Ordnung
@@ -1380,18 +1485,28 @@ def uebernehmen(aenderungen: list[Aenderung], quelle: str | Path, ziel: str | Pa
         for aid, code in durchgefallen.items():
             ae = alle_nach_id[aid]
             _code(ae, code)
+            if code == "konsens_text":
+                _code(ae, "konsens_text")               # (ein Literal, damit die Code-Suche in tests/test_codes.py ihn findet)
             if ae.status == NICHT:                      # schon zurueckgestuft (z. B. ohne Wirkung): nie "uebernommen"
                 continue
-            if ae.status == UEBERNOMMEN:
+            if ae.status == UEBERNOMMEN and code == "konsens_text":
+                _vorschlag(ae, "Zweitprüfung: Der Text in der Excel passte danach nicht zum PDF.")
+                ergebnis.warnungen.append(f"Änderung {ae.id} ({ae.ziel}): Zweitprüfung – der Text in der Excel passte nicht "
+                                          f"zum PDF. Die Änderung wurde nicht eingetragen. Bitte von Hand prüfen.")
+            elif ae.status == UEBERNOMMEN:
                 _vorschlag(ae, "Gegenprobe: Das Ergebnis in der Excel passt nicht zu dem, was das PDF verlangt.")
                 ergebnis.warnungen.append(f"Änderung {ae.id} ({ae.ziel}): Gegenprobe – das Ergebnis in der Excel passt nicht "
                                           f"zu dem, was das PDF verlangt. Bitte von Hand prüfen.")
-            _hinweise(ae, "Gegenprobe: Das Ergebnis in der Excel passt nicht zu dem, was das PDF verlangt. Bitte prüfen."
+            _hinweise(ae, "Zweitprüfung: Der Text in der Excel passte danach nicht zum PDF. Bitte prüfen."
+                      if code == "konsens_text" else
+                      "Gegenprobe: Das Ergebnis in der Excel passt nicht zu dem, was das PDF verlangt. Bitte prüfen."
                       if code != "gegenprobe_gruppe" else
                       "Gegenprobe: Eine Änderung derselben Gruppe passt nicht zum PDF; die Gruppe gilt nur gemeinsam. Bitte prüfen.")
             if aid in zurueck:
                 _hinweise(ae, "Die Änderung wurde deshalb nicht in die Ergebnis-Excel geschrieben.")
             ae.konfidenz, ae.wirkung, ae.nachkontrolle = NIEDRIG, WIRKUNG_ABWEICHUNG, "abweichung"
+            if code in ("konsens_text", "gegenprobe_gruppe") and aid in konsens_zurueck:
+                ae.grund_einfach = _codes.grund_einfach(ae)         # Dashboard-Satz passend zum neuen Status
 
     # --- Hinweise: Inhalt in gestrichenen Sections ----------------------------------------
     aktive_ops = [o for a in aktiv if a.status == UEBERNOMMEN for o in a.ops]
