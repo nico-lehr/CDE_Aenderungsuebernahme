@@ -586,7 +586,16 @@ def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | N
         for n, ab in enumerate(dran):
             for j, (z, sp, a, e) in enumerate(ab.zellen):
                 je_zelle.setdefault((ab.blatt, z, sp), []).append((a, ab, j, e, n))
-        bereiche: dict[int, list[_Z] | None] = {}       # Absatz-Nr -> Ist-Strom seiner Zellen (Teilstuecke je Zelle)
+        # neue Absaetze, die in eine bestehende Zelle eingefuegt werden (kein PDF-Absatz): Zelle -> [(Stelle, Aenderung)]
+        in_absaetzen = {i for ab in absaetze for i in ab.aenderungen}
+        einf_je_zelle: dict[tuple[str, int, int], list[tuple[int, Aenderung]]] = {}
+        for aid in sorted(angewendet):
+            a = nach_id.get(aid)
+            if a is None or a.typ != "absatz_neu" or aid in in_absaetzen:
+                continue
+            for o in a.ops:
+                if o.art in ("einfuegen", "ersetzen") and o.start == o.ende and o.text.strip():     # Einfuegung (leere Spanne)
+                    einf_je_zelle.setdefault((o.blatt, o.zeile, o.spalte), []).append((o.start, a))
         schlecht: dict[int, bool] = {}
         unpruefbar: set[int] = set()
         teile: dict[int, dict[int, list[tuple[str, str]]]] = {}
@@ -619,18 +628,31 @@ def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | N
                     continue
                 rn = norm.strom(r)
                 tol = any(kl == NEU for (i0, i1), *_ in grenzen for _, kl in o[i0:i1])
+                zaehler = [i for i, (_, kl) in enumerate(o) if not (neu_sicht and _strich(kl))]
+                einf = []                                 # (Index in der Zelle, Aenderung) der eingefuegten neuen Absaetze
+                for start, a_ in einf_je_zelle.get((blatt, zeile, spalte), []):
+                    einf.append((zaehler[start] if start < len(zaehler) else len(o), a_))
+                if any(not _auto(a_) and a_.id not in auto_ids for _, a_ in einf) or \
+                        any(i0 < idx < i1 for idx, _ in einf for (i0, i1), *_ in grenzen):
+                    unpruefbar.update(ab_nrs)             # von Hand freigegeben oder mitten in einem Absatz eingefuegt
+                    continue
                 if all(len(ab.zellen) == 1 for _, ab, _, _ in grenzen):
+                    ereignisse = sorted([(i0, 1, i1, ab) for (i0, i1), ab, j, n in grenzen] + [(idx, 0, idx, a_) for idx, a_ in einf],
+                                        key=lambda t: (t[0], t[1]))
                     erwartet: list[tuple[str, str, bool]] = []
                     pos = 0
-                    for (i0, i1), ab, j, n in grenzen:
+                    for i0, art_, i1, obj in ereignisse:
                         erwartet += [(c, kl, False) for c, kl in norm.strom(o[pos:i0])]
-                        erwartet += _soll_strom(ab.laeufe, ab.aenderungen & angewendet, markiert, norm)
+                        if art_ == 1:
+                            erwartet += _soll_strom(obj.laeufe, obj.aenderungen & angewendet, markiert, norm)
+                        else:                              # eingefuegter neuer Absatz: Text laut PDF, rot (bzw. normal)
+                            erwartet += [(c, NEU if markiert else NORMAL, True) for c, in norm.strom([(c_,) for c_ in obj.neu])]
                         pos = i1
                     erwartet += [(c, kl, False) for c, kl in norm.strom(o[pos:])]
                     if not _stuecke_gleich(erwartet, rn, markiert, tol, norm.listen):
                         for _, ab, _, n in grenzen:
                             schlecht[n] = True
-                elif len(grenzen) == 1:
+                elif len(grenzen) == 1 and not einf:
                     (i0, i1), ab, j, n = grenzen[0]
                     vor, nach = norm.strom(o[:i0]), norm.strom(o[i1:])
                     if (len(rn) < len(vor) + len(nach) or rn[:len(vor)] != vor or (nach and rn[len(rn) - len(nach):] != nach)):
@@ -674,7 +696,8 @@ def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | N
                 elif not any(aid in ab.aenderungen for ab in absaetze):
                     cs = []
                     for o in a.ops:
-                        nz = zeile_von(o.blatt, o.zeile) if o.art == "einfuegen" and o.blatt in wb_z.sheetnames else None
+                        eingefuegt = o.art in ("einfuegen", "ersetzen") and o.start == o.ende and o.text.strip()
+                        nz = zeile_von(o.blatt, o.zeile) if eingefuegt and o.blatt in wb_z.sheetnames else None
                         if nz is not None:
                             cs.append(wb_z[o.blatt]._cells.get((nz, o.spalte)))
                     zellen_ = [z for z in cs if z is not None] or None
