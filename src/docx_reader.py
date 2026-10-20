@@ -41,7 +41,7 @@ from .textutil import norm, section_nummer
 
 _OLE_KOPF = bytes.fromhex("D0CF11E0A1B11AE1")
 _NETTO = "x"                 # eingefuegt und danach gestrichen: weder im Original noch im Endstand
-_GESCHUETZT = ("\xa0", " ", " ")
+_GESCHUETZT = ("\xa0", "\u202f", "\u2007")      # geschuetztes, schmales und Ziffern-Leerzeichen
 
 
 # ---------------------------------------------------------------- kleine XML-Helfer (Namensraum egal: Strict und Transitional)
@@ -560,7 +560,7 @@ class _Leser:
             elif n in ("br", "cr"):
                 text += "\n"
             elif n == "noBreakHyphen":
-                text += "‑"
+                text += "\u2011"
             elif n == "softHyphen":
                 continue
             elif n in ("rPr", "lastRenderedPageBreak", "fldChar", "instrText", "delInstrText", "commentReference",

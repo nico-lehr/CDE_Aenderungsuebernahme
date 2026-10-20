@@ -117,7 +117,7 @@ def test_zeichen_genaue_aenderung_klammern_und_wert(tmp_path):
     ("Pumpe{- -}{+-+}Ventil", "Pumpe Ventil", "Pumpe-Ventil"),
     ("Pumpe {+neu+}x", "Pumpe x", "Pumpe neux"),
     ("Pumpe{+ neu+}x", "Pumpex", "Pumpe neux"),
-    ("Norm {-ISO 11223‑-}{+XYZ-HD 11223-+}6", "Norm ISO 11223‑6", "Norm XYZ-HD 11223-6"),
+    ("Norm {-ISO 11223\u2011-}{+XYZ-HD 11223-+}6", "Norm ISO 11223\u20116", "Norm XYZ-HD 11223-6"),
     ("Pumpe {-alte Ventile -}Becken", "Pumpe alte Ventile Becken", "Pumpe Becken"),
 ], ids=["wort_mit_leer", "leer_weg", "leer_neu", "leer_weg_strich_neu", "einfuegung_geklebt", "einfuegung_vorn",
         "norm_folge", "geloeschte_gruppe"])
@@ -242,7 +242,7 @@ def test_start_override_und_start_wert_und_lvl_restart(tmp_path):
 
 def test_bullet_und_unbekanntes_zahlformat(tmp_path):
     b = DocxBau()
-    b.nummerierung({0: [b.lvl(0, "bullet", ""), b.lvl(1, "ordinalText", "%2")]}, {1: (0, {})})
+    b.nummerierung({0: [b.lvl(0, "bullet", "\uf0b7"), b.lvl(1, "ordinalText", "%2")]}, {1: (0, {})})
     b.absatz("Punkt eins", num=(1, 0))
     b.absatz("Punkt zwei", num=(1, 1))
     a = analysiere_docx(b.speichern(tmp_path / "b.docx"))
