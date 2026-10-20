@@ -13,21 +13,26 @@ Autor: Nico Lehr · Stand: 20.10.2026 · **Version 0.4.0** (Auftrag 003, Welle 5
 
 **Messung (erfundene Nachbauten):**
 
-| Kennzahl | Ziel | `nachbau_word` vorher → jetzt (60, Entwicklung) | frischer ungesehener Satz (Seeds 3001–3030, einmal gemessen) |
+| Kennzahl | Ziel | `nachbau_word` (60, Entwicklung) vorher → jetzt | frischer Satz (Seeds 3001–3030): erste Messung → nach den Korrekturen |
 |---|---|---|---|
-| Stille Fehler | 0 | 12 → 3 | 3 |
-| Automatisch richtig, Zellen / je Änderung | 100 % | 99,8 % → 100,0 % / 99,4 % → 99,7 % | 99,9 % / 100,0 % |
-| Vorschläge exakt nach Freigabe | ≥ 95 % | 87,8 % → 98,8 % | 95,8 % |
-| Abdeckung ohne Nachfrage, Haupt-Spalten | ≥ 70 % | 85,9 % → 97,7 % | 97,5 % |
-| Bitte prüfen (Änderungen) | berichten | 619 → 115 | 79 |
-| Lese-Lücke | ≤ 2 % | 4,1 % → 4,1 % | 3,6 % |
-| Kollateral (fremde Zelle geändert) | 0 | 0 | **2** |
-| Restarbeit je 100 Änderungen | berichten | 29,3 → 16,2 | 14,0 |
+| Stille Fehler | 0 | 12 → **0** | 3 → **0** |
+| Automatisch richtig, Zellen / je Änderung | 100 % | 99,8 % / 99,4 % → **100 % / 100 %** (7131 von 7131; 4314 von 4314) | 99,9 % / 100,0 % → 100,0 % / 100,0 % (2820 von 2820) |
+| Format-Treue (Farbe, Strich je Zeichen) | 100 % | 100 % → 100 % | 100,0 % → 100,0 % |
+| Vorschläge exakt nach Freigabe | ≥ 95 % | 87,8 % → 98,8 % | 95,8 % → 97,2 % |
+| Abdeckung ohne Nachfrage, Haupt-Spalten | ≥ 70 % | 85,9 % → 97,8 % | 97,5 % → 97,6 % |
+| Bitte prüfen (Änderungen) | berichten | 619 → 115 (2,1 %) | 79 (2,0 %) |
+| Kollateral (fremde Zelle geändert) | 0 | 0 → 0 | 2 → **0** |
+| Fremde Spec berührt / Idempotenz | 0 / alle | 0 / 60 von 60 | 0 / 30 von 30 |
+| Lese-Lücke | ≤ 2 % | 4,1 % → 4,1 % (davon nur 2 Wörter in Zellen, die im Ergebnis nicht stimmen) | 3,6 % → 3,6 % |
+| Restarbeit je 100 Änderungen | berichten | 29,3 → 16,2 | 14,0 → 14,0 |
 
 **Echte Beispielpaare** (nur Zahlen, im Scratchpad): keine Verschlechterung durch die neuen Teile. Der zweite Prüfweg schlug bei Beispiel B nicht an (517 Wörter geprüft, 0 Abweichungen) und stufte bei Beispiel A eine falsch eingetragene Änderung auf „Bitte prüfen“ zurück.
 
 **Ehrlich lesen:**
-- Der frische Satz ist eine **einmalige** Messung vor jeder Korrektur. Danach wurden die zwei Fehlerklassen (Kollateral, falsche Neue-Zeile-Zelle) **nur als Klassen** an einen Helfer gegeben, der sie auf Entwicklungsdaten (Seeds < 1000) gesucht hat; der Satz zählt damit nicht mehr als ungesehen.
+- Der frische Satz ist eine **einmalige** Messung vor jeder Korrektur (3 stille Fehler, davon 2 „fremde Zelle geändert“). Danach wurden die Fehlerklassen **nur als Klassen** an einen Helfer gegeben, der sie auf Entwicklungsdaten
+  (Seeds < 1000) gesucht hat. Ergebnis: 7 Zellen mit falsch gefärbtem Leerzeichen (zwischen neuer Listennummer und neuem erstem Wort) wurden im Tool behoben; die „fremde Zelle“ und eine „keine Wirkung“-Zelle waren **Messfehler**
+  (die Ergebnis-Excel gleicht dem Soll Zelle für Zelle; die Messung hatte eine neue Listenzeile mit der ähnlichen alten gepaart). Die Messung wurde dafür in zwei engen Stellen korrigiert (`messen.py`: gepaarte neue Zeile, zwei Listennummern vor dem Polster).
+  Die zweite Messung am frischen Satz (0 stille Fehler) ist deshalb **eine Gegenprobe**, kein ungesehener Test mehr. Ein wirklich ungesehener Satz fehlt noch (neue Seeds erzeugen, einmal messen).
 - Die Lese-Lücke ist überwiegend ein Messartefakt: Rund 97 % der „nicht erkannten“ Wörter sind Section-Nummern neuer oder entfernter Zeilen, die das PDF nicht markiert und die das Tool aus dem Kontext richtig einträgt. Die Messung nennt deshalb zusätzlich die Zahl nur für Zellen, die im Ergebnis nicht stimmen (die alte Zahl bleibt).
 - Der Word-Leser ist nur an selbstgebauten Dateien getestet (keine echte .docx vorhanden). Sicherheitsnetz: `steckbrief --docx` auf einer eigenen Datei und der Abgleich mit dem PDF (`vergleiche_mit_pdf`).
 - Die Bildprobe prüft nur rund drei Viertel der Wörter (kleine Wörter, farbiger Grund und Satzzeichen sind „nicht prüfbar“, nie „falsch“).

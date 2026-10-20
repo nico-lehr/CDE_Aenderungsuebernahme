@@ -1,12 +1,12 @@
 # CDE-Änderungsübernahme
 
-Autor: **Nico Lehr** · Stand: 19.10.2026 · Version 0.3.0 (Auftrag 003: Word-PDFs, CDE wie Nico, mehrere Specs, einfaches Dashboard; nur mit erfundenen Daten getestet; Zahlen siehe `docs/status.md`, Bedienung `docs/so_gehts.md`)
+Autor: **Nico Lehr** · Stand: 20.10.2026 · Version 0.4.0 (Auftrag 003: Word-Datei und Word-PDF, CDE wie Nico, mehrere Specs, zweiter Prüfweg, Vertrauensmodus, einfaches Dashboard; nur mit erfundenen Daten getestet; Zahlen siehe `docs/status.md`, Bedienung `docs/so_gehts.md`)
 
 Seitenprojekt, **getrennt von der Masterarbeit (bess-pipeline)**. Läuft lokal, ohne Internet, ohne KI-Dienst, ohne API-Key.
 
 ## Was macht das Tool?
 
-Du hast ein **PDF mit sichtbaren Änderungen** (blau = neu, rot oder durchgestrichen = entfällt, bis hin zu ganzen
+Du hast ein **Word-Dokument (.docx) mit Änderungsverfolgung** (bevorzugt) oder ein **PDF mit sichtbaren Änderungen** (neu = farbig unterstrichen, entfällt = durchgestrichen, bis hin zu ganzen
 Abschnitten) und eine **bestehende CDE-Excel** (nach Sections geordnet, Textblöcke dahinter, kein einheitliches Format).
 Das Tool findet die Stellen in der Excel, übernimmt **nur die inhaltlichen Änderungen** und schreibt eine **neue** Excel.
 Die Original-Excel bleibt unberührt. Dazu gibt es ein Protokoll, in dem jede Änderung steht.
@@ -27,9 +27,11 @@ Die Original-Excel bleibt unberührt. Dazu gibt es ein Protokoll, in dem jede Ä
 
 | Befehl | Wofür |
 |---|---|
-| `analyse --pdf A.pdf --excel B.xlsx` | nur auswerten, Bilanz anzeigen, nichts schreiben |
-| `lauf --pdf A.pdf --excel B.xlsx` | auswerten und alle **sicheren** Änderungen eintragen (`--alle-vorschlaege` nimmt auch Vorschläge mit, `--abwahl A0003,A0007` lässt diese automatischen Änderungen aus, `--spec "11 22 33"` wählt bei einer CDE mit mehreren Specs die Spec des PDFs) |
+| `analyse --docx A.docx --excel B.xlsx` (oder `--pdf A.pdf`) | nur auswerten, Bilanz anzeigen, nichts schreiben |
+| `lauf --docx A.docx --excel B.xlsx` (oder `--pdf A.pdf`) | auswerten und alle **sicheren** Änderungen eintragen (`--alle-vorschlaege` nimmt auch Vorschläge mit, `--abwahl A0003,A0007` lässt diese automatischen Änderungen aus, `--spec "11 22 33"` wählt bei einer CDE mit mehreren Specs die Spec des PDFs) |
 | `messen --korpus entwicklung` | **Messwerkzeug**: Paare (PDF + Excel vorher + nachher) ausführen und mit „nachher“ vergleichen — Treffergenauigkeit, Abdeckung, **stille Fehler**, Fehlerarten. Ausgabe nur Zahlen, nie Dokumentinhalt |
+| `vertrauen` | wertet die Freigabe-Protokolle aller Läufe aus: je Prüfcode Anzahl, Freigabe- und Ablehnquote, Empfehlung (nur eine Hilfe, das Tool stellt nie von selbst um) |
+| `steckbrief --docx A.docx` (oder `--pdf`) | Zahlen und Formen einer Datei, **kein Text** (zum Weitergeben ohne Inhalte) |
 | `farben --pdf A.pdf` | welche Farben im PDF vorkommen und wie sie gedeutet werden (nur Zahlen und Farbcodes) |
 | `profil liste / vorschau / bestaetigen / analyse` | Excel-Aufbau von Hand festlegen, wenn die Automatik unsicher ist. **Neue Profile gehen nie direkt live**: erst Vorschau, dann bewusste Bestätigung |
 
@@ -63,17 +65,17 @@ data/         Läufe (runs/), Paare (paare/), Messberichte (messung/), Profile (
 
 ## Wie gut ist es?
 
-**Kurz und ehrlich:** Auf erfundenen Entwicklungsbeispielen sind die stillen Fehler von 64 auf 7 gesunken, auf einem getrennten, ungesehenen Testkorpus sind es 23 (Ziel: 0). Das Tool warnt ehrlich, ist aber noch nicht „blind vertrauenswürdig“: automatisch übernommene Änderungen bitte stichprobenartig prüfen.
+**Kurz und ehrlich:** Auf erfundenen Nachbauten in der Struktur deiner echten Word-PDFs und CDE-Dateien gibt es jetzt **0 stille Fehler** (Entwicklungsdaten, 60 Paare; auf einem frischen Satz nach den Korrekturen ebenfalls 0). Vorschläge stimmen zu 98,8 %, 97,8 % der Zellen gehen ohne Nachfrage durch. Das ist **kein Versprechen für echte Dokumente**: Die Lese-Lücke liegt bei 4,1 % (Ziel 2 %), der Word-Leser ist nur an selbstgebauten Dateien getestet, und die zwei echten Beispielpaare (nur gemessen, nie gespeichert) zeigen, dass noch Handarbeit bleibt. Automatisch übernommene Änderungen bitte am Anfang stichprobenartig prüfen; das Dashboard legt dir dafür eine Stichprobe und eine Ampel vor.
 
 Aktuelle Messwerte und ehrliche Grenzen stehen in **`docs/status.md`**. Die Ziele und Kriterien stehen in **`docs/ziel_v1.md`**.
 Alle Zahlen stammen von **erfundenen** Beispielen; sie sind kein Versprechen für echte Dokumente.
 
 ## Bekannte Grenzen (ehrlich)
 
-- Nur **einspaltige Text-PDFs** werden gelesen. Tabellen, Bilder, Zwei-Spalten-Text und **Scans** werden **erkannt und gemeldet**, aber nicht verarbeitet (kein OCR).
+- Bei PDFs werden nur **einspaltige Text-PDFs** gelesen. Tabellen, Bilder, Zwei-Spalten-Text und **Scans** werden **erkannt und gemeldet**, aber nicht verarbeitet (kein OCR).
 - Teil-Formatierung (z. B. einzelne fette Wörter) in geänderten Excel-Zellen kann verloren gehen.
 - Formeln, bedingte Formatierung, Datenprüfung, Filter, Excel-Tabellen und verbundene Zellen an der Einfügestelle werden **nicht repariert**, sondern führen zu „prüfen“ mit Warnung.
-- Noch **keine echten Beispiele** getestet: Farb- und Zeilenabstand-Schwellen müssen mit echten PDFs kalibriert werden (`docs/kalibrierung.md`).
+- Der **Word-Leser** (.docx) kennt noch keine echte Word-Datei von Nico; `steckbrief --docx` und der Vergleich mit dem PDF sind das Sicherheitsnetz. Die Ampel-Schwelle im Vertrauensmodus ist ein Startwert.
 - Automatisch Übernommenes lässt sich im Dashboard einzeln abwählen („Trotzdem nicht eintragen“) und auf der Kommandozeile mit `lauf --abwahl ID,ID`. Eine **fertige Excel** wird dadurch nie verändert: jede Abwahl oder Freigabe erzeugt ein neues Ergebnis.
 
 ## Stand Auftrag 002 und lokale Fortsetzung
