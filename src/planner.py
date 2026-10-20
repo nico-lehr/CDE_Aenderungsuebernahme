@@ -870,8 +870,9 @@ class _Planer:
             self._setze(ae, stufe, "; ".join(g for g in dict.fromkeys(gruende) if g), codes)
 
     def _a1_codes(self, alt: str, excel: str) -> list[str]:
-        v = vergleiche(alt, excel, frozenset(), self.cfg.get("normalform"))
-        return ["a1_" + v.art] if v.art else []
+        from .abgleich import a1_art                      # "leerraum" nur bei WIRKLICH gleichen Zeichen (Auftrag ZUORDNEN)
+        art = a1_art(alt, excel, self.cfg.get("normalform"))
+        return ["a1_" + art] if art else []
 
     def _ersatz_text(self, i: int) -> bool:
         """keiner/widerspruch: ein Vorschlag ueber den alten Matcher im Fenster. True, wenn er etwas geplant hat."""
