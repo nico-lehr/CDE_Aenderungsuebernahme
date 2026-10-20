@@ -19,6 +19,7 @@ from src import markierung as mk
 from src import messen
 from src.applier import uebernehmen
 from src.excel_model import ExcelModell
+from src.gegenprobe import gleich
 from src.models import PRUEFEN, UEBERNOMMEN
 from src.pdf_reader import analysiere_pdf
 from src.planner import plane
@@ -131,6 +132,24 @@ def test_ersetzung_mit_markiertem_leerzeichen_vorn_und_neuer_wortgruppe(tmp_path
     st = mk.stuecke_aus_zelle(load_workbook(str(out), rich_text=True)["Abgleich"].cell(ZEILE_B, G))
     assert mk.ansicht(st, "alt") == _zelle(excel_b)
     assert mk.ansicht(st, "neu") == _zelle(excel_b).replace(" 12mm", " ca. 15 mm")
+
+
+@pytest.mark.markierung_an
+@pytest.mark.legende_neu
+@pytest.mark.parametrize("vorn,mitte,excel_mitte,rest,alt_neu", [
+    # Befund: d(" X") a("p") a(" ") a("Y") | Umbruch | k("Z"), die Excel hat "X" direkt vor "Z"
+    ("Wert (", [(" 12", "d"), ("ca. 15", "n")], " 12", REST, (" 12mm", "ca. 15 mm")),
+    ("betraegt ", [("zwoelf", "d"), ("fuenfzehn", "n")], "zwoelf", "Millimeter im Betrieb.", ("zwoelfMillimeter", "fuenfzehn Millimeter")),
+], ids=["klammer_leerzeichen_vorn", "wort_statt_zahl"])
+def test_ersetzung_am_zeilenende_weitere_formen(tmp_path, vorn, mitte, excel_mitte, rest, alt_neu):
+    plan, xl, xlsx, pdf, excel_b = _fall(tmp_path, vorn, mitte, rest, excel_mitte)
+    out = tmp_path / "out.xlsx"
+    uebernehmen(plan.aenderungen, xlsx, out, xl=xl, absaetze=plan.absaetze, pdf=pdf)
+    (ae,) = plan.aenderungen
+    assert ae.status == UEBERNOMMEN and ae.wirkung == "ok" and not _a1(ae), (ae.status, ae.wirkung, ae.pruefcodes)
+    st = mk.stuecke_aus_zelle(load_workbook(str(out), rich_text=True)["Abgleich"].cell(ZEILE_B, G))
+    assert mk.ansicht(st, "alt") == _zelle(excel_b)
+    assert gleich(mk.ansicht(st, "neu"), _zelle(excel_b).replace(*alt_neu))        # Normalform: ein Leerzeichen hinter "(" zaehlt nicht
 
 
 @pytest.mark.legende_neu
