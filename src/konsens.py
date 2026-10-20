@@ -93,24 +93,30 @@ def _bloecke_der_aenderungen(analyse: Any, aenderungen: Iterable[Aenderung]) -> 
     return out
 
 
-def _tinte(crop: Any, bg: tuple[int, int, int], abstand: int) -> Any:
+def _tinte(crop: Any, bg: tuple[int, int, int], abstand: int) -> tuple[Any, Any]:
+    """(Tintenmaske 0/255, Abstandsbild): Abstand = hoechster Kanalunterschied zur Hintergrundfarbe."""
     from PIL import Image, ImageChops
     d = ImageChops.difference(crop, Image.new("RGB", crop.size, bg))
     r, g, b = d.split()
-    return ImageChops.lighter(ImageChops.lighter(r, g), b).point(lambda v: 255 if v >= abstand else 0)
+    abst = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    return abst.point(lambda v: 255 if v >= abstand else 0), abst
 
 
 def _laengste_strecke(zeile: bytes) -> int:
     return max((len(s) for s in zeile.split(b"\x00")), default=0)
 
 
-def _linie_im_band(maske: Any, crop: Any, y0: int, y1: int, min_anteil: float, max_dicke: int) -> tuple[bool, tuple[int, int, int] | None]:
-    """Gibt es im Hoehenband [y0, y1) eine duenne Linie: Pixelzeilen, in denen zusammenhaengende Tinte fast die ganze Breite
-    deckt, hoechstens `max_dicke` Zeilen dick (dickere Gruppen sind Flaechen, z. B. eine Hinterlegung der Nachbarzeile)?
+def _linie_im_band(maske: Any, abst: Any, crop: Any, y0: int, y1: int, min_anteil: float, max_dicke: int,
+                   min_staerke: float) -> tuple[bool, tuple[int, int, int] | None]:
+    """Gibt es im Hoehenband [y0, y1) eine Linie? Pixelzeilen, in denen zusammenhaengende Tinte fast die ganze Breite deckt
+    (Gruppe benachbarter Zeilen), hoechstens `max_dicke` Zeilen dick (dickere Gruppen sind Flaechen, z. B. die Hinterlegung der
+    Nachbarzeile) und kraeftig genug: die Summe der mittleren Abstaende zum Grund (in Pixelzeilen volles Schwarz/Weiss) ist
+    mindestens `min_staerke`. Eine gestrichelte Haarlinie (Verbindungslinie der Markup-Leiste) bringt nur etwa die Haelfte.
     Rueckgabe (ja/nein, mittlere Farbe der Linie)."""
     from PIL import Image
     b, h = maske.size
     daten = maske.tobytes()
+    mittel = list(abst.resize((1, h), Image.Resampling.BOX).tobytes())
     gruppe: list[int] = []
     gruppen: list[list[int]] = []
     for y in range(h):
@@ -123,9 +129,9 @@ def _linie_im_band(maske: Any, crop: Any, y0: int, y1: int, min_anteil: float, m
     if gruppe:
         gruppen.append(gruppe)
     for g in gruppen:
-        if len(g) <= max_dicke and g[-1] >= y0 and g[0] < y1:
-            mitte = g[len(g) // 2]
-            return True, crop.crop((0, mitte, b, mitte + 1)).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+        if len(g) <= max_dicke and g[-1] >= y0 and g[0] < y1 and sum(mittel[y] for y in g) / 255.0 >= min_staerke:
+            beste = max(g, key=lambda y: mittel[y])
+            return True, crop.crop((0, beste, b, beste + 1)).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
     return False, None
 
 
@@ -160,7 +166,7 @@ def _wort_befund(bild: Any, tok: Any, modus: str, bk: dict, seiten_breite: float
     bg = max(farben)[1]
     if min(bg) < int(bk.get("hintergrund_min_helligkeit", 225)):
         return "unpruefbar", "farbiger Hintergrund"
-    maske = _tinte(crop, bg, int(bk.get("tinte_abstand", 70)))
+    maske, abst = _tinte(crop, bg, int(bk.get("tinte_abstand", 40)))
     tinte_n = maske.histogram()[255]
     if tinte_n < int(bk.get("min_tinte_pixel", 8)):
         return "unpruefbar", "kaum Tinte"
@@ -169,8 +175,9 @@ def _wort_befund(bild: Any, tok: Any, modus: str, bk: dict, seiten_breite: float
     u0, u1 = bk.get("band_unterstrichen", [0.8, 1.3])
     min_a = float(bk.get("linie_min_anteil", 0.85))
     dicke = max(1, int(round(float(bk.get("linie_max_dicke_pt", 1.6)) * s)))
-    strich, _ = _linie_im_band(maske, crop, int(d0 * hoehe_px), int(d1 * hoehe_px) + 1, min_a, dicke)
-    unter, ucol = _linie_im_band(maske, crop, int(u0 * hoehe_px), int(u1 * hoehe_px) + 1, min_a, dicke)
+    staerke = float(bk.get("linie_min_staerke", 0.6))
+    strich, _ = _linie_im_band(maske, abst, crop, int(d0 * hoehe_px), int(d1 * hoehe_px) + 1, min_a, dicke, staerke)
+    unter, ucol = _linie_im_band(maske, abst, crop, int(u0 * hoehe_px), int(u1 * hoehe_px) + 1, min_a, dicke, staerke)
     farbig_u = bool(unter and ucol and _hsv(ucol)[1] >= float(bk.get("linie_min_saettigung", 0.12)))
     # Farbe des Textes (fuer die Legenden farbe / alt): Anteil farbiger Tinte
     hsv = crop.convert("HSV")
