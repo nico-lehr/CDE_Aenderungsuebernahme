@@ -1,0 +1,36 @@
+# config/docx.yaml -- Word-Dateien (.docx) mit Aenderungsverfolgung lesen (src/docx_reader.py, Auftrag 003 DOCX).
+# Regel 28: Schwellen und Muster stehen hier. Section-/Kapitelmuster (PART 1, 1.1 TITEL) gelten wie im PDF-Leser aus
+# config/farben.yaml (layout.section_nummer, layout.section_kapitel, ...), damit PDF und Word dieselbe Gliederung finden.
+
+# Ueberschrift erkennen: Absatzformat "Ueberschrift 1/2" (Name oder ID, ohne Leerzeichen, klein geschrieben) UND hoechstens
+# so viele Woerter wie layout im PDF-Leser (25). Tiefere Ebenen (Absatz-Ebene A., B. einer Gliederung nutzt oft "Ueberschrift 3")
+# bleiben Absatz. Daneben gelten dieselben Muster wie im PDF ("1.1 TITEL", "PART 1 TITEL") und "fett + Nummer".
+ueberschrift_stil_muster: '^(?:heading|berschrift|ueberschrift|überschrift)(\d+)$'
+ueberschrift_max_ebene: 2        # Ebene 1 und 2 (ab Ebene 3 ist es ein Absatz)
+ueberschrift_max_woerter: 25
+fett_anteil: 0.8                 # so viel der Buchstaben fett = fetter Absatz (fuer "1.2 Titel" ohne Formatvorlage)
+
+# Listennummern aus numbering.xml selbst berechnen
+listen:
+  # Buchstabenfolge ab 27: "wort" = wie Word (aa, bb, cc ..., dann aaa) | "alphabet" = aa, ab, ac ...
+  buchstaben_folge: wort
+  aufzaehlungszeichen: "•"       # Punkt-Listen (Word nutzt ein Symbolzeichen aus einem Sonderbereich)
+  max_ebene: 8                   # Word kennt 9 Ebenen (0..8)
+
+# Teile des Pakets
+kopf_teile: '^word/header\d*\.xml$'
+fuss_teile: '^word/footer\d*\.xml$'
+kommentar_teil: word/comments.xml
+fussnoten_teil: word/footnotes.xml
+endnoten_teil: word/endnotes.xml
+numbering_teil: word/numbering.xml
+styles_teil: word/styles.xml
+haupt_teil: word/document.xml
+
+# Sicherheit gegen zu grosse oder bösartige Dateien
+max_teil_mb: 64                  # entpackte Groesse je Teil
+max_teile: 2000                  # Anzahl Dateien im Paket
+kommentar_max_zeichen: 160       # so lang wird der Text eines Kommentars in randnotizen
+
+# Randfaelle
+beispiele_max: 20                # vergleiche_mit_pdf: hoechstens so viele Positions-Beispiele
