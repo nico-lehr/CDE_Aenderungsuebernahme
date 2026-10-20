@@ -94,6 +94,10 @@ planer:                       # Planen und Anwenden (src/planner.py, src/applier
   # Vorschlaege bei abweichender Excel (excel_weicht_ab): false = nur zeichengenau (Normalform-Ausrichtung, wie Word markiert);
   # true = auch der alte Matcher Wort fuer Wort (ersetzt ganze Woerter samt Satzzeichen, liest Leerraum an der Naht anders)
   vorschlag_wortgenau: false
+  # Leerzeichen am Zeilen-/Seitenumbruch neben einer Aenderung (Welle 6): das PDF zeichnet dort kein Leerzeichen, man sieht nicht, ob
+  # es zu beiden Fassungen gehoert oder nur zur Einfuegung. Die Excel entscheidet nur bei echter Mehrdeutigkeit (der alte Absatz
+  # steht NUR mit einer Auslegung Zeichen fuer Zeichen da). So viele solcher Trenner je Absatz werden hoechstens ausgelegt (0 = aus).
+  umbruch_auslegung_max: 3
   # ADR 0006 Punkt 6, Bereich der CDE: PDF-Absaetze vor dem ersten bzw. nach dem letzten sicheren Anker im Hauptblatt (Blatt mit
   # den meisten Ankern) gehoeren nicht zur CDE (Deckblatt, Vorspann, Revisionstabelle, Anhang): Aenderung.bereich = ausserhalb,
   # nicht uebernommen, kein offener Punkt, zaehlt in der Bilanz. register = nur wenn das Hauptblatt ein CDE-Register ist | immer | aus

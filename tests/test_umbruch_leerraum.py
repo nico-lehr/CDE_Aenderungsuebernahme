@@ -112,6 +112,7 @@ def test_ersetzung_am_zeilenende_ende_zu_ende_mit_markierung_und_zweitem_pruefwe
     assert ae.stuecke and ["neu", "15 "] in ae.stuecke                           # Vorschau = spaeteres Ergebnis
 
 
+@pytest.mark.markierung_an
 @pytest.mark.legende_neu
 def test_ersetzung_mit_markiertem_leerzeichen_vorn_und_neuer_wortgruppe(tmp_path):
     """Form aus dem Befund: gestrichen " 12" (beginnt mit dem markierten Leerzeichen), neu " ca. 15" (mit markiertem Leerzeichen

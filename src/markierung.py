@@ -344,9 +344,18 @@ def markiere_ops(vorher: list[Stueck], ops: Iterable[Operation], sicht: str = SI
     roh: list[tuple[str, str, Any, bool, str, str, int, int]] = []   # Zeichen, Format, Basis, behalten, Aenderung, Klasse, pos, Luecke
 
     def einsetzen(g: int) -> None:
-        for _, sep, text, aid in sorted(einf.get(g, ()), key=lambda e: e[0]):
+        for key, sep, text, aid in sorted(einf.get(g, ()), key=lambda e: e[0]):
             b = basis_an(g)
             a0, a1 = len(text) - len(text.lstrip()), len(text.rstrip())     # Leerraum am Rand ist nicht markiert
+            # ... ausser er ist der einzige Trenner an dieser Stelle: steht in der Excel direkt dahinter (bzw. bei einer reinen
+            # Einfuegung davor) ein Zeichen ohne Leerraum ("12mm" -> "15 mm"), gehoert er zur neuen Fassung allein (rot). Normal
+            # gefaerbt stuende er auch in der alten Ansicht ("12 mm"); die Nachkontrolle des Plans lehnte ihn ab (Auftrag
+            # ZUORDNEN, Leerzeichen am Zeilenumbruch hinter einer Ersetzung).
+            if a1 > a0 and 0 < g < n and not orig_text[g - 1].isspace() and not orig_text[g].isspace():
+                if a1 < len(text):
+                    a1 = len(text)
+                if key[0] != 0:                                              # Ersetzungen: vorn steht der gestrichene Text
+                    a0 = 0
             roh.extend((ch, NORMAL, b, False, aid, NORMAL, -1, g) for ch in sep + text[:a0])
             roh.extend((ch, NEU, b, False, aid, NEU, -1, g) for ch in text[a0:a1])
             roh.extend((ch, NORMAL, b, False, aid, NORMAL, -1, g) for ch in text[max(a0, a1):])
