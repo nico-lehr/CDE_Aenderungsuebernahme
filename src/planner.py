@@ -1079,7 +1079,9 @@ class _Planer:
         # Leerraum ("a." + NBSP + {+Alle+} + NBSP NBSP ...), und der Absatz wurde verworfen, weil das neue Wort am Nachbarn klebte.
         # Bei einem einfachen Leerzeichen davor sind Operationen und Projektion gleich (nichts zu retten, nichts zu aendern).
         for t in behalten:
-            n = next(x for x, y in enumerate(out) if y is t)
+            n = next((x for x, y in enumerate(out) if y is t), None)
+            if n is None:
+                continue
             vor = n - 1
             while vor >= 0 and out[vor].art == "a":
                 vor -= 1
