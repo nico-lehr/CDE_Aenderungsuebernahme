@@ -1007,7 +1007,8 @@ class _Auswertung:
             return fremd
         return set()
 
-    _POLSTER = re.compile(r"^(?:\d{1,3}|[A-Za-z]{1,3})[.)]([\t  ]* [\t  ]*)")
+    # (ein oder zwei Listennummern am Anfang: eine geaenderte Nummer steht in der Zelle als "alt" + "neu", z. B. "a)b)" + Polster)
+    _POLSTER = re.compile(r"^(?:(?:\d{1,3}|[A-Za-z]{1,3})[.)]){1,2}([\t  ]* [\t  ]*)")
 
     @classmethod
     def _polster_muster(cls, blatt: list[list[str]]) -> set[str]:
@@ -1308,9 +1309,18 @@ class _Auswertung:
         gepaarten Stelle (Soll und Ergebnis wurden gleich ausgerichtet), ist das keine fehlende Wirkung. Eng: alle Zellen der Operation
         muessen dort im Ergebnis stehen UND laut Soll genau so stehen; sonst bleibt es ein stiller Fehler."""
         s, i = self.S[bi], self.I[bi]
+
+        def zelle_stimmt(vz: int, c: int, t: str) -> bool | None:
+            """True = Ergebnis UND Soll haben die Zelle gleich geaendert; None = in beiden unveraendert und schon vorher so
+            (Konstante der neuen Zeile, z. B. Section/Sub-Section, die auch die gepaarte alte Zeile hat); sonst False."""
+            if (vz, c) in i.zellen or (vz, c) in s.zellen:
+                return (vz, c) in i.zellen and (vz, c) in s.zellen and _s_text(i.zellen[(vz, c)]) == t \
+                    and _s_text(s.zellen[(vz, c)]) == t
+            return None if _s_text(self._vorher(bi, vz, c)) == t else False
+
         for vz in set(i.zuordnung) & set(s.zuordnung):
-            if all((vz, c) in i.zellen and _s_text(i.zellen[(vz, c)]) == t and (vz, c) in s.zellen
-                   and _s_text(s.zellen[(vz, c)]) == t for c, t in gesucht.items()):
+            urteile = [zelle_stimmt(vz, c, t) for c, t in gesucht.items()]
+            if all(u is not False for u in urteile) and any(u for u in urteile):
                 return True
         return False
 

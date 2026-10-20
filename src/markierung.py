@@ -462,11 +462,46 @@ def _soll_zeichen(laeufe: Iterable[Lauf], aktiv: set[str], trenner: str = "") ->
         out.extend([c, k, l.optional, l.aenderung if k != NORMAL else ""] for c in l.text)
         vorige = k
     fest = [i for i, z in enumerate(out) if not z[0].isspace()]
+    behalten = _alter_trenner_zwischen_neu(out, fest)
     for a, b in zip(fest, fest[1:]):
-        if b - a > 1 and out[a][1] == out[b][1] != NORMAL:
+        if b - a > 1 and out[a][1] == out[b][1] != NORMAL and a not in behalten:
             for k in range(a + 1, b):
                 out[k][1], out[k][3] = out[a][1], out[a][3]
     return out
+
+
+def _alter_trenner_zwischen_neu(out: list[list[Any]], fest: list[int]) -> set[int]:
+    """Welcher unmarkierte Trenner zwischen zwei neuen Woertern ist der EINZIGE Leerraum des alten Textes an dieser Stelle?
+
+    Beispiel Listennummer: "{-c.-}{+d.+}" (alte Nummer gestrichen, neue direkt dahinter), dann das unmarkierte Polster der Excel
+    (Tab, geschuetzte Leerzeichen), dann ein neues erstes Wort "{+Besondere +}", dann der alte Text. Das Polster steht zwischen
+    zwei neuen Stuecken, gehoert aber zum alten Text (zustand() behaelt es auch): es bleibt normal und darf nicht zur Markierung
+    werden, sonst fehlt dem alten Text der Leerraum und die Zuordnung zur Excel scheitert. Rueckgabe: Anfangsindizes `a` der
+    Luecken (a, b) zwischen zwei festen Zeichen, die nicht umgefaerbt werden. Gilt nur, wenn vor UND hinter dem neuen Block
+    altes Zeichen steht und dort kein anderer Leerraum des alten Textes liegt; bei mehreren Luecken gewinnt wie in zustand() der
+    staerkste Trenner, bei Gleichstand der erste."""
+    behalten: set[int] = set()
+    k = 0
+    while k < len(fest):
+        if out[fest[k]][1] != NEU:
+            k += 1
+            continue
+        k0 = k
+        while k + 1 < len(fest) and out[fest[k + 1]][1] == NEU:
+            k += 1
+        links, rechts = (fest[k0 - 1] if k0 > 0 else None), (fest[k + 1] if k + 1 < len(fest) else None)
+        k += 1
+        if links is None or rechts is None:
+            continue
+        aussen = list(range(links + 1, fest[k0])) + list(range(fest[k - 1] + 1, rechts))
+        if any(out[i][1] != NEU for i in aussen):
+            continue                                    # der alte Text hat dort schon Leerraum
+        luecken = [(a, b) for a, b in zip(fest[k0:k], fest[k0 + 1:k])
+                   if b - a > 1 and all(out[i][1] == NORMAL for i in range(a + 1, b))]
+        if luecken:
+            a, b = max(luecken, key=lambda ab: (_RANG.get("".join(out[i][0] for i in range(ab[0] + 1, ab[1])), 1), -ab[0]))
+            behalten.add(a)
+    return behalten
 
 
 _NUMMER = re.compile(r"^\(?[\w.]{1,6}[.)]$")        # Listennummer: "3.", "d.", "2.1.", "a)", "(iv)"
@@ -597,8 +632,12 @@ def projiziere(texte: list[str], laeufe: Iterable[Lauf], aktiv: set[str],
             k1 = len(text.split(None, 1)[0])
             k2 = len(text) - len(text[k1:].lstrip())
             a_ = soll[b0][3]
+            rest = [(soll[s][0], NEU, soll[s][3] or a_) for s in range(b0 + k2, b1 + 1)]
+            while nach and rest and rest[-1][0].isspace():
+                rest.pop()                         # ein unmarkierter Trenner dahinter ersetzt das markierte Leerzeichen
             einf.setdefault(lo, []).append([(soll[s][0], NEU, soll[s][3] or a_) for s in range(b0, b0 + k1)])
-            einf.setdefault(hi, []).append([(soll[s][0], NEU, soll[s][3] or a_) for s in range(b0 + k2, b1 + 1)])
+            # der Excel-Leerraum der Nummer steht VOR dem neuen Text; was das PDF hinter dem neuen Text unmarkiert zeigt, fehlt dort
+            einf.setdefault(hi, []).append(rest + [(c, NORMAL, a_) for c in nach])
             continue
         if not vor:
             p = lo                                 # klebt am Zeichen davor
