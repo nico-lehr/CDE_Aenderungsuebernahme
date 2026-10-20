@@ -1,12 +1,14 @@
-"""Kommandozeile: python -m src.cli analyse|lauf --pdf ... --excel ...
+"""Kommandozeile: python -m src.cli analyse|lauf --docx ... --excel ...   (oder --pdf statt --docx)
 
 analyse  : nur auswerten und die Bilanz anzeigen (schreibt nichts in die Excel)
 lauf     : auswerten und alle sicheren Aenderungen eintragen
-           (mit --alle-vorschlaege werden auch Vorschlaege ("pruefen") uebernommen;
+           (--docx = Word-Dokument mit Aenderungsverfolgung, bevorzugt; --pdf = PDF mit Aenderungen; genau eins von beiden;
+            mit --alle-vorschlaege werden auch Vorschlaege ("pruefen") uebernommen;
             mit --abwahl A0003,A0007 werden diese automatischen Aenderungen NICHT eingetragen;
             mit --spec NAME gilt die Spec NAME der CDE, sonst wird sie aus dem PDF erkannt)
 messen   : Messwerkzeug fuer Paare (PDF + Excel vorher + nachher), siehe src/messen.py
 steckbrief: Steckbrief eines Paars (nur Zahlen, Farbcodes und Formen, kein Text), siehe src/steckbrief.py und docs/anleitung_steckbrief.md
+vertrauen: wertet die Freigabe-Protokolle aller Laeufe aus (je Pruefcode: Anzahl, Freigabe-/Ablehnquote, Empfehlung); schreibt nichts
 farben   : zeigt, welche Farben im PDF vorkommen und wie sie gedeutet werden (nur Zahlen und Farbcodes, keine Woerter)
 profil   : Layout-Profile fuer den Aufbau der Excel: vorschau | bestaetigen | liste | analyse (siehe docs/adr/0003)
 """
@@ -17,7 +19,7 @@ import colorsys
 import logging
 import sys
 
-from . import config, runs
+from . import config, runs, vertrauen
 from .fehler import NutzerFehler
 from .protokoll import bilanz_satz
 
@@ -129,6 +131,9 @@ def _farben(args: list[str]) -> int:
     if not Path(a.pdf).is_file():
         print("Die PDF-Datei wurde nicht gefunden.")
         return 2
+    if Path(a.pdf).suffix.lower() == ".docx":
+        print("Für Word-Dokumente gibt es keine Farb-Auswertung: Die Änderungen stehen dort direkt in der Änderungsverfolgung.")
+        return 2
     from .pdf_reader import analysiere_pdf
     try:
         pa = analysiere_pdf(a.pdf)
@@ -138,6 +143,31 @@ def _farben(args: list[str]) -> int:
     for zeile in farben_bericht(pa):
         print(zeile)
     return 0
+
+
+def _vertrauen(args: list[str]) -> int:
+    """`vertrauen`: liest alle Freigabe-Protokolle unter data/runs und zeigt je Pruefcode Zahlen und eine Empfehlung. Nur lesen."""
+    ap = argparse.ArgumentParser(prog="cde vertrauen", description="Wertet die Freigabe-Protokolle (entscheidungen.jsonl) aller Läufe aus. "
+                                 "Schreibt nichts und ändert nichts am Eintragen.")
+    try:
+        ap.parse_args(args)
+    except SystemExit as e:
+        return 2 if e.code else 0
+    zeilen, laeufe, kaputt = vertrauen.lese_alle(runs.runs_dir())
+    for zeile in vertrauen.bericht(zeilen, laeufe, kaputt):
+        print(zeile)
+    return 0
+
+
+def _zeige_vertrauen(daten: dict) -> None:
+    """Stichprobe und Dokument-Ampel des Laufs (nur Kennungen und feste Saetze)."""
+    a = vertrauen.ampel(daten)
+    print(f"Dokument-Ampel: {dict(gruen='grün', gelb='gelb', rot='rot')[a['stufe']]} – {a['satz']}")
+    for g in a["gruende"]:
+        print(f"  {g}")
+    st = [x for x in daten.get("stichprobe") or [] if isinstance(x, str)]
+    if st:
+        print(f"Stichprobe (bitte kurz ansehen, im Dashboard mit „Passt“ / „Falsch“): {', '.join(st)}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -150,12 +180,15 @@ def main(argv: list[str] | None = None) -> int:
         return steckbrief.main(args[1:])
     if args and args[0] == "farben":
         return _farben(args[1:])
+    if args and args[0] == "vertrauen":
+        return _vertrauen(args[1:])
     if args and args[0] == "profil":
         from . import layouts
         return layouts.main(args[1:])
     p = argparse.ArgumentParser(prog="cde", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("befehl", choices=["analyse", "lauf"])
-    p.add_argument("--pdf", required=True)
+    p.add_argument("--docx", default=None, metavar="DATEI", help="Word-Dokument mit Änderungsverfolgung (bevorzugt)")
+    p.add_argument("--pdf", default=None, metavar="DATEI", help="PDF mit Änderungen (statt --docx)")
     p.add_argument("--excel", required=True)
     p.add_argument("--alle-vorschlaege", action="store_true")
     p.add_argument("--abwahl", default="", metavar="ID,ID",
@@ -165,7 +198,11 @@ def main(argv: list[str] | None = None) -> int:
     a = p.parse_args(argv)
     abwahl = [x.strip() for x in a.abwahl.split(",") if x.strip()]
     from pathlib import Path
-    for pfad, name in ((a.pdf, "PDF"), (a.excel, "Excel")):
+    if bool(a.pdf) == bool(a.docx):
+        print("Bitte genau eine Änderungsdatei angeben: --docx (Word-Dokument, bevorzugt) oder --pdf (PDF).")
+        return 2
+    dok = a.docx or a.pdf
+    for pfad, name in ((dok, "Word" if a.docx else "PDF"), (a.excel, "Excel")):
         if not Path(pfad).is_file():
             print(f"Die {name}-Datei wurde nicht gefunden: {pfad}")
             return 2
@@ -173,7 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     analysiert = False
     try:
         spec = runs.pruefe_spec(a.spec)                        # vor dem Anlegen des Laufs: nur Zeichen und Laenge
-        run_id = runs.neuer_lauf(a.pdf, a.excel)
+        runs.pruefe_aenderungsdatei(dok)                       # Endung UND Inhalt (PDF oder Word), vor dem Anlegen des Laufs
+        run_id = runs.neuer_lauf(dok, a.excel)
         daten = runs.analysiere(run_id, spec=spec)
         analysiert = True
         print("Lauf:", run_id)
@@ -190,9 +228,10 @@ def main(argv: list[str] | None = None) -> int:
                 print("Hinweis: --abwahl gilt nur für „lauf“ (bei „analyse“ wird nichts eingetragen).")
         gezeigt: set[str] = set()
         _zeige(daten, daten.get("luecken", []), gezeigt)
+        _zeige_vertrauen(daten)
         if a.befehl == "lauf":
             freig = [x["id"] for x in daten["aenderungen"] if x["status"] == "pruefen"] if a.alle_vorschlaege else []
-            res = runs.uebernehmen_lauf(run_id, freig, abwahl)
+            res = runs.uebernehmen_lauf(run_id, freig, abwahl, pauschal=freig)      # pauschal: nicht einzeln angesehen (Freigabe-Protokoll)
             print("Ergebnis:", runs.lauf_dir(run_id) / res["ordner"] / res["excel"])
             if abwahl:
                 print(f"Abgewählt (nicht eingetragen): {', '.join(res['abwahl'])}")
@@ -202,8 +241,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except Exception:                                          # kaputte Datei o. ae.: einfache Meldung, kein Traceback/Rohtext
         logging.getLogger("cde.cli").debug("Verarbeitung fehlgeschlagen", exc_info=True)    # Einzelheiten nur mit Debug-Log
-        meldung = ("Das PDF oder die Excel konnte nicht verarbeitet werden. Sind es unbeschädigte Dateien "
-                   "(PDF bzw. .xlsx/.xlsm)?")
+        meldung = ("Das Dokument oder die Excel konnte nicht verarbeitet werden. Sind es unbeschädigte Dateien "
+                   "(Word .docx bzw. PDF und .xlsx/.xlsm)?")
         print(meldung)
         if run_id:
             print(f"Der Lauf {run_id} bleibt mit den Eingabedateien gespeichert.")

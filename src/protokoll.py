@@ -8,6 +8,8 @@ uebereinstimmen -- sonst ist die Bilanz rot.
 from __future__ import annotations
 
 import json
+import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -132,7 +134,8 @@ def schreibe_xlsx(pfad: Path, info: dict[str, Any], aenderungen: list[Aenderung]
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = f"Erstellt von {AUTOR} · {datetime.now():%d.%m.%Y %H:%M}"
     zeilen = [
-        ("PDF mit Änderungen", info.get("pdf_name", "")), ("Excel (Original, unverändert)", info.get("excel_name", "")),
+        ("Word-Dokument mit Änderungen" if info.get("quelle_art") == "docx" else "PDF mit Änderungen", info.get("pdf_name", "")),
+        ("Excel (Original, unverändert)", info.get("excel_name", "")),
         ("Ergebnis-Excel", info.get("ergebnis_name", "(noch nicht erstellt)")),
         *_spec_zeilen(spec),
         ("", ""),
@@ -140,7 +143,7 @@ def schreibe_xlsx(pfad: Path, info: dict[str, Any], aenderungen: list[Aenderung]
         ("übernommen", bil["uebernommen"]), ("zu prüfen (Vorschlag, wartet auf Freigabe)", bil["pruefen"]),
         ("nicht übernommen (mit Grund)", bil["nicht_uebernommen"]),
         ("", ""),
-        ("Markierte Wörter im PDF", bil["woerter_im_pdf"]),
+        ("Markierte Wörter im Word-Dokument" if info.get("quelle_art") == "docx" else "Markierte Wörter im PDF", bil["woerter_im_pdf"]),
         ("… davon übernommen", bil["woerter_uebernommen"]), ("… davon zu prüfen", bil["woerter_pruefen"]),
         ("… davon nicht übernommen", bil["woerter_nicht_uebernommen"]),
         ("… davon ignoriert (Kopf-/Fußzeile)", bil["woerter_ignoriert"]),
@@ -222,3 +225,71 @@ def schreibe_xlsx(pfad: Path, info: dict[str, Any], aenderungen: list[Aenderung]
     for blatt in wb.worksheets:
         _text_bleibt_text(blatt)
     wb.save(str(pfad))
+
+
+# ---------------------------------------------------------------------------------------------
+# Freigabe-Protokoll (Vertrauensmodus): entscheidungen.jsonl, eine Zeile je Entscheidung, nur ANHAENGEN
+# ---------------------------------------------------------------------------------------------
+ENTSCHEIDUNGEN = "entscheidungen.jsonl"
+# art: wie eine Aenderung behandelt wurde. automatisch = sicher eingetragen; stichprobe = automatisch, aber in der Stichprobe;
+#      pruefen = Vorschlag ("Bitte pruefen"), einzeln entschieden; vorschlag = Vorschlag, pauschal freigegeben (nicht einzeln angesehen)
+ARTEN = ("automatisch", "pruefen", "stichprobe", "vorschlag")
+# entscheidung: uebernommen (eingetragen, nichts dagegen gesagt) | bestaetigt ("Passt") | abgelehnt ("Falsch" / "Nicht uebernehmen")
+#               | abgewaehlt (automatischer Eintrag von Hand abgewaehlt)
+ENTSCHEIDUNGEN_WERTE = ("uebernommen", "bestaetigt", "abgelehnt", "abgewaehlt")
+_CODE_ERLAUBT = re.compile(r"[a-z0-9_:\-]{1,60}")      # Pruefcodes sind feste Kennungen; alles andere waere moeglicher Dokumenttext
+
+
+def entscheidung_zeile(run_id: str, ergebnis: str, aenderung_id: str, art: str, entscheidung: str, codes: list[str],
+                       zeit: str | None = None) -> dict[str, Any]:
+    """Eine Zeile des Freigabe-Protokolls. Enthaelt NUR Kennungen (Lauf, Aenderung, Pruefcodes) -- nie Text aus dem Dokument
+    oder der Excel (Regel 16). Pruefcodes, die nicht wie Kennungen aussehen, werden durch "unbekannt" ersetzt."""
+    if art not in ARTEN or entscheidung not in ENTSCHEIDUNGEN_WERTE:
+        raise ValueError("ungueltige Entscheidung")
+    sauber = sorted({c if isinstance(c, str) and _CODE_ERLAUBT.fullmatch(c) else "unbekannt" for c in codes or []})
+    return {"zeit": zeit or datetime.now().isoformat(timespec="seconds"), "run_id": run_id, "ergebnis": ergebnis,
+            "id": aenderung_id, "art": art, "entscheidung": entscheidung, "codes": sauber}
+
+
+def haenge_entscheidungen_an(pfad: Path, zeilen: list[dict[str, Any]]) -> None:
+    """Haengt Zeilen an entscheidungen.jsonl an (Regel 29: bestehende Zeilen werden nie veraendert oder ersetzt).
+    Ein Schreibvorgang im Anhaengemodus; fehlt am Dateiende ein Zeilenumbruch (Abbruch mitten im Schreiben), wird zuerst einer gesetzt."""
+    if not zeilen:
+        return
+    text = "".join(json.dumps(z, ensure_ascii=False) + "\n" for z in zeilen)
+    praefix = ""
+    try:
+        with open(pfad, "rb") as f:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                praefix = "\n"
+    except OSError:                                  # Datei fehlt oder ist leer
+        pass
+    with open(pfad, "a", encoding="utf-8", newline="\n") as f:
+        f.write(praefix + text)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def lese_entscheidungen(pfad: Path) -> tuple[list[dict[str, Any]], int]:
+    """Liest entscheidungen.jsonl (nur lesen). Gibt (gueltige Zeilen, Zahl der unlesbaren Zeilen) zurueck; eine fehlende Datei ist leer."""
+    try:
+        roh = Path(pfad).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return [], 0
+    ok: list[dict[str, Any]] = []
+    kaputt = 0
+    for z in roh:
+        if not z.strip():
+            continue
+        try:
+            d = json.loads(z)
+        except ValueError:
+            kaputt += 1
+            continue
+        if isinstance(d, dict) and d.get("art") in ARTEN and d.get("entscheidung") in ENTSCHEIDUNGEN_WERTE \
+                and isinstance(d.get("run_id"), str) and isinstance(d.get("codes"), list):
+            ok.append(d)
+        else:
+            kaputt += 1
+    return ok, kaputt

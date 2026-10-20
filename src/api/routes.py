@@ -12,7 +12,7 @@ from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request, send_file
 
-from .. import runs
+from .. import runs, vertrauen
 from ..fehler import NutzerFehler
 from ..vorschau import PDFIUM_SPERRE, ausschnitt
 from .einstellungen import srv
@@ -43,10 +43,11 @@ def _fuers_frontend(aenderungen: list[dict]) -> list[dict]:
 
 
 def _leicht(plan: dict) -> dict:
-    """Plan fuers Frontend: Operationen und PDF-Absaetze (nur fuer die Gegenprobe) weglassen, Zusammenfassung dazu."""
+    """Plan fuers Frontend: Operationen und PDF-Absaetze (nur fuer die Gegenprobe) weglassen, Zusammenfassung und Dokument-Ampel dazu."""
     out = {k: v for k, v in plan.items() if k != "absaetze"}
     out["aenderungen"] = _fuers_frontend(plan["aenderungen"])
     out["zusammenfassung"] = runs.zusammenfassung(plan["aenderungen"])
+    out["ampel"] = vertrauen.ampel(plan)                    # Ausgangslage: noch nichts entschieden, Stichprobe nicht angesehen
     return out
 
 
@@ -71,11 +72,15 @@ def laeufe():
 
 @api_bp.post("/lauf")
 def neu():
-    pdf, xls = request.files.get("pdf"), request.files.get("excel")
+    # Das Dokument mit den Aenderungen: Word (.docx) oder PDF. Feld "datei" (neu), "docx" oder "pdf" (frueher); die Endung entscheidet.
+    pdf = request.files.get("datei") or request.files.get("docx") or request.files.get("pdf")
+    xls = request.files.get("excel")
     if not pdf or not xls:
-        return _fehler("Bitte PDF und Excel hochladen.")
-    if Path(pdf.filename or "").suffix.lower() != ".pdf":
-        return _fehler("Die Änderungsdatei muss ein PDF sein.")
+        return _fehler("Bitte das Word-Dokument (oder PDF) mit den Änderungen und die Excel hochladen.")
+    try:
+        endung = runs.pruefe_aenderungsendung(pdf.filename or "")
+    except NutzerFehler as e:
+        return _fehler(e.meldung, e.status)
     if Path(xls.filename or "").suffix.lower() not in (".xlsx", ".xlsm"):
         return _fehler("Die Excel muss als .xlsx (oder .xlsm) vorliegen. Alte .xls-Dateien bitte in Excel als .xlsx speichern.")
     for f in (pdf, xls):
@@ -96,14 +101,17 @@ def neu():
             return _fehler(f"Die Datei „{Path(f.filename or '').name}“ ist zu groß. "
                            f"Erlaubt sind höchstens {grenze_mb} MB je Datei.", 413)
     with tempfile.TemporaryDirectory() as tmp:
-        p, x = Path(tmp) / "a.pdf", Path(tmp) / "b.xlsx"      # feste Namen: der Originalname kann zu lang/ungueltig sein
+        p, x = Path(tmp) / f"a{endung}", Path(tmp) / "b.xlsx"      # feste Namen: der Originalname kann zu lang/ungueltig sein
         pdf.save(p)
         xls.save(x)
-        with open(p, "rb") as fp, open(x, "rb") as fx:         # nur die ersten Bytes lesen, nicht die ganze Datei
-            ok = fp.read(5) == b"%PDF-" and fx.read(2) == b"PK"
-        if not ok:
-            return _fehler("Eine der Dateien ist kein gültiges PDF bzw. keine gültige Excel-Datei.")
-        run_id = runs.neuer_lauf(p, x, pdf.filename or "aenderungen.pdf", xls.filename or "cde.xlsx")
+        try:
+            runs.pruefe_aenderungsdatei(p, p.name)             # Inhalt: PDF beginnt mit %PDF-, Word ist ein ZIP mit word/document.xml
+        except NutzerFehler as e:
+            return _fehler(e.meldung, e.status)
+        with open(x, "rb") as fx:                              # nur die ersten Bytes lesen, nicht die ganze Datei
+            if fx.read(2) != b"PK":
+                return _fehler("Die Datei ist keine gültige Excel-Datei (.xlsx).")
+        run_id = runs.neuer_lauf(p, x, pdf.filename or f"aenderungen{endung}", xls.filename or "cde.xlsx")
     profil = (request.form.get("profil") or "").strip() or None    # Layout-Profil: nur bestaetigte werden angenommen
     return _analysiere_antwort(run_id, profil, spec)
 
@@ -130,6 +138,23 @@ def _analysiere_antwort(run_id: str, profil: str | None, spec: str | None):
 @api_bp.get("/lauf/<run_id>")
 def lauf(run_id: str):
     return jsonify(_leicht(runs.lade_plan(run_id)))
+
+
+def _zahl_arg(name: str) -> int | None:
+    """Ganze Zahl >= 0 aus der Adresse; fehlt sie, None (= alles noch offen)."""
+    roh = request.args.get(name)
+    if roh is None:
+        return None
+    if not roh.isascii() or not roh.isdigit() or len(roh) > 6:
+        raise NutzerFehler(f"{name} muss eine Zahl sein.", 400)
+    return int(roh)
+
+
+@api_bp.get("/lauf/<run_id>/ampel")
+def ampel(run_id: str):
+    """Dokument-Ampel zum aktuellen Stand der Entscheidungen. ?offen=<unentschiedene Vorschlaege>&stichprobe_offen=<ungeprueft>.
+    Die Regeln stehen in src/vertrauen.py und config/vertrauen.yaml; das Dashboard rechnet nichts nach."""
+    return jsonify(vertrauen.ampel(runs.lade_plan(run_id), _zahl_arg("offen"), _zahl_arg("stichprobe_offen")))
 
 
 @api_bp.get("/lauf/<run_id>/specs")
@@ -186,8 +211,17 @@ def uebernehmen(run_id: str):
         return _fehler("freigaben muss eine Liste von IDs sein.")
     if abwahl is None:
         return _fehler("abwahl muss eine Liste von IDs sein.")
+    # Vertrauensmodus (alles freiwillig): abgelehnt/pauschal = Listen von IDs, stichprobe = {"passt": [...], "falsch": [...]}
+    abgelehnt, pauschal = _id_liste(daten, "abgelehnt"), _id_liste(daten, "pauschal")
+    if abgelehnt is None or pauschal is None:
+        return _fehler("abgelehnt und pauschal müssen Listen von IDs sein.")
+    sp = daten.get("stichprobe") or {}
+    passt, falsch = _id_liste(sp, "passt"), _id_liste(sp, "falsch")
+    if passt is None or falsch is None:
+        return _fehler("stichprobe muss die Listen passt und falsch mit IDs enthalten.")
     try:
-        res = runs.uebernehmen_lauf(run_id, freig, abwahl)
+        res = runs.uebernehmen_lauf(run_id, freig, abwahl, abgelehnt=abgelehnt, pauschal=pauschal,
+                                    stichprobe_passt=passt, stichprobe_falsch=falsch)
     except NutzerFehler:
         raise                                     # zentrale Behandlung (app.py): klare Meldung + Status
     except Exception:                             # noqa: BLE001
@@ -202,6 +236,8 @@ def uebernehmen(run_id: str):
 @api_bp.get("/lauf/<run_id>/vorschau/<aid>.png")
 def vorschau(run_id: str, aid: str):
     plan = runs.lade_plan(run_id)
+    if plan.get("quelle_art") == "docx":                      # Word hat keine Seiten: es gibt nichts auszuschneiden
+        return _fehler("Zu einem Word-Dokument gibt es keinen PDF-Ausschnitt.", 404)
     a = next((x for x in plan["aenderungen"] if x["id"] == aid), None)
     if a is None:
         return _fehler("Änderung nicht gefunden.", 404)
