@@ -91,6 +91,16 @@ def test_ersetztes_wort_bei_abweichender_excel_laesst_trenner_und_abweichung_ste
                        ("normal", " im Keller und im Hof des Werks.")]
 
 
+def test_gestrichenes_wort_bei_abweichender_excel_nimmt_sein_leerzeichen_mit(tmp_path):
+    """Word streicht das Leerzeichen vor dem gestrichenen Wort mit. Es gehoert zum gestrichenen Stueck (alt), nicht zum Text
+    davor; die Abweichung der Excel ("fur" statt "fuer") bleibt unmarkiert."""
+    pdf_zeile = [[("Die Anlage gilt fuer", "k"), (" alle", "d"), (" Pumpen im Keller und im Hof des Werks.", "k")]]
+    plan, stuecke, _ = _lauf(tmp_path, pdf_zeile, "Die Anlage gilt fur alle Pumpen im Keller und im Hof des Werks.")
+    (a,) = plan.aenderungen
+    assert a.status == PRUEFEN and a.ops and len(plan.absaetze) == 1
+    assert stuecke == [("normal", "Die Anlage gilt fur"), ("alt", " alle"), ("normal", " Pumpen im Keller und im Hof des Werks.")]
+
+
 def test_ohne_zeichengenaue_stelle_gibt_es_keinen_vorschlag(tmp_path):
     """Der Text direkt hinter dem gestrichenen Wort ist in der Excel ein anderer ("xx" statt "im"): die Stelle ist nicht
     zeichengenau bestimmbar. Der alte Matcher hat das Wort trotzdem ersetzt (geraten); jetzt bleibt die Aenderung auf "pruefen"

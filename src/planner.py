@@ -1015,6 +1015,16 @@ class _Planer:
                 continue                                      # nicht sichtbar in der alten Fassung (zusammengelegter Trenner)
             a0, e0 = lage[i]
             ziel = [abb[p] for p in range(a0, e0) if p in abb]
+            if l.art == "d" and not l.text.strip():
+                # gestrichenes Leerzeichen als eigener Lauf: es ist das Leerzeichen der Excel an dieser Stelle (sonst entfaellt es)
+                rest = len(l.text)
+                nach = ende
+                while rest > 0 and nach < len(excel) and excel[nach].isspace():
+                    nach, rest = nach + 1, rest - 1
+                if nach > ende:
+                    out.append(Lauf("d", excel[ende:nach], ids.get(l.aenderung, l.aenderung), l.optional))
+                    ende = nach
+                continue
             if l.art == "s" or not ziel:
                 if l.art == "d":
                     return                                    # gestrichener Text ohne Gegenstueck in der Excel: nicht sicher
@@ -1022,6 +1032,15 @@ class _Planer:
                 out.append(Lauf("s", "", "", l.optional))      # Text folgt, sobald klar ist, was die Excel dort hat
                 continue
             xs, xe = min(ziel), max(ziel) + 1
+            if l.art == "d":
+                # Word streicht das Leerzeichen am Rand eines gestrichenen Stuecks mit; es steht in der Excel zwischen den Woertern
+                # und gehoert dann zum gestrichenen Stueck (nicht zur Luecke), sonst entstuende ein Leerzeichen zu viel bzw. zu wenig
+                vorn = len(l.text) - len(l.text.lstrip())
+                hinten = len(l.text) - len(l.text.rstrip())
+                while vorn > 0 and xs > ende and excel[xs - 1].isspace():
+                    xs, vorn = xs - 1, vorn - 1
+                while hinten > 0 and xe < len(excel) and excel[xe].isspace():
+                    xe, hinten = xe + 1, hinten - 1
             if xs < ende:
                 return                                        # Reihenfolge nicht eindeutig
             luecke = excel[ende:xs]
