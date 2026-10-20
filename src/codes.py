@@ -101,7 +101,7 @@ SAETZE: dict[str, str] = {
 
 # Teil-Saetze fuer "a1_<art>" (worin die Excel vom alten PDF-Text abweicht); frueher planner._A1_SATZ
 A1_ART: dict[str, str] = {
-    "leerraum": "nur Leerzeichen fehlen oder sind zu viel", "satzzeichen": "ein Satzzeichen", "gross_klein": "Groß-/Kleinschreibung",
+    "leerraum": "Leerzeichen fehlen oder zu viele", "satzzeichen": "ein Satzzeichen", "gross_klein": "Groß-/Kleinschreibung",
     "ziffer": "eine Ziffer", "buchstabe": "ein Buchstabe", "pdf_laenger": "im PDF steht mehr Text",
     "excel_laenger": "in der Excel steht mehr Text", "abweichung": "der Text",
 }
