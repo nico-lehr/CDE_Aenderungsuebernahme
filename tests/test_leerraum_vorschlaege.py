@@ -34,7 +34,7 @@ pytestmark = [pytest.mark.legende_neu, pytest.mark.markierung_an]
 # ------------------------------------------------------------------------------------------------ Art der Abweichung
 @pytest.mark.parametrize("pdf,excel,erwartet", [
     ("Die Anlage gilt fuer alle Pumpen.", "Die Anlage gilt fuer alle Pumpen.", ""),
-    ("Die Anlage gilt\tfuer  alle Pumpen.", "Die Anlage gilt fuer alle Pumpen.", ""),       # Tab, doppelt, geschuetzt: gleich
+    ("Die Anlage gilt\tfuer  alle\u00a0Pumpen.", "Die Anlage gilt fuer alle Pumpen.", ""),       # Tab, doppelt, geschuetzt: gleich
     # nur Leerzeichen fehlen oder sind zu viel (gleiche Zeichen ausser dem Leerraum)
     ("Pumpen. Sie sind sicher.", "Pumpen.Sie sind sicher.", "leerraum"),
     ("Die Anlage gilt fuer alle Pumpen", "Die Anlagegilt fuer alle Pumpen", "leerraum"),
@@ -209,10 +209,10 @@ def test_gestrichene_wortgruppe_vor_dem_satzpunkt_nimmt_ihr_leerzeichen_mit(tmp_
 def test_genau_gleicher_text_mit_anderem_polster_bleibt_automatisch(tmp_path):
     """Gegenprobe: Tab, geschuetztes und doppeltes Leerzeichen sind in der Normalform GLEICH -- das ist keine Abweichung, die
     Aenderung wird wie bisher automatisch eingetragen."""
-    plan, frei, auto = _lauf(tmp_path, ERSETZT, "Die Anlage gilt fuer\talle Pumpen  im Keller und im Werk.")
+    plan, frei, auto = _lauf(tmp_path, ERSETZT, "Die Anlage gilt fuer\talle\u00a0Pumpen  im Keller und im Werk.")
     (a,) = plan.aenderungen
     assert a.status == UEBERNOMMEN and not a.pruefcodes
-    assert auto == [("normal", "Die Anlage gilt fuer\talle Pumpen  im "), ("alt", "Keller"), ("neu", "Hof"), ("normal", " und im Werk.")]
+    assert auto == [("normal", "Die Anlage gilt fuer\talle\u00a0Pumpen  im "), ("alt", "Keller"), ("neu", "Hof"), ("normal", " und im Werk.")]
 
 
 # ------------------------------------------------------------------------------------------------ Listennummer + Polster
@@ -234,7 +234,7 @@ TEXT_LISTE = "Die Anlage gilt fuer alle Pumpen im Keller und im Werk."
 NEUES_WORT_AM_ANFANG = [[("Alle", "n"), (" " + TEXT_LISTE, "k")]]
 
 
-@pytest.mark.parametrize("polster", ["    ", "  ", "       "])
+@pytest.mark.parametrize("polster", ["\u00a0\u00a0\u00a0 ", "  ", "\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0 "])
 @pytest.mark.parametrize("abweichung", [
     ("Pumpen", "Pump", "a1_buchstabe"),                 # Buchstabe fehlt vor einem Leerzeichen (frueher: "Leerzeichen")
     ("Anlage gilt", "Anlagegilt", "a1_leerraum"),       # Leerzeichen fehlt weit weg von der Aenderung
@@ -259,9 +259,65 @@ def test_neues_erstes_wort_im_listenpunkt_mit_tab_als_polster(tmp_path):
     assert frei == [("normal", "a.\t"), ("neu", "Alle"), ("normal", " " + TEXT_LISTE.replace("Pumpen", "Pump"))]
 
 
+# ------------------------------------------------------------------------------------------------ Naht-Probe (Gitter)
+_NAHT_PDF = {
+    "einfuegen_mitte_a": [[("Die Anlage gilt fuer alle ", "k"), ("neue ", "n"), ("Pumpen im Keller und im Werk.", "k")]],
+    "einfuegen_mitte_b": [[("Die Anlage gilt fuer alle", "k"), (" neue", "n"), (" Pumpen im Keller und im Werk.", "k")]],
+    "streichen_mitte_a": [[("Die Anlage gilt fuer ", "k"), ("alle ", "d"), ("Pumpen im Keller und im Werk.", "k")]],
+    "streichen_mitte_b": [[("Die Anlage gilt fuer", "k"), (" alle", "d"), (" Pumpen im Keller und im Werk.", "k")]],
+    "einfuegen_ende": [[(TEXT_LISTE, "k"), (" Neu.", "n")]],
+    "ersetzen_ende": [[("Die Anlage gilt fuer alle Pumpen im Keller und im ", "k"), ("Werk", "d"), ("Lager", "n"), (".", "k")]],
+    "ersetzen_anfang": [[("Die", "d"), ("Alle", "n"), (" Anlage gilt fuer alle Pumpen im Keller und im Werk.", "k")]],
+    "streichen_anfang": [[("Die ", "d"), ("Anlage gilt fuer alle Pumpen im Keller und im Werk.", "k")]],
+    "einfuegen_anfang": [[("Alle", "n"), (" " + TEXT_LISTE, "k")]],
+    "ersetzen_zwei_woerter": [[("Die Anlage gilt fuer ", "k"), ("alle Pumpen", "d"), ("jede Armatur", "n"), (" im Keller und im Werk.", "k")]],
+    "streichen_ende_vor_punkt": [[("Die Anlage gilt fuer alle Pumpen im Keller", "k"), (" und im Werk", "d"), (".", "k")]],
+    "einfuegen_satz_ende": [[(TEXT_LISTE, "k"), (" Das gilt auch.", "n")]],
+}
+_NAHT_ABWEICHUNG = {                      # (Name, Text -> Text mit Abweichung, Zeichen, das die Abweichung entfernt)
+    "buchstabe": ("Keller", "Kelle", "Keller"),
+    "leerzeichen": ("im Keller", "imKeller", "im Keller"),
+}
+
+
+def _zeichen(stuecke):
+    return [(c, k) for k, t in stuecke for c in t]
+
+
+@pytest.mark.parametrize("polster", [None, "    "], ids=["ohne_liste", "liste_geschuetzt"])
+@pytest.mark.parametrize("abw", list(_NAHT_ABWEICHUNG))
+@pytest.mark.parametrize("fall", list(_NAHT_PDF))
+def test_vorschlag_bei_abweichender_excel_ist_das_ergebnis_der_passenden_excel_mit_derselben_abweichung(tmp_path, fall, abw, polster):
+    """Naht-Probe: Hat die Excel irgendwo (fern der Aenderung) eine Abweichung, so ist das Ergebnis des Vorschlags (Text UND
+    Markierung jedes Zeichens, auch der Leerzeichen an den Naehten) genau das Ergebnis der passenden Excel -- nur mit der
+    Abweichung der Excel. Der Vorschlag laesst den Leerraum der Excel also ausserhalb der markierten Stelle unveraendert."""
+    von, nach, _ = _NAHT_ABWEICHUNG[abw]
+    praefix = "" if polster is None else "a." + polster
+    label = None if polster is None else [("a.", "k")]
+
+    def lauf(name, text):
+        if label:
+            return _lauf_liste(tmp_path, label, _NAHT_PDF[fall], praefix + text, name)
+        plan, frei, _auto = _lauf(tmp_path, _NAHT_PDF[fall], text, name)
+        return plan, frei
+
+    plan_ok, frei_ok = lauf("passend", TEXT_LISTE)
+    plan_ab, frei_ab = lauf("abweichend", TEXT_LISTE.replace(von, nach))
+    assert [a.status for a in plan_ok.aenderungen] == [UEBERNOMMEN] * len(plan_ok.aenderungen)      # passende Excel: automatisch
+    assert plan_ab.aenderungen and all(a.status == PRUEFEN and "excel_weicht_ab" in a.pruefcodes for a in plan_ab.aenderungen)
+    soll = _zeichen(frei_ok)
+    zeichen = [c for c, _ in soll]
+    text = "".join(zeichen)
+    i = text.index(von)
+    # die Abweichung entfernt genau ein Zeichen des unmarkierten Texts (Buchstabe bzw. das Leerzeichen in "im Keller")
+    j = i + len(von) - 1 if abw == "buchstabe" else i + von.index(" ")
+    assert soll[j][1] == "normal"
+    assert _zeichen(frei_ab) == soll[:j] + soll[j + 1:]
+
+
 def test_listenpunkt_ohne_abweichung_ergibt_dasselbe_bild_automatisch(tmp_path):
     """Gegenstueck: mit genau passender Excel ist die Aenderung automatisch und sieht genauso aus."""
-    polster = "    "
+    polster = "\u00a0\u00a0\u00a0 "
     plan, frei = _lauf_liste(tmp_path, [("a.", "k")], NEUES_WORT_AM_ANFANG, "a." + polster + TEXT_LISTE)
     (a,) = plan.aenderungen
     assert a.status == UEBERNOMMEN
