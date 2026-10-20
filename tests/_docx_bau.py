@@ -215,13 +215,21 @@ def _ganz(text: str, kennung: str) -> bool:
     return text.startswith("{" + kennung) and text.endswith(kennung + "}") and "{" not in text[2:-2]
 
 
-def register_docx(pfad: Path, absaetze: list[tuple], auto: bool = True) -> Path:
+def register_docx(pfad: Path, absaetze: list[tuple], auto: bool = True, vorspann: list[str] | None = None,
+                  kopf: list[str] | None = None, fuss: list[str] | None = None) -> Path:
     """Dasselbe erfundene Dokument wie `tests.test_register.wort_pdf`, als .docx.
 
     absaetze: (art, label_markup, text_markup) mit art part | section | sub | sub_titel | liste | liste_titel | absatz.
     auto=True: die Nummern der Unterpunkte (A. 1. a. 1) a)) kommen aus numbering.xml (der Leser rechnet sie selbst, der Label-
-    Markup wird NICHT benutzt); auto=False: Nummern stehen als getippter Text mit Tabulator (der Label-Markup gilt)."""
+    Markup wird NICHT benutzt); auto=False: Nummern stehen als getippter Text mit Tabulator (der Label-Markup gilt).
+    vorspann: Absaetze (Markup) vor der Spezifikation (Deckblatt, Titelzeile); kopf / fuss: Zeilen der Kopf- bzw. Fusszeile."""
     b = DocxBau()
+    for z in vorspann or []:
+        b.absatz(z)
+    for z in kopf or []:
+        b.kopfzeile(z)
+    for z in fuss or []:
+        b.fusszeile(z)
     anzahl = 1 + sum(1 for x in absaetze if x[0] == "section")
     if auto:                                   # je Section eine neue Liste (startOverride), wie ein Gliederungswechsel in Word
         lv = b.lvl

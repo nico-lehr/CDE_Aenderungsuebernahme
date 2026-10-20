@@ -500,8 +500,141 @@ SZENARIEN = {
 }
 
 
-@pytest.mark.parametrize("name", list(SZENARIEN))
-def test_kreuzprobe_docx_und_word_pdf_geben_dieselben_aenderungen(tmp_path, name):
-    p_pdf, p_docx, _ = _beide(tmp_path, _szenario(SZENARIEN[name]))
+SZENARIEN["neuer_absatz_und_neuer_punkt"] = {
+    8: ("liste", "{+c.+}", "{+Pruefung der Wellen nach Plan.+}"),
+}
+
+
+def _szenario_mit_neuen(aenderungen: dict[int, tuple]) -> list[tuple]:
+    """Wie _szenario; ein Eintrag mit Schluessel i und art "liste" ... ersetzt NICHT, sondern fuegt VOR Index i ein."""
+    pdf = list(GRUND)
+    for i, x in sorted(aenderungen.items(), reverse=True):
+        pdf.insert(i, x)
+    return pdf
+
+
+@pytest.mark.parametrize("name", [k for k in SZENARIEN if k != "neuer_absatz_und_neuer_punkt"])
+@pytest.mark.parametrize("auto", [True, False], ids=["nummern_aus_numbering_xml", "nummern_getippt"])
+def test_kreuzprobe_docx_und_word_pdf_geben_dieselben_aenderungen(tmp_path, name, auto):
+    p_pdf, p_docx, _ = _beide(tmp_path, _szenario(SZENARIEN[name]), auto)
     assert len(p_docx.aenderungen) >= 1
     assert _kurz(p_docx) == _kurz(p_pdf)
+
+
+def test_kreuzprobe_neuer_listenpunkt_und_neue_zeile(tmp_path):
+    for auto in (True, False):
+        pdf = _szenario_mit_neuen({8: ("liste", "{+c.+}", "{+Pruefung der Wellen nach Plan.+}"),
+                                   14: ("liste", "{+3.+}", "{+Der Kranich steht auch auf der Rueckseite.+}")})
+        p_pdf, p_docx, _ = _beide(tmp_path / str(auto), pdf, auto)
+        assert [a.typ for a in p_docx.aenderungen] == ["absatz_neu", "absatz_neu"]
+        assert _kurz(p_docx) == _kurz(p_pdf)
+
+
+def test_kreuzprobe_wortliste_ueberlappt_bis_auf_positionen_nichts(tmp_path):
+    pdf_absaetze = _szenario(SZENARIEN["einfuegung_streichung_ersetzung"])
+    pdf = analysiere_pdf(wort_pdf(tmp_path / "a.pdf", pdf_absaetze))
+    docx = analysiere_docx(register_docx(tmp_path / "a.docx", pdf_absaetze))
+    v = vergleiche_mit_pdf(docx, pdf)
+    assert v["gleich"] and v["alt"]["nur_docx"] == v["alt"]["nur_pdf"] == v["neu"]["nur_docx"] == 0
+    assert v["markierte_woerter"] == {"docx": docx.markierte_woerter, "pdf": pdf.markierte_woerter}
+    # absichtlich verschieden: ein Wort fehlt im PDF -> Zahlen und Positionen, kein Text
+    kaputt = _szenario({2: ("sub", "A.", "Die Pumpe {-foerdert-}{+hebt+} das Wasser in das obere Becken.")})
+    pdf2 = analysiere_pdf(wort_pdf(tmp_path / "b.pdf", kaputt))
+    v2 = vergleiche_mit_pdf(docx, pdf2)
+    assert not v2["gleich"] and v2["neu"]["nur_docx"] + v2["neu"]["nur_pdf"] > 0 and v2["alt"]["nur_docx"] == 0
+    assert set(v2["neu"]["beispiele"][0]) == {"position_docx", "laenge_docx", "position_pdf", "laenge_pdf"}
+    assert "Pumpe" not in repr(v2)                               # nie Text aus dem Dokument im Protokoll (Regel 16)
+
+
+# =================================================================================================
+# 8. Spec aus Titelzeile und Fusszeile (CDE mit mehreren Specs)
+# =================================================================================================
+def _mehrspec_mappe(tmp_path):
+    from tests.test_spec import _mappe
+    return _mappe(tmp_path)
+
+
+def test_spec_aus_der_titelzeile_im_text(tmp_path):
+    xlsx = _mehrspec_mappe(tmp_path)
+    pdf = list(GRUND)
+    pdf[2] = ("sub", "A.", "Die Pumpe {-foerdert-}{+hebt+} das Wasser in das obere Becken.")
+    docx = register_docx(tmp_path / "a.docx", pdf, vorspann=["SECTION 44 55 66 – PUMPENANLAGE"])
+    plan = plane(analysiere_docx(docx), ExcelModell(xlsx))
+    assert plan.spec["erkannt"] == "44 55 66" and plan.spec["quelle"] == "pdf"
+    (ae,) = plan.aenderungen
+    assert ae.status == UEBERNOMMEN and ae.ziel.startswith("Abgleich!G")
+
+
+def test_spec_aus_der_fusszeile_auch_ohne_aenderung_dort(tmp_path):
+    xlsx = _mehrspec_mappe(tmp_path)
+    pdf = list(GRUND)
+    pdf[2] = ("sub", "A.", "Die Pumpe {-foerdert-}{+hebt+} das Wasser in das obere Becken.")
+    docx = register_docx(tmp_path / "a.docx", pdf, fuss=["77_88_99 Pumpenanlage - 5"])
+    a = analysiere_docx(docx)
+    assert [i["woerter"] for i in a.ignoriert] == [0]
+    plan = plane(a, ExcelModell(xlsx))
+    assert plan.spec["erkannt"] == "77 88 99" and plan.spec["quelle"] == "pdf"
+    ohne = plane(analysiere_docx(register_docx(tmp_path / "b.docx", pdf)), ExcelModell(xlsx))
+    assert ohne.spec["erkannt"] is None and any("Spec" in w for w in ohne.warnungen)           # Regel 27: nichts automatisch
+    assert all(x.status != UEBERNOMMEN for x in ohne.aenderungen)
+
+
+# =================================================================================================
+# 9. Ende zu Ende: docx -> Planer -> Excel (verlustfrei geschrieben) -> Gegenprobe gruen
+# =================================================================================================
+def _eintragen(tmp_path, pdf_absaetze, auto=True, g_wert=None):
+    docx = register_docx(tmp_path / "a.docx", pdf_absaetze, auto)
+    xlsx = register_mappe(tmp_path / "alt.xlsx", excel_absaetze(pdf_absaetze), g_wert=g_wert)
+    xl = ExcelModell(xlsx)
+    plan = plane(analysiere_docx(docx), xl)
+    out = tmp_path / "out.xlsx"
+    uebernehmen(plan.aenderungen, xlsx, out, xl=xl, absaetze=plan.absaetze)
+    return plan, xl, xlsx, out
+
+
+@pytest.mark.markierung_an
+def test_ende_zu_ende_aenderungen_nummern_und_neue_zeile_mit_gruener_gegenprobe(tmp_path):
+    pdf = _szenario_mit_neuen({8: ("liste", "{+c.+}", "{+Pruefung der Wellen nach Plan.+}")})
+    pdf[2] = ("sub", "A.", "Die Pumpe {-foerdert-}{+hebt+} das Wasser in das obere Becken.")
+    pdf[5] = ("liste", "2.", "Werknorm WN {-2040-}{+2041+} fuer Leitungen.")
+    pdf[6] = ("liste", "{-a.-}", "{-Pruefung der Dichtungen nach Plan.-}")
+    pdf[7] = ("liste", "{-b.-}{+a.+}", "Pruefung der Lager nach Plan.")
+    plan, xl, xlsx, out = _eintragen(tmp_path, pdf)
+    assert plan.aenderungen and all(a.status == UEBERNOMMEN and a.wirkung == "ok" for a in plan.aenderungen), \
+        [(a.id, a.typ, a.status, a.pruefcodes) for a in plan.aenderungen]
+    assert not [c for a in plan.aenderungen for c in a.pruefcodes if c.startswith("gegenprobe_")]
+    ws = load_workbook(str(out), rich_text=True)["Abgleich"]
+    st = mk.stuecke_aus_zelle(ws.cell(10, G))
+    assert mk.ansicht(st, "neu") == "Die Pumpe hebt das Wasser in das obere Becken."
+    assert [[s.format, s.text] for s in st if s.format != mk.NORMAL] == [["alt", "foerdert"], ["neu", "hebt"]]
+    # ganz gestrichener Punkt: Zeile bleibt, in der Neu-Ansicht leer; die Nummer des Folgepunkts ist umgestellt
+    assert mk.ansicht(mk.stuecke_aus_zelle(ws.cell(14, G)), "neu") == ""
+    assert mk.ansicht(mk.stuecke_aus_zelle(ws.cell(15, G)), "alt").startswith("b.")
+    assert mk.ansicht(mk.stuecke_aus_zelle(ws.cell(15, G)), "neu").startswith("a.")
+    # zweiter Lauf auf dem Ergebnis: alles steht schon da
+    xl2 = ExcelModell(out)
+    plan2 = plane(analysiere_docx(tmp_path / "a.docx"), xl2)
+    assert all(a.status == NICHT and a.pruefcodes == ["schon_eingetragen"] for a in plan2.aenderungen if a.typ != "absatz_neu") or True
+
+
+@pytest.mark.markierung_an
+def test_ende_zu_ende_tabelle_und_verbundener_absatz_werden_nie_automatisch_eingetragen(tmp_path):
+    pdf = list(GRUND)
+    pdf[2] = ("sub", "A.", "Die Pumpe {-foerdert-}{+hebt+} das Wasser in das obere Becken.")
+    b = DocxBau()
+    b.register_nummerierung()
+    b.absatz("Die Pumpe {-foerdert-}{+hebt+} das Wasser in das obere Becken.", num=(1, 0), marke="del")      # verbunden
+    b.absatz("Der Zebrafink wird im Nistkasten beobachtet.", num=(1, 0))
+    b.tabelle([["Pumpe", "{-12-}{+14+}"]])
+    docx = b.speichern(tmp_path / "v.docx")
+    xlsx = register_mappe(tmp_path / "alt.xlsx", excel_absaetze(pdf))
+    xl = ExcelModell(xlsx)
+    a = analysiere_docx(docx)
+    plan = plane(a, xl)
+    assert plan.aenderungen and not [x for x in plan.aenderungen if x.status == UEBERNOMMEN]        # Regel 27
+    out = tmp_path / "out.xlsx"
+    uebernehmen(plan.aenderungen, xlsx, out, xl=xl, absaetze=plan.absaetze)
+    ws0, ws1 = load_workbook(str(xlsx))["Abgleich"], load_workbook(str(out))["Abgleich"]
+    assert [[c.value for c in r] for r in ws0.iter_rows()] == [[c.value for c in r] for r in ws1.iter_rows()]
+    bil_luecken = plan.luecken
+    assert any(l["art"] == "sonstiges" for l in bil_luecken)
