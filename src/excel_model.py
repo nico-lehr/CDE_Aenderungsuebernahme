@@ -781,13 +781,43 @@ class ExcelModell:
 
     def register_vorlage(self, blatt: str, zeile: int, art: str, zeilen: Iterable[int] | None = None) -> int:
         """Vorlagezeile fuer eine neue Zeile: die naechste Zeile gleichen Typs (oben zuerst), sonst eines verwandten Typs;
-        `zeilen`: nur unter diesen Zeilen (Spec des PDFs)."""
+        `zeilen`: nur unter diesen Zeilen (Spec des PDFs).
+
+        Auftrag 004: Unter den naechsten Zeilen gleichen Typs (`excel.register.vorlage_kandidaten`) hat die erste den Vorrang,
+        deren Konstanten links der Section-Spalte (Spezifikation, Revision, Datum ...) WOERTLICH so geschrieben sind wie in den
+        meisten Zeilen der Spec. Der Schreiber kopiert die Konstanten woertlich aus der Vorlagezeile; eine Zeile mit verirrtem
+        Leerzeichen am Ende (Schreibweise-Variante) soll dabei nicht die Schreibweise der neuen Zeile bestimmen."""
         reihe = sorted(self._zeilen(blatt, zeilen), key=lambda r: (abs(r - zeile), r > zeile))
+        lay = self.layouts[blatt]
+        spalten = range(1, lay.section_spalte) if lay.register and lay.section_spalte else range(0)
+        gewohnt: dict[int, str] = {}                     # Spalte -> gewohnte Schreibweise (nur fuer wirklich konstante Spalten)
+        if spalten and reihe:
+            def glatt(r: int) -> tuple[str, ...]:
+                return tuple(self.text(blatt, r, c).strip() for c in spalten)
+            gleiche = [r for r in reihe if glatt(r) == glatt(zeile)]       # Zeilen derselben Spec (ohne Rand-Leerzeichen gleich)
+            for c in spalten:
+                if not gleiche:
+                    break
+                wert, n = Counter(self.text(blatt, r, c) for r in gleiche).most_common(1)[0]
+                if n >= 0.9 * len(gleiche):
+                    gewohnt[c] = wert
+        k_max = int(config.lade("zuordnung")["excel"].get("register", {}).get("vorlage_kandidaten", 8))
         for gesucht in (art, self._VERWANDT.get(art, art)):
+            erste: int | None = None
+            gesehen = 0
             for r in reihe:
                 rz = self.register_zeile(blatt, r)
-                if rz is not None and rz.art == gesucht:
+                if rz is None or rz.art != gesucht:
+                    continue
+                if erste is None:
+                    erste = r
+                gesehen += 1
+                if all(self.text(blatt, r, c) == w for c, w in gewohnt.items()):
                     return r
+                if gesehen >= k_max:
+                    break
+            if erste is not None:
+                return erste
         return zeile
 
     def roh_position(self, blatt: str, zeile: int, spalte: int, pos: int) -> int:

@@ -92,6 +92,8 @@ SAETZE: dict[str, str] = {
     "farbe_ohne_linie": "Ein Wort ist farbig, aber nicht unter- oder durchgestrichen; es zählt als unverändert.",
     "hinterlegt": "Ein Wort ist farbig hinterlegt; das zählt nicht als Änderung.",
     "verschmolzen": "Zwei Wörter wurden im PDF zusammen gelesen.",
+    # ---- Auftrag 004: kein Vorschlag statt eines unsicheren Vorschlags
+    "kein_vorschlag": "Für diese Stelle gibt es keinen sicheren Vorschlag; bitte von Hand eintragen.",
 }
 
 # Teil-Saetze fuer "a1_<art>" (worin die Excel vom alten PDF-Text abweicht); frueher planner._A1_SATZ

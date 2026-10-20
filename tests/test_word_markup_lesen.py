@@ -415,6 +415,51 @@ def test_flacher_ankerpunkt_am_anfang_der_verbindungslinie(tmp_path):
     assert _tok(a, "Kranichgruppe").status == KEEP and _tok(a, "Becken").status == ADD
 
 
+def test_schmal_gestrichene_klammer_am_anfang_der_verbindungslinie_bleibt_gestrichen(tmp_path):
+    """Auftrag 004: Die Durchstreichung der schmalen "[" (< 4 pt) beginnt dort, wo die Verbindungslinie zur Sprechblase beginnt.
+    Sie ist ein flaches Rechteck (Linie), kein Ankerpunkt: die Klammer gilt als gestrichen, nicht als "rand_unklar"."""
+    d = WordDok()
+    tops = d.absatz([voll([("Druck ", "k"), ("[", "d"), ("40", "k"), ("]", "d"), (" bar", "k")])] + fuellzeilen(1))
+    ax = EBENEN[1] + breite("Druck ") + 1.4
+    d.sprechblase(tops[0] + 15, "hat formatiert:", "Hervorheben", anker=(ax, tops[0]))
+    a = _lies(tmp_path, d)
+    t = _tok(a, "[40]")
+    assert (t.old, t.new, t.status) == ("[40]", "40", MOD)
+    assert t.teile == [(DEL, "["), (KEEP, "40"), (DEL, "]")]
+    assert "rand_unklar" not in _alle_codes(a)
+    assert not _sperrend(_alle_codes(a))
+
+
+def _liste_mit_einrueckungen() -> WordDok:
+    """Verschachtelte Listen: Text hinter "A.", "1.", "a." steht eingerueckt, dazwischen kurze Schlusszeilen."""
+    d = WordDok()
+    for _ in range(4):
+        d.listenpunkt(1, [("A.", "k")], [voll([("Haupttext des Punktes ", "k")], 2), [("Ende.", "k")]])
+        d.listenpunkt(2, [("1.", "k")], [voll([("Unterpunkt ", "k")], 3), [("Rest.", "k")]])
+        d.listenpunkt(3, [("a.", "k")], [[("Einzelpunkt mit ", "k"), ("neuem", "n"), (" Wort", "k")]])
+        d.listenpunkt(3, [("b.", "k")], [[("Zweiter Einzelpunkt", "k")]])
+    return d
+
+
+def test_eingerueckte_listen_mit_kurzen_zeilen_sind_keine_spalten(tmp_path):
+    """Auftrag 004: Einrueckungen von Listen liegen untereinander, nicht nebeneinander. Vorher meldete der Leser dafuer
+    "mehrspaltig" (485 Aenderungen im Entwicklungskorpus gesperrt, nach Freigabe 481 richtig)."""
+    a = _lies(tmp_path, _liste_mit_einrueckungen())
+    assert [l for l in a.luecken if l["art"] == "mehrspaltig"] == []
+    assert "mehrspaltig" not in _alle_codes(a)
+    assert _tok(a, "neuem").status == ADD
+
+
+def test_wachter_einrueckung_ohne_hoehenpruefung_wuerde_spalten_melden(tmp_path):
+    """Waechter fuer den Test davor: mit abgeschalteter Hoehenpruefung (0 = aus) sieht dieselbe Seite wie Spalten aus. So ist
+    sicher, dass der Test oben die Hoehenpruefung prueft und nicht zufaellig ohne Spaltenmuster gebaut ist."""
+    import copy
+    cfg = copy.deepcopy(config.lade("farben"))
+    cfg["spalten"]["min_gleiche_hoehe"] = 0
+    a = _lies(tmp_path, _liste_mit_einrueckungen(), cfg)
+    assert [l["art"] for l in a.luecken] == ["mehrspaltig"]
+
+
 def test_gelbe_hinterlegung_und_aenderungsbalken_ohne_sperre(tmp_path):
     d = WordDok()
     x = EBENEN[1]

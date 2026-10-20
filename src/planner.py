@@ -354,6 +354,13 @@ class _Planer:
                 codes.append("sperre:" + c)
             grund = (grund + "; " if grund else "") + ("Im Absatz gibt es eine Stelle, die nicht sicher gelesen werden konnte "
                                                        "(siehe Hinweise). Der ganze Absatz wird nicht automatisch eingetragen.")
+            # Auftrag 004: Bei diesen Sperren ist schon die Stelle des Textes unsicher (z. B. ob ein Absatz auf der naechsten
+            # Seite weitergeht); ein fertiger Vorschlag waere geraten. Besser kein Vorschlag als ein falscher.
+            ohne = [c for c in sperre if c in [str(x) for x in _planer_cfg(self.cfg).get("sperren_ohne_vorschlag", [])]]
+            if ohne and ae.ops:
+                ae.ops = []
+                codes.append("kein_vorschlag")
+                self._hinweis(ae, _codes.satz("kein_vorschlag"))
         if p["verdaechtig"]:
             if stufe == HOCH:
                 stufe = MITTEL
@@ -901,24 +908,69 @@ class _Planer:
         """Nicos Entscheidung (ADR 0006 Punkt 7): ist der Absatz in der Excel verortet, die Excel weicht aber anderswo im Absatz
         vom PDF ab, wird eine Aenderung, die Wort fuer Wort nicht passte (sonst "nicht uebernommen"), ein fertiger Vorschlag:
         nur die markierte Stelle aendert sich (zeichengenau ueber die Normalform ausgerichtet), Excel-eigene Zeichen bleiben.
-        Nie automatisch ("pruefen", Codes excel_weicht_ab + a1_*)."""
+        Nie automatisch ("pruefen", Codes excel_weicht_ab + a1_*).
+
+        Auftrag 004 (Vorschlaege): Auch ein Vorschlag des alten Matchers (Wort fuer Wort) wird durch den zeichengenauen
+        ersetzt, wenn es ihn gibt -- der alte Matcher ersetzt ganze Woerter samt Satzzeichen ("Pumpen." -> "Pumpen nachweislich."),
+        liest Leerraum an der Naht anders als Word und kennt keine Klammern, deren Zeichen allein gestrichen sind. Gibt es keinen
+        zeichengenauen Vorschlag, bleibt der alte nur, wenn `planer.vorschlag_wortgenau` es erlaubt (Standard: nein, besser kein
+        Vorschlag als ein falscher)."""
         offen = [ae for ae in aes if ae.status == NICHT and not ae.ops and not ae.pruefcodes]
-        if tr is None or not offen or tr.kandidat.art == "kopf":
+        alte = [ae for ae in aes if ae.status == PRUEFEN and ae.ops and "excel_weicht_ab" in ae.pruefcodes
+                and all(o.art in ("ersetzen", "einfuegen") for o in ae.ops)]
+        if tr is None or not (offen or alte) or tr.kandidat.art == "kopf":
             return
         k = tr.kandidat
+        wortgenau = bool(_planer_cfg(self.cfg).get("vorschlag_wortgenau", False))
+
+        def verwerfen() -> None:
+            if not wortgenau:
+                for ae in alte:
+                    self._vorschlag_verwerfen(ae)
         aufbau = _aufbau(b.tokens, "X")
-        if len(aufbau.gruppen) != len(aes):
-            return
-        ids = {f"X{n + 1}": ae.id for n, ae in enumerate(aes)}
+        # Eine Aenderung des alten Matchers = zusammenhaengende markierte Woerter; der Aufbau kann daraus mehrere Gruppen machen
+        # (gestrichene Klammern um einen unveraenderten Wert: "[" und "]" sind zwei Gruppen). Jede Gruppe gehoert zu genau einer.
+        bereiche = list(self._gruppen(b))
+        if len(bereiche) != len(aes):
+            return verwerfen()
+        je_aenderung: dict[int, list[int]] = {n: [] for n in range(len(aes))}
+        for gi, toks in enumerate(aufbau.gruppen_token):
+            ziele = {n for n, (i0, i1) in enumerate(bereiche) for t in toks if i0 <= t < i1}
+            if len(ziele) != 1:
+                return verwerfen()
+            je_aenderung[next(iter(ziele))].append(gi)
+        ids = {f"X{gi + 1}": f"{aes[n].id}~{gi}" for n, gis in je_aenderung.items() for gi in gis}
         laeufe = umbenennen(aufbau.laeufe, ids)
         fund = Fundstelle(blatt=k.blatt, zellen=((k.zeile, k.spalte, k.start, k.end),), art="absatz",
                           schluessel=self.idx.schluessel(k.blatt, k.zeile, k.spalte, k.start), text=k.text,
                           end_schluessel=self.idx.schluessel(k.blatt, k.zeile, k.spalte, k.end))
         so = ops_fuer_spur(laeufe, fund, self.xl.text, self.cfg, b.idx * 1000, unscharf=True)
         a1 = self._a1_codes(b.alt_text, k.text)
+
+        def ops_von(n: int) -> list[Operation] | None:
+            """Alle Operationen der Gruppen dieser Aenderung (None = eine Gruppe ohne sichere Stelle)."""
+            out: list[Operation] = []
+            for gi in je_aenderung[n]:
+                gid = f"{aes[n].id}~{gi}"
+                o = so.ops.get(gid, [])
+                if not o or so.probleme.get(gid):
+                    return None
+                out += o
+            for o in out:
+                o.aenderung = aes[n].id
+            return sorted(out, key=lambda o: (o.zeile, o.spalte, o.start)) or None
+
+        for ae in alte:
+            ops = ops_von(aes.index(ae))
+            if ops and self._ops_unbedenklich(ae, ops):
+                ae.ops = ops
+                ae.ziel = f"{k.blatt}!{get_column_letter(ops[0].spalte)}{ops[0].zeile}"
+                ae.ist_absatz = k.text
+            elif not wortgenau:
+                self._vorschlag_verwerfen(ae)
         for ae in offen:
-            ops = so.ops.get(ae.id, [])
-            if not ops or so.probleme.get(ae.id):
+            ops = ops_von(aes.index(ae))
+            if not ops:
                 continue
             ae.status, ae.konfidenz, ae.grund = PRUEFEN, MITTEL, ""
             ae.ops = ops
@@ -928,6 +980,24 @@ class _Planer:
                               "markierte Stelle. Bitte prüfen und freigeben.")
             doppelt = bool(self._deckel and "excel_weicht_ab" in self._deckel)       # der Deckel nennt den Grund schon
             self._setze(ae, MITTEL, "" if doppelt else _GRUND["excel_weicht_ab"], ["excel_weicht_ab"] + a1)
+
+    def _ops_unbedenklich(self, ae: Aenderung, ops: list[Operation]) -> bool:
+        """Neuer Text der Operationen: keine Steuerzeichen, nichts Verdaechtiges, Zahl-Zellen bleiben Zahlen (wie `_setze`)."""
+        p = neutext_probleme([o.text for o in ops], self.cfg)
+        if p["steuerzeichen"] or p["verdaechtig"]:
+            return False
+        for op in ops:
+            if self.xl.ist_zahl(op.blatt, op.zeile, op.spalte):
+                return False
+        return True
+
+    def _vorschlag_verwerfen(self, ae: Aenderung) -> None:
+        """Kein sicherer Vorschlag: die Aenderung bleibt auf "pruefen", aber ohne fertige Operationen (Regel 27, besser kein
+        Vorschlag als ein falscher). Freigeben schreibt dann nichts; der Mensch traegt die Stelle von Hand ein."""
+        ae.ops = []
+        ae.status, ae.konfidenz = PRUEFEN, MITTEL
+        self._hinweis(ae, _codes.satz("kein_vorschlag"))
+        self._code(ae, "kein_vorschlag")
 
     def _ersatz_absatz(self, b: PdfBlock, tr: Treffer | None, aes: list[Aenderung]) -> None:
         """PDF-Absatz fuer die Gegenprobe A3 auch auf dem Weg ueber den alten Matcher -- aber nur, wenn die Laeufe des Blocks
