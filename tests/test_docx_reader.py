@@ -1,0 +1,457 @@
+"""Word-Leser (.docx) mit Aenderungsverfolgung (Auftrag DOCX): Woerter, Laeufe, Listennummern aus numbering.xml, Tabellen,
+Kopf-/Fusszeilen, Kommentare, Robustheit, Kreuzprobe gegen das Word-PDF und Ende-zu-Ende bis zur Excel.
+
+Die Test-Dateien baut tests/_docx_bau.py (Dokument-XML von Hand, zip im tmp_path); nur erfundene Daten (Regel 16).
+"""
+from __future__ import annotations
+
+import zipfile
+
+import pytest
+from openpyxl import load_workbook
+
+from src import config, markierung as mk
+from src.abgleich import laeufe_aus_tokens
+from src.applier import uebernehmen
+from src.docx_reader import analysiere_docx, docx_zahlen, vergleiche_mit_pdf
+from src.excel_model import ExcelModell
+from src.fehler import NutzerFehler
+from src.models import ADD, DEL, KEEP, MOD, NICHT, PRUEFEN, UEBERNOMMEN
+from src.pdf_reader import analysiere_pdf
+from src.planner import plane
+from tests._docx_bau import DocxBau, register_docx
+from tests.test_register import GRUND, G, _ae, _ops, alt_von, excel_absaetze, register_mappe, wort_pdf
+
+SPERR = [str(c) for c in config.lade("zuordnung")["planer"]["unsichere_hinweise"]]
+
+
+def _lies(tmp_path, b: DocxBau, name: str = "t.docx"):
+    return analysiere_docx(b.speichern(tmp_path / name))
+
+
+def _toks(a):
+    return [t for b in a.blocks for t in b.tokens]
+
+
+def _tok(a, text: str):
+    return next(t for t in _toks(a) if text in (t.old, t.new))
+
+
+def _codes(t) -> set[str]:
+    return set(filter(None, t.hinweis.split(";")))
+
+
+def _sperrend(a) -> set[str]:
+    return {c for t in _toks(a) for c in _codes(t) if any(c == s or c.startswith(s + "_") for s in SPERR)}
+
+
+def _fassungen(block) -> tuple[str, str]:
+    """(alter, neuer Absatz) EXAKT aus Zeichen-Laeufen und Trennern; markierter Trenner nur in seiner Fassung."""
+    alt = neu = ""
+    for i, t in enumerate(block.tokens):
+        for st, tx in (t.teile or [(t.status, t.new if t.status == ADD else t.old)]):
+            alt += tx if st in (KEEP, DEL) else ""
+            neu += tx if st in (KEEP, ADD) else ""
+        if i + 1 < len(block.tokens) and t.trenner:
+            art = getattr(t, "trenner_art", "")
+            alt += t.trenner if art != "a" else ""
+            neu += t.trenner if art != "d" else ""
+    return alt.replace("\xa0", " "), neu.replace("\xa0", " ")
+
+
+def _text(b: DocxBau, markup: str, **kw):
+    b.absatz(markup, **kw)
+
+
+# =================================================================================================
+# 1. Woerter, Status, Zeichen-Laeufe
+# =================================================================================================
+def test_nur_einfuegung_ist_neu(tmp_path):
+    b = DocxBau().absatz("Die Pumpe {+neue +}fördert Wasser.")
+    a = _lies(tmp_path, b)
+    assert a.legende_modus == "docx" and not a.markup_leiste and a.seiten == 0 and a.seiten_masse == {} and a.luecken == []
+    blk = a.blocks[0]
+    assert blk.page == 0 and blk.bbox == (0, 0, 0, 0) and blk.kind == "absatz"
+    t = _tok(a, "neue")
+    assert (t.old, t.new, t.status, t.page, t.bbox) == ("", "neue", ADD, 0, (0, 0, 0, 0))
+    assert getattr(t, "trenner_art", "") == "a"                  # das mitmarkierte Leerzeichen hinter "neue"
+    assert [x.status for x in _toks(a) if x.status != KEEP] == [ADD]
+    assert _fassungen(blk) == ("Die Pumpe fördert Wasser.", "Die Pumpe neue fördert Wasser.")
+    assert a.markierte_woerter == 1 and not _sperrend(a)
+
+
+def test_nur_streichung_ist_entfaellt(tmp_path):
+    b = DocxBau().absatz("Die Pumpe {-alte -}fördert Wasser.")
+    a = _lies(tmp_path, b)
+    t = _tok(a, "alte")
+    assert (t.old, t.new, t.status) == ("alte", "", DEL) and getattr(t, "trenner_art", "") == "d"
+    assert _fassungen(a.blocks[0]) == ("Die Pumpe alte fördert Wasser.", "Die Pumpe fördert Wasser.")
+
+
+def test_ersetzung_ohne_leerzeichen_ist_ein_wort_mit_laeufen(tmp_path):
+    b = DocxBau().absatz("Die Pumpe {-fördert-}{+hebt+} Wasser.")
+    a = _lies(tmp_path, b)
+    t = _tok(a, "hebt")
+    assert (t.old, t.new, t.status, t.teile) == ("fördert", "hebt", MOD, [(DEL, "fördert"), (ADD, "hebt")])
+    assert a.markierte_woerter == 1
+
+
+def test_zeichen_genaue_aenderung_klammern_und_wert(tmp_path):
+    """`[` + `wert` + `]` einzeln gestrichen: ein Wort mit Laeufen, wie der PDF-Leser es zerlegt."""
+    b = DocxBau().absatz("Druck {-[-}40{-]-} bar, Höhe {-[40]-}{+42.9+} Meter und Zebrafink{+e+}.")
+    a = _lies(tmp_path, b)
+    k = _tok(a, "[40]")
+    assert (k.old, k.new, k.status) == ("[40]", "40", MOD)
+    assert k.teile == [(DEL, "["), (KEEP, "40"), (DEL, "]")]
+    h = _tok(a, "42.9")
+    assert (h.old, h.new, h.teile) == ("[40]", "42.9", [(DEL, "[40]"), (ADD, "42.9")])
+    z = _tok(a, "Zebrafinke.")
+    assert (z.old, z.new, z.teile) == ("Zebrafink.", "Zebrafinke.", [(KEEP, "Zebrafink"), (ADD, "e"), (KEEP, ".")])
+
+
+@pytest.mark.parametrize("markup,alt,neu", [
+    ("Die {-Pumpe -}{+Anlage +}steht", "Die Pumpe steht", "Die Anlage steht"),
+    ("Pumpe{- -}Ventil", "Pumpe Ventil", "PumpeVentil"),
+    ("Pumpe{+ +}Ventil", "PumpeVentil", "Pumpe Ventil"),
+    ("Pumpe{- -}{+-+}Ventil", "Pumpe Ventil", "Pumpe-Ventil"),
+    ("Pumpe {+neu+}x", "Pumpe x", "Pumpe neux"),
+    ("Pumpe{+ neu+}x", "Pumpex", "Pumpe neux"),
+    ("Norm {-ISO 11223‑-}{+XYZ-HD 11223-+}6", "Norm ISO 11223‑6", "Norm XYZ-HD 11223-6"),
+    ("Pumpe {-alte Ventile -}Becken", "Pumpe alte Ventile Becken", "Pumpe Becken"),
+], ids=["wort_mit_leer", "leer_weg", "leer_neu", "leer_weg_strich_neu", "einfuegung_geklebt", "einfuegung_vorn",
+        "norm_folge", "geloeschte_gruppe"])
+def test_markierter_leerraum_steht_nur_in_seiner_fassung(tmp_path, markup, alt, neu):
+    a = _lies(tmp_path, DocxBau().absatz(markup + " und weiter."))
+    va, vn = _fassungen(a.blocks[0])
+    assert va == alt + " und weiter." and vn == neu + " und weiter."
+    la = laeufe_aus_tokens(a.blocks[0].tokens)
+    assert " ".join("".join(l.text for l in la if l.art in ("k", "d", "s")).split()) == alt + " und weiter."
+    assert " ".join("".join(l.text for l in la if l.art in ("k", "a", "s")).split()) == neu + " und weiter."
+
+
+def test_ganzer_absatz_neu_und_ganzer_absatz_gestrichen(tmp_path):
+    b = DocxBau()
+    b.absatz("Erster Absatz bleibt.")
+    b.absatz("{+Ein ganz neuer Absatz.+}", marke="ins")
+    b.absatz("{-Dieser Absatz entfällt.-}", marke="del")
+    b.absatz("Letzter Absatz bleibt.")
+    a = _lies(tmp_path, b)
+    assert [x.ganz_neu for x in a.blocks] == [False, True, False, False]
+    assert [x.ganz_geloescht for x in a.blocks] == [False, False, True, False]
+    assert not _sperrend(a) and a.luecken == []
+    assert a.markierte_woerter == 4 + 3
+
+
+def test_verschoben_und_nur_formataenderung(tmp_path):
+    b = DocxBau().absatz("{<Ventil<} bleibt {>Ventil>} hier und {f:fett} nur formatiert.")
+    a = _lies(tmp_path, b)
+    toks = _toks(a)
+    assert [(t.old, t.new, t.status) for t in toks if t.status != KEEP] == [("Ventil", "", DEL), ("", "Ventil", ADD)]
+    fett = _tok(a, "fett")
+    assert fett.status == KEEP                                   # reine Formatänderung ist keine Änderung
+    assert any("Formatänderungen" in w for w in a.warnungen)
+
+
+def test_eingefuegt_und_danach_gestrichen_hat_keine_wirkung(tmp_path):
+    b = DocxBau().absatz("Pumpe ")
+    b.koerper[-1] = b.koerper[-1].replace("</w:p>", '<w:ins w:id="900" w:author="E"><w:del w:id="901" w:author="E">'
+                                          '<w:r><w:delText>Geist</w:delText></w:r></w:del></w:ins><w:r><w:t> Ventil</w:t></w:r></w:p>')
+    a = _lies(tmp_path, b)
+    assert [t.old for t in _toks(a)] == ["Pumpe", "Ventil"] and a.markierte_woerter == 0
+    assert any("keine Wirkung" in w for w in a.warnungen)
+
+
+def test_gross_geschrieben_durch_formatvorlage(tmp_path):
+    b = DocxBau().formatvorlagen([{"id": "Gross", "name": "Gross", "gross": True}])
+    b.absatz("Pumpenhaus {+und Lager+}", stil="Gross")
+    a = _lies(tmp_path, b)
+    assert _tok(a, "PUMPENHAUS").status == KEEP and _tok(a, "LAGER").status == ADD
+
+
+# =================================================================================================
+# 2. Listennummern aus numbering.xml
+# =================================================================================================
+def _liste(tmp_path, ebenen: list[tuple], absaetze: list[tuple], nums=None, stile=None):
+    """absaetze: (markup, (numId, ilvl), marke)"""
+    b = DocxBau()
+    b.nummerierung({0: [b.lvl(*e[:3], **e[3]) if len(e) > 3 else b.lvl(*e) for e in ebenen]}, nums or {1: (0, {})})
+    for m, num, marke in absaetze:
+        b.absatz(m, num=num, marke=marke)
+    return analysiere_docx(b.speichern(tmp_path / "l.docx"))
+
+
+def _labels(a):
+    return [(bl.tokens[0].old, bl.tokens[0].new, bl.tokens[0].status) for bl in a.blocks]
+
+
+def test_nummern_dezimal_buchstaben_roemisch_und_neustart_je_ebene(tmp_path):
+    ebenen = [(0, "decimal", "%1."), (1, "lowerLetter", "%2)"), (2, "lowerRoman", "(%3)"), (3, "upperLetter", "%4."),
+              (4, "decimal", "%1.%2.%5")]
+    n = [("x", (1, i), "") for i in (0, 1, 1, 2, 2, 2, 0, 1, 3, 3, 4)]
+    a = _liste(tmp_path, ebenen, n)
+    assert [l[0] for l in _labels(a)] == ["1.", "a)", "b)", "(i)", "(ii)", "(iii)", "2.", "a)", "A.", "B.", "2.a.1"]
+    assert all(l[2] == KEEP for l in _labels(a))
+    b = DocxBau()
+    b.nummerierung({0: [b.lvl(0, "decimal", "%1."), b.lvl(1, "lowerLetter", "%2)"), b.lvl(2, "decimal", "%1.%2.%3", lgl=True)]},
+                   {1: (0, {})})
+    for i in (0, 1, 2):
+        b.absatz("x", num=(1, i))
+    assert [bl.tokens[0].old for bl in analysiere_docx(b.speichern(tmp_path / "lgl.docx")).blocks] == ["1.", "a)", "1.1.1"]
+
+
+def test_buchstaben_ab_27_wie_word_und_alternativ(tmp_path):
+    ebenen = [(0, "lowerLetter", "%1."), (1, "upperLetter", "%2.")]
+    a = _liste(tmp_path, ebenen, [("x", (1, 0), "")] * 28)
+    labels = [l[0] for l in _labels(a)]
+    assert labels[:3] == ["a.", "b.", "c."] and labels[25:] == ["z.", "aa.", "bb."]
+    cfg = {"docx": {**config.lade("docx"), "listen": {**config.lade("docx")["listen"], "buchstaben_folge": "alphabet"}}}
+    b = DocxBau()
+    b.nummerierung({0: [b.lvl(0, "upperLetter", "%1.")]}, {1: (0, {})})
+    for _ in range(54):
+        b.absatz("x", num=(1, 0))
+    a2 = analysiere_docx(b.speichern(tmp_path / "a.docx"), cfg)
+    labels2 = [bl.tokens[0].old for bl in a2.blocks]
+    assert labels2[25:29] == ["Z.", "AA.", "AB.", "AC."] and labels2[-1] == "BB."
+
+
+def test_start_override_und_start_wert_und_lvl_restart(tmp_path):
+    b = DocxBau()
+    b.nummerierung({0: [b.lvl(0, "decimal", "%1.", start=5), b.lvl(1, "lowerLetter", "%2.", restart=0)]},
+                   {1: (0, {}), 2: (0, {0: 10})})
+    for num in [(1, 0), (1, 1), (1, 0), (1, 1), (2, 0), (2, 1)]:
+        b.absatz("x", num=num)
+    a = analysiere_docx(b.speichern(tmp_path / "s.docx"))
+    # Ebene 2 startet nie neu (lvlRestart 0): a. b. c. d.; numId 2 beginnt bei 10 (startOverride)
+    assert [bl.tokens[0].old for bl in a.blocks] == ["5.", "a.", "6.", "b.", "10.", "c."]
+
+
+def test_bullet_und_unbekanntes_zahlformat(tmp_path):
+    b = DocxBau()
+    b.nummerierung({0: [b.lvl(0, "bullet", ""), b.lvl(1, "ordinalText", "%2")]}, {1: (0, {})})
+    b.absatz("Punkt eins", num=(1, 0))
+    b.absatz("Punkt zwei", num=(1, 1))
+    a = analysiere_docx(b.speichern(tmp_path / "b.docx"))
+    assert a.blocks[0].tokens[0].old == "•"
+    assert a.blocks[1].tokens[0].old == "Punkt"                  # Nummer unbekannt -> fehlt, aber gemeldet
+    assert any(l["art"] == "sonstiges" for l in a.luecken) and any("Zahlenformat" in w for w in a.warnungen)
+
+
+def test_nummernaenderung_wird_ein_label_wort_wie_beim_pdf(tmp_path):
+    """a. gestrichen -> aus b. wird a.: das Label ist EIN Wort mit Laeufen (alt "b.", neu "a."), wie das gruene "c.a." im PDF."""
+    ebenen = [(0, "lowerLetter", "%1.")]
+    a = _liste(tmp_path, ebenen, [("Erster Punkt bleibt.", (1, 0), ""), ("{-Dieser Punkt entfällt.-}", (1, 0), "del"),
+                                  ("Dritter Punkt.", (1, 0), ""), ("{+Neuer Punkt.+}", (1, 0), "ins")])
+    assert _labels(a) == [("a.", "a.", KEEP), ("b.", "", DEL), ("c.", "b.", MOD), ("", "c.", ADD)]
+    lab = a.blocks[2].tokens[0]
+    assert lab.teile == [(DEL, "c."), (ADD, "b.")]
+    assert a.blocks[1].ganz_geloescht and a.blocks[3].ganz_neu
+    assert a.markierte_woerter == 3 + 1 + 3 + 1 + 1 + 0 + 1 or a.markierte_woerter > 0
+
+
+def test_nummer_aus_formatvorlage_und_ueberschrift_nummern(tmp_path):
+    """Ueberschrift 1/2 mit Nummerierung aus der Formatvorlage: "PART 1" und "1.1" -> Section; Ebene 3 bleibt Absatz."""
+    b = DocxBau()
+    b.nummerierung({0: [b.lvl(0, "decimal", "PART %1", suff="space", pstil="Ueberschrift1"),
+                        b.lvl(1, "decimal", "%1.%2", pstil="Ueberschrift2"),
+                        b.lvl(2, "upperLetter", "%3.", pstil="Ueberschrift3")]}, {1: (0, {})})
+    b.formatvorlagen([{"id": "Ueberschrift1", "name": "heading 1", "num": (1, 0)},
+                      {"id": "Ueberschrift2", "name": "heading 2", "num": (1, 1)},
+                      {"id": "Ueberschrift3", "name": "heading 3", "num": (1, 2)}])
+    b.absatz("ALLGEMEINES", stil="Ueberschrift1")
+    b.absatz("PUMPENHAUS", stil="Ueberschrift2")
+    b.absatz("Die Pumpe {+hebt+} Wasser.", stil="Ueberschrift3")
+    b.absatz("{-LAGERUNG-}{+LAGER+}", stil="Ueberschrift2")
+    b.absatz("Ersatzteile.", stil="Ueberschrift3")
+    a = _lies(tmp_path, b)
+    assert [(x.kind, x.section_alt, x.section_neu) for x in a.blocks] == [
+        ("ueberschrift", "Part 1", "Part 1"), ("ueberschrift", "1.1", "1.1"), ("absatz", "1.1", "1.1"),
+        ("ueberschrift", "1.2", "1.2"), ("absatz", "1.2", "1.2")]
+    assert [t.old for t in a.blocks[1].tokens] == ["1.1", "PUMPENHAUS"]
+    assert a.blocks[2].tokens[0].old == "A." and a.blocks[4].tokens[0].old == "A."          # Neustart unter jeder 1.x
+
+
+def test_geaenderte_section_nummer_getippt_und_automatisch(tmp_path):
+    b = DocxBau().absatz("PART 1 ALLGEMEINES").absatz("1.1\tPUMPENHAUS").absatz("Text eins.").absatz("{-1.2-}{+1.3+}\tLAGERUNG")
+    a = _lies(tmp_path, b)
+    assert [(x.kind, x.section_alt, x.section_neu) for x in a.blocks] == [
+        ("ueberschrift", "Part 1", "Part 1"), ("ueberschrift", "1.1", "1.1"), ("absatz", "1.1", "1.1"), ("ueberschrift", "1.2", "1.3")]
+    # automatisch: eine neue Section davor schiebt die Nummer (Original 1.1 -> Endstand 1.2)
+    n = DocxBau()
+    n.nummerierung({0: [n.lvl(0, "decimal", "%1.%1")]}, {1: (0, {})})
+    n.formatvorlagen([{"id": "Ueberschrift1", "name": "heading 1", "num": (1, 0)}])
+    n.absatz("{+NEUE SECTION+}", stil="Ueberschrift1", marke="ins")
+    n.absatz("LAGERUNG", stil="Ueberschrift1")
+    a2 = analysiere_docx(n.speichern(tmp_path / "n.docx"))
+    assert a2.blocks[0].section_alt is None and a2.blocks[0].section_neu == "1.1"
+    assert (a2.blocks[1].section_alt, a2.blocks[1].section_neu) == ("1.1", "2.2")
+    assert a2.blocks[1].tokens[0].teile == [(DEL, "1.1"), (ADD, "2.2")]
+
+
+def test_nummer_nach_pprchange_ist_im_original_die_alte(tmp_path):
+    """Absatzformat geaendert (Liste neu zugewiesen): im Original gab es keine Nummer, im Endstand eine."""
+    b = DocxBau()
+    b.nummerierung({0: [b.lvl(0, "decimal", "%1.")]}, {1: (0, {})})
+    b.absatz("Alter Absatz ohne Nummer.", num=(1, 0), ppr_extra='<w:pPrChange w:id="5" w:author="E"><w:pPr/></w:pPrChange>')
+    a = analysiere_docx(b.speichern(tmp_path / "p.docx"))
+    lab = a.blocks[0].tokens[0]
+    assert (lab.old, lab.new, lab.status) == ("", "1.", ADD)
+
+
+# =================================================================================================
+# 3. Absatzmarken: verbunden / getrennt
+# =================================================================================================
+def test_neuer_absatz_hinter_einem_alten_ist_kein_getrennter_absatz(tmp_path):
+    """Enter am Ende eines Absatzes + neuer Text: die Absatzmarke des ersten ist neu, der zweite ist ganz neu (normal)."""
+    b = DocxBau()
+    b.absatz("Alter Absatz bleibt.", marke="ins")
+    b.absatz("{+Neuer Absatz.+}")
+    a = _lies(tmp_path, b)
+    assert a.blocks[1].ganz_neu and not a.blocks[0].hat_aenderung
+    assert a.luecken == [] and not _sperrend(a)
+
+
+def test_getrennter_absatz_sperrt_und_ist_eine_luecke(tmp_path):
+    b = DocxBau()
+    b.absatz("Erster Teil bleibt.", marke="ins")
+    b.absatz("Zweiter Teil {+neu+} bleibt.")
+    a = _lies(tmp_path, b)
+    assert "absatzgrenze_unklar" in _sperrend(a)
+    assert all("absatzgrenze_unklar" in _codes(t) for bl in a.blocks for t in bl.tokens)
+    assert any("getrennt" in h for bl in a.blocks for h in bl.hinweise)
+    assert len(a.luecken) == 1 and a.luecken[0]["art"] == "sonstiges" and a.luecken[0]["seite"] == 0
+    assert any("Absatzmarken" in w for w in a.warnungen)
+
+
+def test_verbundene_absaetze_sperren_und_sind_eine_luecke(tmp_path):
+    b = DocxBau()
+    b.absatz("Erster Teil bleibt.", marke="del")
+    b.absatz("Zweiter Teil bleibt.")
+    a = _lies(tmp_path, b)
+    assert "absatzgrenze_unklar" in _sperrend(a)
+    assert any("verbunden" in h for bl in a.blocks for h in bl.hinweise)
+    assert len(a.luecken) == 1
+
+
+def test_gestrichener_absatz_vor_einem_absatz_ist_kein_verbundener(tmp_path):
+    b = DocxBau()
+    b.absatz("{-Gestrichener Absatz.-}", marke="del")
+    b.absatz("Absatz bleibt.")
+    a = _lies(tmp_path, b)
+    assert a.blocks[0].ganz_geloescht and a.luecken == [] and not _sperrend(a)
+
+
+# =================================================================================================
+# 4. Tabellen, Kopf/Fuss, Kommentare, Textfelder, Fussnoten
+# =================================================================================================
+def test_tabelle_eine_zelle_ein_block_mit_hinweis(tmp_path):
+    b = DocxBau().absatz("Vor der Tabelle.")
+    b.tabelle([["Name", "Wert"], ["Pumpe", "{-12-}{+14+} bar"], ["Ventil", "{+neu+}"]])
+    b.absatz("Nach der Tabelle.")
+    a = _lies(tmp_path, b)
+    assert [len(bl.tokens) for bl in a.blocks] == [3, 1, 1, 1, 2, 1, 1, 3]
+    zelle = a.blocks[4]
+    assert _tok(a, "14").status == MOD and "tabelle" in _codes(_tok(a, "14"))
+    assert "tabelle" not in _codes(a.blocks[0].tokens[0]) and "tabelle" in _codes(a.blocks[6].tokens[0])
+    assert any("Tabelle" in h for h in zelle.hinweise)
+    assert "tabelle" in _sperrend(a)
+
+
+def test_gestrichene_tabellenzeile(tmp_path):
+    b = DocxBau().tabelle([["Pumpe", "Ventil"], ["Alt", "Zeile"]], zeilen_status={1: "del"})
+    a = _lies(tmp_path, b)
+    assert [x.ganz_geloescht for x in a.blocks] == [False, False, True, True]
+    assert any("Zeilen gestrichen" in w for w in a.warnungen)
+
+
+def test_kopf_und_fuss_getrennt_in_ignoriert(tmp_path):
+    b = DocxBau().absatz("Haupttext {+neu+}.")
+    b.kopfzeile("Projekt Zebrafink {-[Name]-}{+Ostflügel+}")
+    b.fusszeile("40 05 13 - Seite 3")
+    a = _lies(tmp_path, b)
+    assert [x for x in a.ignoriert] == [
+        {"seite": 0, "grund": "kopf_fuss", "woerter": 1, "text": "Projekt Zebrafink Ostflügel"},
+        {"seite": 0, "grund": "kopf_fuss", "woerter": 0, "text": "40 05 13 - Seite 3"}]
+    woerter = {x for t in _toks(a) for x in (t.old, t.new)}
+    assert "Zebrafink" not in woerter and "Ostflügel" not in woerter
+    assert a.markierte_woerter == 1 + 1                          # neu im Text + 1 Wort in der Kopfzeile
+
+
+def test_kommentare_stehen_nur_in_randnotizen(tmp_path):
+    b = DocxBau().absatz("Haupttext.")
+    b.kommentar("Bitte die Pumpe prüfen")
+    a = _lies(tmp_path, b)
+    assert a.randnotizen == [{"seite": 0, "art": "kommentar", "text": "Bitte die Pumpe prüfen", "y": 0.0}]
+    assert "prüfen" not in {x for t in _toks(a) for x in (t.old, t.new)}
+    assert any("1 Kommentare" in w for w in a.warnungen)
+
+
+def test_textfeld_fussnote_und_unbekanntes_nie_still(tmp_path):
+    b = DocxBau().absatz("Haupttext mit Marke.")
+    box = ('<w:r><mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice>'
+           '<w:drawing><w:txbxContent><w:p><w:ins w:id="7" w:author="E"><w:r><w:t>Neu im Feld</w:t></w:r></w:ins></w:p></w:txbxContent>'
+           '</w:drawing></mc:Choice><mc:Fallback><w:pict><w:txbxContent><w:p><w:r><w:t>Doppelt</w:t></w:r></w:p></w:txbxContent></w:pict>'
+           '</mc:Fallback></mc:AlternateContent></w:r>')
+    b.koerper[-1] = b.koerper[-1].replace("</w:p>", box + '<w:r><w:footnoteReference w:id="1"/></w:r>'
+                                          '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+                                          '<m:r><m:t>x2</m:t></m:r></m:oMath></w:p>')
+    b.fussnote("Fußnote mit {+neuem+} Text")
+    a = _lies(tmp_path, b)
+    assert [t.old for t in _toks(a)] == ["Haupttext", "mit", "Marke."]
+    texte = " ".join(a.warnungen)
+    assert "Textfelder" in texte and "Fußnoten" in texte and "unbekannte Bestandteile" in texte
+    luecken = sorted(l["beschreibung"] for l in a.luecken)
+    assert len(luecken) == 3 and sum(l["woerter"] for l in a.luecken) >= 3 + 1
+    assert not any("Neu im Feld" in x or "Doppelt" in x for x in a.warnungen + luecken)       # keine Inhalte (Regel 16)
+
+
+# =================================================================================================
+# 5. Robustheit
+# =================================================================================================
+def test_kaputtes_zip_alte_doc_fehlendes_dokument_und_passwort(tmp_path):
+    kaputt = tmp_path / "k.docx"
+    kaputt.write_bytes(b"das ist kein zip")
+    with pytest.raises(NutzerFehler, match="keine gültige Word-Datei"):
+        analysiere_docx(kaputt)
+    alt = tmp_path / "alt.doc"
+    alt.write_bytes(bytes.fromhex("D0CF11E0A1B11AE1") + b"\0" * 600)
+    with pytest.raises(NutzerFehler, match=r"alte Word-Datei \(\.doc"):
+        analysiere_docx(alt)
+    pw = tmp_path / "pw.docx"
+    pw.write_bytes(bytes.fromhex("D0CF11E0A1B11AE1") + b"\0" * 64 + "EncryptedPackage".encode("utf-16-le") + b"\0" * 64)
+    with pytest.raises(NutzerFehler, match="Passwort"):
+        analysiere_docx(pw)
+    ohne = DocxBau().absatz("x").speichern(tmp_path / "o.docx", ohne_dokument=True)
+    with pytest.raises(NutzerFehler, match="word/document.xml fehlt"):
+        analysiere_docx(ohne)
+    with pytest.raises(NutzerFehler, match="nicht gefunden"):
+        analysiere_docx(tmp_path / "gibt_es_nicht.docx")
+    xml_kaputt = DocxBau().speichern(tmp_path / "x.docx", extra={"word/document.xml": "<w:document><w:body>"})
+    with pytest.raises(NutzerFehler, match="beschädigt"):
+        analysiere_docx(xml_kaputt)
+    doctype = DocxBau().speichern(tmp_path / "d.docx", extra={"word/document.xml": '<!DOCTYPE x [<!ENTITY a "b">]><x/>'})
+    with pytest.raises(NutzerFehler, match="Sicherheitsgründen"):
+        analysiere_docx(doctype)
+
+
+def test_fehlertexte_sind_einfach_und_ohne_pfade(tmp_path):
+    kaputt = tmp_path / "geheim_name.docx"
+    kaputt.write_bytes(b"nein")
+    with pytest.raises(NutzerFehler) as e:
+        analysiere_docx(kaputt)
+    assert "geheim_name" not in e.value.meldung and str(tmp_path) not in e.value.meldung
+
+
+def test_keine_aenderungen_ist_eine_warnung(tmp_path):
+    a = _lies(tmp_path, DocxBau().absatz("Nur normaler Text."))
+    assert any("keine Textänderungen" in w for w in a.warnungen)
+
+
+# =================================================================================================
+# 6. Steckbrief-Zahlen (kein Text)
+# =================================================================================================
+def test_docx_zahlen_nur_zahlen_und_formen(tmp_path):
+    b = DocxBau().absatz("Pumpe {+neu+} {-alt-} {<a<} {>a>}")
+    b.tabelle([["x"]])
+    a, z = docx_zahlen(b.speichern(tmp_path / "z.docx"))
+    assert z.zaehler["ins"] == 1 and z.zaehler["del"] == 1 and z.zaehler["move_from"] == 1 and z.zaehler["move_to"] == 1
+    assert z.zaehler["tabellen"] == 1 and z.autoren == {"Erfunden"}

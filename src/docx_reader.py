@@ -1121,10 +1121,8 @@ def _ist_kopf(a: _Abs, toks: list[PdfToken], lay: dict, ueber_re: re.Pattern, ma
 def _kopf_fuss(paket: _Paket, leser: _Leser, ergebnis: PdfAnalyse) -> None:
     kopf_re = re.compile(str(leser.dcfg.get("kopf_teile", r"^word/header\d*\.xml$")))
     fuss_re = re.compile(str(leser.dcfg.get("fuss_teile", r"^word/footer\d*\.xml$")))
-    for name in sorted(paket.namen):
-        art = "kopf" if kopf_re.match(name) else "fuss" if fuss_re.match(name) else ""
-        if not art:
-            continue
+    teile = [(0, n, "kopf") for n in paket.namen if kopf_re.match(n)] + [(1, n, "fuss") for n in paket.namen if fuss_re.match(n)]
+    for _, name, art in sorted(teile):
         wurzel = paket.xml(name)
         if wurzel is None:
             continue
