@@ -19,6 +19,7 @@ from src.fehler import NutzerFehler
 from src.models import ADD, DEL, KEEP, MOD, NICHT, PRUEFEN, UEBERNOMMEN
 from src.pdf_reader import analysiere_pdf
 from src.planner import plane
+from src.protokoll import bilanz
 from tests._docx_bau import DocxBau, register_docx
 from tests.test_register import GRUND, G, _ae, _ops, alt_von, excel_absaetze, register_mappe, wort_pdf
 
@@ -571,6 +572,8 @@ def test_kreuzprobe_docx_und_word_pdf_geben_dieselben_aenderungen(tmp_path, name
     p_pdf, p_docx, _ = _beide(tmp_path, _szenario(SZENARIEN[name]), auto)
     assert len(p_docx.aenderungen) >= 1
     assert _kurz(p_docx) == _kurz(p_pdf)
+    bil = bilanz(p_docx.aenderungen, p_docx.markierte_woerter, p_docx.ignoriert, p_docx.luecken)
+    assert bil["stimmt"] and bil["vollstaendig"]                 # Bilanz-Prinzip: nichts geht still verloren
 
 
 def test_kreuzprobe_neuer_listenpunkt_und_neue_zeile(tmp_path):
@@ -596,6 +599,25 @@ def test_kreuzprobe_wortliste_ueberlappt_bis_auf_positionen_nichts(tmp_path):
     assert not v2["gleich"] and v2["neu"]["nur_docx"] + v2["neu"]["nur_pdf"] > 0 and v2["alt"]["nur_docx"] == 0
     assert set(v2["neu"]["beispiele"][0]) == {"position_docx", "laenge_docx", "position_pdf", "laenge_pdf"}
     assert "Pumpe" not in repr(v2)                               # nie Text aus dem Dokument im Protokoll (Regel 16)
+
+
+def test_bekannte_abweichungen_gegenueber_dem_word_pdf(tmp_path):
+    """Dokumentierte Unterschiede (kein Fehler, sondern mehr Wissen im XML):
+    1. Absatzmarken-Aenderungen (getrennte / verbundene Absaetze) sieht das PDF nicht; der Word-Leser sperrt den Absatz
+       (absatzgrenze_unklar) und meldet eine Luecke. Dasselbe Dokument als PDF wuerde die Aenderung automatisch eintragen.
+    2. Kopf- und Fusszeilen stehen im XML EINMAL (nicht je Seite): `ignoriert` hat einen Eintrag je Absatz und Teil; unveraenderte
+       Zeilen stehen mit woerter 0 darin (der Planer liest die Spec auch aus einer Fusszeile ohne Aenderung).
+    3. Der Tabulator nach einer Listennummer ist ein normaler Trenner (im PDF fehlt das Zeichen ebenfalls).
+    4. Seite, Position und Linien gibt es nicht (page 0, bbox 0): keine Seitenumbruch-Heuristik, keine Lese-Luecke."""
+    pdf_absaetze = _szenario({2: ("sub", "A.", "Die Pumpe {-foerdert-}{+hebt+} das Wasser in das obere Becken.")})
+    p_pdf, p_docx, xlsx = _beide(tmp_path, pdf_absaetze)
+    assert [a.status for a in p_pdf.aenderungen] == [a.status for a in p_docx.aenderungen] == [UEBERNOMMEN]
+    b = DocxBau()
+    b.register_nummerierung()
+    b.absatz("Die Pumpe {-foerdert-}{+hebt+} das Wasser in das obere Becken.", num=(1, 0), marke="ins")        # getrennt
+    b.absatz("Zweiter Teil.", num=(1, 0))
+    plan = plane(analysiere_docx(b.speichern(tmp_path / "g.docx")), ExcelModell(xlsx))
+    assert plan.aenderungen and all(a.status != UEBERNOMMEN for a in plan.aenderungen) and plan.luecken
 
 
 # =================================================================================================
@@ -654,6 +676,8 @@ def test_ende_zu_ende_aenderungen_nummern_und_neue_zeile_mit_gruener_gegenprobe(
     plan, xl, xlsx, out = _eintragen(tmp_path, pdf)
     assert plan.aenderungen and all(a.status == UEBERNOMMEN and a.wirkung == "ok" for a in plan.aenderungen), \
         [(a.id, a.typ, a.status, a.pruefcodes) for a in plan.aenderungen]
+    bil = bilanz(plan.aenderungen, plan.markierte_woerter, plan.ignoriert, plan.luecken)
+    assert bil["stimmt"] and bil["vollstaendig"] and bil["uebernommen"] == len(plan.aenderungen)
     assert not [c for a in plan.aenderungen for c in a.pruefcodes if c.startswith("gegenprobe_")]
     ws = load_workbook(str(out), rich_text=True)["Abgleich"]
     st = mk.stuecke_aus_zelle(ws.cell(10, G))
