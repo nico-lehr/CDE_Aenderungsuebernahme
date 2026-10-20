@@ -390,3 +390,16 @@ def test_bildprobe_ohne_pdf_oder_bei_word_eingabe_laeuft_nicht(basis, word_marki
     weg.pfad = str(Path(basis.pa.pfad).with_name("gibt_es_nicht.pdf"))
     erg = konsens.bildprobe(weg, aend)
     assert not erg.gelaufen and erg.abweichend == 0
+
+
+def test_ohne_pdf_keine_bildprobe_und_ausfall_der_zweitpruefung_ist_nie_still(basis, tmp_path, word_markiert, monkeypatch):
+    aend, res = _schreibe(basis, tmp_path / "a.xlsx", mit_pdf=False)
+    assert "bild" not in res.konsens and res.konsens["text"]["gelaufen"]            # Text-Probe braucht das PDF nicht
+
+    def kaputt(*a, **kw):
+        raise ValueError("kaputt")
+    monkeypatch.setattr(konsens, "pruefe_text", kaputt)
+    aend2, res2 = _schreibe(basis, tmp_path / "b.xlsx")
+    assert res2.konsens["text"] == {"gelaufen": False, "fehler": "ValueError"}
+    assert any("Zweitprüfung" in w for w in res2.warnungen)                           # der Ausfall wird gemeldet
+    assert [(x.id, x.status) for x in aend2] == [(x.id, x.status) for x in aend]      # sonst bleibt alles wie es war

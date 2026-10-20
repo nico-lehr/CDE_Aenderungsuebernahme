@@ -728,6 +728,9 @@ def pruefe_text(quelle: str | Path, ziel: str | Path, absaetze: list[Absatz] | N
                 blaetter = {o.blatt for o in (a.ops if a is not None else [])} | {ab.blatt for ab in absaetze if aid in ab.aenderungen}
                 if not blaetter or blaetter & fremd_blaetter:
                     erg.abweichungen.setdefault(aid, "fremd")
+            if not any(v == "fremd" for v in erg.abweichungen.values()):      # nicht zuzuordnen: im Zweifel alle (nie still)
+                for aid in auto_ids:
+                    erg.abweichungen.setdefault(aid, "fremd")
         erg.gelaufen = True
     finally:
         for w, fremd_geladen in ((wb_q, _wb_quelle is not None), (wb_z, _wb_ziel is not None)):

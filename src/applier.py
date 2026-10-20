@@ -38,6 +38,7 @@ from openpyxl.formula.translate import Translator
 from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 
+from . import codes as _codes
 from . import config
 from . import konsens
 from . import markierung as mk
@@ -783,6 +784,7 @@ def _uebernehmen_einmal(aenderungen: list[Aenderung], quelle: str | Path, ziel: 
             if ae is not None:
                 entferne(ae, PRUEFEN, "Zweitprüfung: Im Seitenbild ist die Markierung anders als gelesen.", *was)
                 _code(ae, "konsens_bild")
+                ae.grund_einfach = _codes.grund_einfach(ae)
         aktiv = [a for a in aktiv if a.id in nach_id]
 
     # --- Stimmt der erwartete Text noch? Ist der Neutext schreibbar? ------------------------------------------
@@ -1317,12 +1319,19 @@ def _uebernehmen_einmal(aenderungen: list[Aenderung], quelle: str | Path, ziel: 
                     nz_ziel[op.aenderung] = (blatt, perg.neue_zeilen[nz_index[id(op)]][1])
         ergebnis.text_pruefung = lambda pfad, **kw: konsens.pruefe_text(quelle, pfad, absaetze, angew, aenderungen, neue_zeile,
                                                                         ziele, cfg, auto, nz_ziel, **kw)
-        kt = ergebnis.text_pruefung(ziel)
-        ergebnis.konsens["text"] = {"gelaufen": kt.gelaufen, "geprueft": kt.geprueft, "unpruefbar": kt.unpruefbar,
-                                    "abweichend": len(kt.abweichungen), "fremde_zellen": kt.fremd}
-        if kt.abweichungen:
-            kontrolle.close()
-            raise _KonsensNeustart(kt.abweichungen)
+        try:
+            kt = ergebnis.text_pruefung(ziel)
+        except Exception as e:                      # noqa: BLE001 -- die zweite Pruefung faellt aus; die uebrigen Pruefungen gelten weiter
+            kt = None
+            ergebnis.konsens["text"] = {"gelaufen": False, "fehler": type(e).__name__}
+            ergebnis.warnungen.append("Die Zweitprüfung (Konsens-Text) konnte nicht laufen. Alle anderen Prüfungen haben "
+                                      "stattgefunden; bitte das Ergebnis stichprobenartig prüfen.")
+        if kt is not None:
+            ergebnis.konsens["text"] = {"gelaufen": kt.gelaufen, "geprueft": kt.geprueft, "unpruefbar": kt.unpruefbar,
+                                        "abweichend": len(kt.abweichungen), "fremde_zellen": kt.fremd}
+            if kt.abweichungen:
+                kontrolle.close()
+                raise _KonsensNeustart(kt.abweichungen)
 
     # --- Gegenprobe A3 (ADR 0004): steht jeder betroffene Absatz so in der Excel, wie das PDF es verlangt? ----------
     durchgefallen: dict[str, str] = {}             # Aenderungs-ID -> Pruefcode
@@ -1496,6 +1505,8 @@ def _uebernehmen_einmal(aenderungen: list[Aenderung], quelle: str | Path, ziel: 
             if aid in zurueck:
                 _hinweise(ae, "Die Änderung wurde deshalb nicht in die Ergebnis-Excel geschrieben.")
             ae.konfidenz, ae.wirkung, ae.nachkontrolle = NIEDRIG, WIRKUNG_ABWEICHUNG, "abweichung"
+            if code in ("konsens_text", "gegenprobe_gruppe") and aid in konsens_zurueck:
+                ae.grund_einfach = _codes.grund_einfach(ae)         # Dashboard-Satz passend zum neuen Status
 
     # --- Hinweise: Inhalt in gestrichenen Sections ----------------------------------------
     aktive_ops = [o for a in aktiv if a.status == UEBERNOMMEN for o in a.ops]
