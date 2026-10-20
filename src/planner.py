@@ -1001,6 +1001,7 @@ class _Planer:
         out: list[Lauf] = []
         ende = 0                                              # bis hierher ist die Excel in `out` untergebracht
         offene_trenner: list[int] = []                        # Indizes (in out) von Trennern seit dem letzten Stueck mit Zeichen
+        behalten: list[Lauf] = []                             # Trenner HINTER einem neuen Stueck, in der alten Fassung zusammengelegt
 
         def anfuegen(art: str, text: str, aenderung: str = "", optional: bool = False) -> None:
             if art in ("k", "s") and out and out[-1].art == art and out[-1].aenderung == aenderung and not optional:
@@ -1014,10 +1015,11 @@ class _Planer:
                 continue
             if i not in lage:
                 # nicht sichtbar in der alten Fassung (zusammengelegter Trenner). Steht er hinter einem neuen Stueck ("Liste a.",
-                # Polster, {+Alle+} " " "Die"), bleibt er als Trenner erhalten: sonst klebt das neue Wort am Nachbarn und die
-                # Projektion wird verworfen (die Operationen schrieben das neue Wort mitten ins Polster der Listennummer).
+                # Polster, {+Alle+} " " "Die"), merken wir ihn (siehe unten `behalten`).
                 if l.art == "s" and out and out[-1].art == "a":
-                    out.append(Lauf("s", l.text, "", l.optional))
+                    t = Lauf("s", l.text, "", l.optional)
+                    behalten.append(t)
+                    out.append(t)
                 continue
             a0, e0 = lage[i]
             ziel = [abb[p] for p in range(a0, e0) if p in abb]
@@ -1072,6 +1074,17 @@ class _Planer:
                 out[j] = Lauf("s", rest, "", out[j].optional)
             else:
                 anfuegen("k", rest)
+        # Der Trenner hinter dem neuen Stueck bleibt nur, wenn der Trenner DAVOR Excel-eigener Leerraum ist (Polster der
+        # Listennummer, Tab, doppelte oder geschuetzte Leerzeichen): Dort schrieben die Operationen das neue Wort mitten in diesen
+        # Leerraum ("a." + NBSP + {+Alle+} + NBSP NBSP ...), und der Absatz wurde verworfen, weil das neue Wort am Nachbarn klebte.
+        # Bei einem einfachen Leerzeichen davor sind Operationen und Projektion gleich (nichts zu retten, nichts zu aendern).
+        for t in behalten:
+            n = next(x for x, y in enumerate(out) if y is t)
+            vor = n - 1
+            while vor >= 0 and out[vor].art == "a":
+                vor -= 1
+            if not (vor >= 0 and out[vor].art == "s" and out[vor].text.strip() == "" and out[vor].text not in ("", " ")):
+                out.pop(n)
         out = [l for l in out if l.text]
         aktiv = set(ids.values())
         alt_neu, opt_alt = zustand_mit_optional(out, set())
