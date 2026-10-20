@@ -1332,6 +1332,18 @@ class _Auswertung:
             fehlend.update((Counter(dazu) - self.pdf_neu) + (Counter(entf) - self.pdf_alt))
         return fehlend
 
+    def lese_luecke_unerreicht(self) -> int:
+        """Zusatzzahl zur Lese-Luecke: nur Woerter aus Zellen, die im Ergebnis NICHT wie im Soll stehen. Nicht markierte Woerter
+        (z. B. die Section-Nummer einer neuen Zeile, die das PDF nicht hervorhebt) zaehlen in `lese_luecke_woerter` als "nicht
+        erkannt", obwohl das Tool die Zelle aus dem Kontext richtig befuellt. Beide Zahlen werden berichtet, keine ersetzt die andere."""
+        n = 0
+        for e in self.einheiten:
+            if e["klasse"] != "haupt" or e["erreicht"]:
+                continue
+            entf, dazu = self.soll_woerter[e["key"]]
+            n += sum(((Counter(dazu) - self.pdf_neu) + (Counter(entf) - self.pdf_alt)).values())
+        return n
+
     def _layout_abweichung(self, bi: int, spalte: int) -> bool:
         """Erkannte Inhaltsspalte weicht von der Soll-Inhaltsspalte ab, und die Zelle liegt in der Soll-Inhaltsspalte."""
         lay = self._layout_von(bi)
@@ -1836,6 +1848,7 @@ class _Auswertung:
             "nicht_uebernommen_ohne_grund": nicht_ohne_grund,
             "soll_woerter": soll_woerter_n,
             "lese_luecke_woerter": lese_luecke,
+            "lese_luecke_unerreicht_woerter": self.lese_luecke_unerreicht(),
             "lese_luecke_zaehlung": zaehlung,
             "luecken_nicht_gemeldet": luecke_fehlt,
             "luecken_gemeldet": len(self.plan.luecken),
@@ -2651,7 +2664,7 @@ def _fehlgeschlagen(name: str, exc: BaseException) -> dict[str, Any]:
             "soll_zellen_unverwaltet_sonstige_verfehlt": 0, "nicht_verwaltet_verfehlt_orte": [], "auto_richtig": 0,
             "auto_gesamt": 0, "vorschlaege_richtig": None, "vorschlaege_gesamt": None, "kollateral": 0,
             "idempotent": None, "nicht_uebernommen_ohne_grund": 0, "soll_woerter": 0, "lese_luecke_woerter": 0,
-            "lese_luecke_zaehlung": 0, "luecken_nicht_gemeldet": 0, "luecken_gemeldet": 0, "aenderungen": 0,
+            "lese_luecke_unerreicht_woerter": 0, "lese_luecke_zaehlung": 0, "luecken_nicht_gemeldet": 0, "luecken_gemeldet": 0, "aenderungen": 0,
             "aenderungen_uebernommen_korrekt": 0, "aenderungen_uebernommen_falsch": 0, "aenderungen_zu_pruefen": 0,
             "aenderungen_nicht_uebernommen": 0, "struktur_geaendert": None,
             "soll_zellen_alle": 0, "erreicht_alle": 0, "erreicht_formel": 0, "soll_zellen_unverwaltet_erreicht": 0,
@@ -2787,6 +2800,8 @@ def fasse_zusammen(paare: list[dict[str, Any]], korpus: str, generator_version: 
         "soll_woerter": s("soll_woerter"),
         "lese_luecke_woerter": s("lese_luecke_woerter"),
         "lese_luecke_anteil": _anteil(s("lese_luecke_woerter"), s("soll_woerter")),
+        "lese_luecke_unerreicht_woerter": s("lese_luecke_unerreicht_woerter"),
+        "lese_luecke_unerreicht_anteil": _anteil(s("lese_luecke_unerreicht_woerter"), s("soll_woerter")),
         "idempotent": sum(1 for p in gemessen if p["idempotent"]),
         "kollateral": s("kollateral"),
         "original_unveraendert": sum(1 for p in gemessen if p["original_unveraendert"]),
@@ -3143,6 +3158,9 @@ def _md(b: dict[str, Any]) -> str:
           f"{g['soll_zellen_pdf_blind']}, davon erreicht {g['soll_zellen_pdf_blind_erreicht']} (Einheit: Zellen)",
           f"- Bilanz „vollständig“: {g['vollstaendig']} von {g['paare']} Paaren (Einheit: Paare)",
           f"- Soll-Wörter: {g['soll_woerter']} · nicht erkannt (Lese-Lücke): {g['lese_luecke_woerter']} (Einheit: Wörter)",
+          f"- Davon in Zellen, die das Tool im Ergebnis nicht wie im Soll erreicht: {g.get('lese_luecke_unerreicht_woerter', 0)} "
+          f"({_prozent(g.get('lese_luecke_unerreicht_anteil'))}; der Rest sind nicht markierte Wörter wie die Section-Nummer einer neuen "
+          f"Zeile, die das Tool aus dem Kontext richtig einträgt) (Einheit: Wörter)",
           f"- Lücken-Prüfung (erwartet.json): bei {g['luecken_pruefbar_paare']} von {g['paare']} Paaren möglich; "
           f"ohne erwartet.json kann eine nicht gemeldete Lücke NICHT auffallen",
           f"- Struktur ({g['struktur_paare_geprueft']} Paare geprüft, Einheit: Befunde): {g['struktur_geaendert']} unerwartet verändert "
